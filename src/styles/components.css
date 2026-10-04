@@ -3243,7 +3243,7 @@ html.reduced *::after {
   border-radius: 4px;
   padding: 0 5px;
   border: 1px solid rgba(255, 154, 154, 0.35);
-  color: #ff9a9a;
+  color: var(--err);
   font-family: var(--sans);
   font-weight: 600;
 }
@@ -3795,7 +3795,7 @@ html.light .skel {
   background: #f5c15d;
 }
 .syncpill.err {
-  color: #ff9a9a;
+  color: var(--err);
   border-color: rgba(255, 154, 154, 0.35);
 }
 .syncpill.err .sd {

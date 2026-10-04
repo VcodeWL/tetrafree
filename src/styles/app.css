@@ -2117,7 +2117,7 @@ svg {
   color: #8b9aff;
 }
 .tok-s {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .tok-c {
   color: var(--t4);
@@ -2304,7 +2304,7 @@ svg {
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: #8fe6c0;
+  color: var(--ok);
   background: rgba(20, 40, 32, 0.85);
   border: 1px solid rgba(143, 230, 192, 0.4);
   border-radius: 5px;
@@ -2454,7 +2454,7 @@ svg {
   color: #8fb6ff;
 }
 .cl-h.fix {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .cl-list {
   list-style: none;
@@ -2543,12 +2543,12 @@ svg {
 .diff-stat .add,
 .dcount .add,
 .dl.add .dg {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .diff-stat .del,
 .dcount .del,
 .dl.del .dg {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .diff-note {
   display: flex;
@@ -5818,7 +5818,7 @@ svg {
   color: var(--t4);
 }
 .at-step.done svg {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .at-step.bad svg {
   color: #ffb86b;
@@ -5918,11 +5918,11 @@ svg {
 }
 .at-card .cstat .add,
 .at-sum .cstat .add {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .at-card .cstat .del,
 .at-sum .cstat .del {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .at-card .cstat .cl {
   color: var(--t4);
@@ -5941,7 +5941,7 @@ svg {
 }
 .at-card.file.done.create .ci {
   background: rgba(80, 200, 140, 0.14);
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .at-card.file.done.edit .ci {
   background: rgba(143, 166, 255, 0.14);
@@ -5953,7 +5953,7 @@ svg {
 }
 .at-card.file.delete .ci {
   background: rgba(255, 110, 110, 0.15);
-  color: #ff9a9a;
+  color: var(--err);
 }
 .at-card.file.delete .cn {
   color: #ffb4b4;
@@ -5974,7 +5974,7 @@ svg {
   border-color: rgba(255, 110, 110, 0.35);
 }
 .at-card.file.error .clab {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .at-card.file.rejected,
 .at-card.file.reverted {
@@ -5990,7 +5990,7 @@ svg {
   align-items: center;
   padding: 0 12px 8px 36px;
   font-size: 12px;
-  color: #ff9a9a;
+  color: var(--err);
 }
 .at-card .cbar2 {
   height: 2px;
@@ -6062,10 +6062,10 @@ svg {
   white-space: nowrap;
 }
 .at-card.cmd.error .cs {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .at-card.cmd.done .cs {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .at-card .cout {
   margin: 0;
@@ -6181,7 +6181,7 @@ svg {
   color: var(--t5);
 }
 .at-sum .sl svg {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .at-sum.ask .sl svg {
   color: #ffc97a;
@@ -6358,7 +6358,7 @@ svg {
 }
 .boot li.ok .bi {
   background: rgba(80, 200, 140, 0.16);
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .boot li.warn .bi {
   background: rgba(255, 200, 120, 0.16);
@@ -6993,7 +6993,7 @@ svg {
   flex-shrink: 0;
 }
 .dh-a .danger:hover {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .dsec {
   padding: 12px;
@@ -7159,7 +7159,7 @@ svg {
   place-items: center;
 }
 .dcol .dx:hover {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .dempty {
   padding: 28px 18px;
@@ -7384,7 +7384,7 @@ svg {
   white-space: nowrap;
 }
 .dai-r > svg {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .dai-box {
   background: var(--surface2);
@@ -7527,7 +7527,7 @@ svg {
   align-items: flex-start;
   background: rgba(255, 107, 107, 0.1);
   border: 1px solid rgba(255, 107, 107, 0.3);
-  color: #ff9a9a;
+  color: var(--err);
   border-radius: var(--r-md);
   padding: 10px 12px;
   font-size: 12.5px;
@@ -7544,7 +7544,7 @@ svg {
   align-items: center;
   background: rgba(143, 230, 192, 0.08);
   border: 1px solid rgba(143, 230, 192, 0.25);
-  color: #8fe6c0;
+  color: var(--ok);
   border-radius: var(--r-md);
   padding: 9px 12px;
   font-size: 12.5px;
@@ -7633,7 +7633,7 @@ svg {
   gap: 4px;
 }
 .pstr2 .rules span.ok {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .inv-banner {
   display: flex;
@@ -7947,7 +7947,7 @@ svg {
   flex: 1;
 }
 .cloudbar .bad {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .avx {
   width: 36px;
@@ -8516,7 +8516,7 @@ html.light .sel option {
   border-color: rgba(139, 154, 255, 0.4);
 }
 .rel-kind.logic {
-  color: #8fe6c0;
+  color: var(--ok);
   border-color: rgba(143, 230, 192, 0.4);
 }
 .rel-kind.patch {
@@ -8537,7 +8537,7 @@ html.light .sel option {
   color: var(--t4);
 }
 .rel-n.new {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .rel-n.imp {
   color: #8b9aff;
@@ -8817,7 +8817,7 @@ html.dense select.sel {
   color: var(--t1);
 }
 .msg-copy.ok {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .tdue.soon {
   color: #ffc27a;
@@ -8878,7 +8878,7 @@ html.dense select.sel {
   font-family: var(--mono);
 }
 .tsub.ok {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .subs {
   display: flex;
@@ -9270,7 +9270,7 @@ html.dense select.sel {
   margin: 0 4px;
 }
 .bulk .btn.danger {
-  color: #ff9a9a;
+  color: var(--err);
 }
 
 .tempty-hero {
@@ -9310,7 +9310,7 @@ html.dense select.sel {
   cursor: default;
 }
 .tstat-b.on .tk {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .tstat-b.on {
   box-shadow: 0 0 0 1px rgba(255, 154, 154, 0.5);
@@ -9445,13 +9445,13 @@ html.dense select.sel {
   color: var(--t3);
 }
 .k-new .gk {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .k-mod .gk {
   color: #f4c77b;
 }
 .k-del .gk {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .k-conflict .gk {
   color: #fff;
@@ -9581,13 +9581,13 @@ html.dense select.sel {
   background: rgba(143, 230, 192, 0.09);
 }
 .gdr.add .gdm {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .gdr.del {
   background: rgba(255, 154, 154, 0.09);
 }
 .gdr.del .gdm {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .gdr.hunk {
   background: var(--surface2);
@@ -9663,13 +9663,13 @@ html.dense select.sel {
   flex-shrink: 0;
 }
 .tgit.k-new {
-  color: #8fe6c0;
+  color: var(--ok);
 }
 .tgit.k-mod {
   color: #f4c77b;
 }
 .tgit.k-del {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .tgit.k-ren {
   color: #8fa6ff;
@@ -10457,7 +10457,7 @@ html.look-grad .newdot {
   padding: 8px 10px;
   border-radius: 8px;
   font-size: 12.5px;
-  color: #ff9a9a;
+  color: var(--err);
   background: rgba(255, 154, 154, 0.07);
   border: 1px solid rgba(255, 154, 154, 0.25);
 }
@@ -11012,7 +11012,7 @@ body.resizing-row {
   background: rgba(255, 255, 255, 0.07);
 }
 .np-sum.bad {
-  color: #ff9a9a;
+  color: var(--err);
 }
 .row-gap {
   display: flex;
@@ -11509,4 +11509,13 @@ html.light .hero-box.foc {
 
 html.light {
   --ok: #0b7d52;
+}
+
+html.light {
+  --err: #c0262d;
+  --warn: #8a5600;
+}
+
+.dtabs-list {
+  display: contents;
 }
