@@ -26,9 +26,18 @@ function useModalBody() {
     (s) => !!s.projects.find((p) => p.id === s.projectId) && s.screen === 'workspace',
   )
   if (!m) return null
-  const needsProject = ['versions', 'activity', 'deploy', 'members', 'newChat', 'task', 'replay'].includes(
-    m.type,
-  )
+  const needsProject = [
+    'versions',
+    'activity',
+    'deploy',
+    'members',
+    'newChat',
+    'task',
+    'replay',
+    'blame',
+    'trash',
+    'replace',
+  ].includes(m.type)
   if (needsProject && !hasProject) return null
   switch (m.type) {
     case 'settings':

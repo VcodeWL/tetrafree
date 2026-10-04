@@ -48,3 +48,10 @@ test('cleanApiBase срезает эндпоинт и слэши', () => {
   assert.equal(cleanApiBase('http://localhost:11434/v1/'), 'http://localhost:11434/v1')
   assert.equal(cleanApiBase('https://x.dev/v1/models?x=1'), 'https://x.dev/v1')
 })
+
+test('checkPath: зарезервированные имена Windows', () => {
+  for (const n of ['con', 'NUL.txt', 'src/aux.json', 'com1', 'lpt9.md'])
+    assert.match(checkPath(p, n) || '', /зарезервированное/, n)
+  assert.equal(checkPath(p, 'console.txt'), null)
+  assert.equal(checkPath(p, 'src/connect.ts'), null)
+})

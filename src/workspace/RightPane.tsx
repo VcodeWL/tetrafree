@@ -828,7 +828,9 @@ function CodePane() {
           title="Потяни, чтобы изменить ширину · двойной клик — сбросить"
         />
       )}
-      {narrow && treeOpen && file && <div className="tree-scrim" onClick={() => setTreeOpen(false)} />}
+      {narrow && treeOpen && file && (
+        <div className="tree-scrim" aria-hidden="true" onClick={() => setTreeOpen(false)} />
+      )}
       <div className="code-view">
         {file ? (
           <>

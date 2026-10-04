@@ -1,6 +1,7 @@
 import type { Project } from '../types'
 
 export const PROTECTED: string[] = []
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
 
 /** Проверка имени нового пути в проекте. Возвращает текст ошибки или null. `self` — путь, который переименовываем (его можно «занять» заново). */
 export function checkPath(p: Pick<Project, 'files' | 'dirs'>, path: string, self?: string): string | null {
@@ -13,6 +14,9 @@ export function checkPath(p: Pick<Project, 'files' | 'dirs'>, path: string, self
   if (parts.some((x) => x === '.' || x === '..')) return 'Точки «.» и «..» не поддерживаются'
   if (parts.some((x) => x !== x.trim() || x.endsWith('.')))
     return 'Имя не должно кончаться точкой или пробелом'
+  /* имена устройств Windows (CON, NUL, COM1…, с любым расширением) — файловая система их не создаёт */
+  const dev = parts.find((x) => RESERVED.test(x))
+  if (dev) return `«${dev}» — зарезервированное имя Windows (CON, PRN, AUX, NUL, COM1–9, LPT1–9)`
   const lower = path.toLowerCase()
   const clash = (x: string) => x !== self && !(self && x.startsWith(self + '/')) && x.toLowerCase() === lower
   if (Object.keys(p.files).some(clash) || p.dirs.some(clash)) return 'Такое имя уже занято'

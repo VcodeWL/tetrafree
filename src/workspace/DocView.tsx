@@ -543,6 +543,7 @@ function BlockEd({
               : 'Текст или «/» для команд'
           : ''
       }
+      aria-label="Блок документа"
       className={'bed t-' + b.type}
       onFocus={onFocus}
       onBlur={onBlur}

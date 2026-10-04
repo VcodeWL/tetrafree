@@ -332,7 +332,7 @@ function TwoFA({ user }: { user: Acc }) {
         <div className="subform">
           <div className="field">
             <label>Пароль для подтверждения</label>
-            <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+            <input type="password" aria-label="Пароль" value={pw} onChange={(e) => setPw(e.target.value)} />
           </div>
           {err && <div className="ferr">{err}</div>}
           <button className="btn danger" disabled={busy || !pw} onClick={disable}>
@@ -510,7 +510,12 @@ function DeleteAccount({ user }: { user: Acc }) {
             {user.hasPassword && (
               <div className="field">
                 <label>Пароль</label>
-                <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} />
+                <input
+                  type="password"
+                  aria-label="Пароль"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                />
               </div>
             )}
             {err && <div className="ferr">{err}</div>}

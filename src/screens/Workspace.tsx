@@ -46,7 +46,7 @@ export function Workspace() {
       style={{ '--side-w': sideW + 'px', '--dock-h': dockH + 'px' } as CSSProperties}
     >
       <Sidebar />
-      <div className="side-scrim" onClick={() => useStore.getState().setSideOpen(false)} />
+      <div className="side-scrim" aria-hidden="true" onClick={() => useStore.getState().setSideOpen(false)} />
       <main className="center">
         <button
           className="mobnav iconbtn"

@@ -253,9 +253,14 @@ export function Studio() {
               >
                 <Icon name="minus" size={12} />
               </button>
-              <span onClick={() => useDesign.setState({ fit: true })} title="Вписать (0)">
+              <button
+                className="zoomval"
+                onClick={() => useDesign.setState({ fit: true })}
+                title="Вписать (0)"
+                aria-label={`Масштаб ${Math.round(d.zoom * 100)}% — вписать в окно`}
+              >
                 {Math.round(d.zoom * 100)}%
-              </span>
+              </button>
               <button
                 onClick={() => useDesign.setState({ zoom: clamp(d.zoom * 1.2, 0.1, 3), fit: false })}
                 aria-label="Увеличить"

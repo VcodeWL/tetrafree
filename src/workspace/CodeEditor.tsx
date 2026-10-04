@@ -20,7 +20,6 @@ const LINE_COMMENT: Record<string, string> = {
   tsx: '//',
   js: '//',
   jsx: '//',
-  css: '',
   py: '#',
   yaml: '#',
   yml: '#',
@@ -28,9 +27,36 @@ const LINE_COMMENT: Record<string, string> = {
   bash: '#',
   sql: '--',
   json: '',
-  html: '',
-  md: '',
-  xml: '',
+}
+/** языки без строчных комментариев: каждая строка оборачивается парой маркеров */
+const BLOCK_COMMENT: Record<string, [string, string]> = {
+  css: ['/*', '*/'],
+  html: ['<!--', '-->'],
+  md: ['<!--', '-->'],
+  xml: ['<!--', '-->'],
+}
+/** закомментировать / раскоммментировать строки; null — язык без комментариев (json) */
+export function toggleComment(lines: string[], lang: string): string[] | null {
+  const blk = BLOCK_COMMENT[lang]
+  const pre = LINE_COMMENT[lang] ?? (blk ? '' : '//')
+  if (!blk && !pre) return null
+  const body = lines.filter((l) => l.trim())
+  if (blk) {
+    const [o, c] = blk
+    const all = body.every((l) => l.trim().startsWith(o) && l.trim().endsWith(c))
+    return lines.map((l) => {
+      if (!l.trim()) return l
+      if (all) {
+        const m = /^(\s*)(.*?)\s*$/.exec(l)!
+        return m[1] + m[2].slice(o.length, m[2].length - c.length).trim()
+      }
+      return l.replace(/^(\s*)(.*?)\s*$/, `$1${o} $2 ${c}`)
+    })
+  }
+  const all = body.every((l) => l.trimStart().startsWith(pre))
+  return lines.map((l) =>
+    !l.trim() ? l : all ? l.replace(pre + ' ', '').replace(pre, '') : l.replace(/^(\s*)/, `$1${pre} `),
+  )
 }
 
 /** на какой строке (с 0) сейчас комментарий: если текст съехал — ищем ближайшую такую же строку */
@@ -184,19 +210,13 @@ export const CodeSurface = memo(function CodeSurface({
       return
     }
     if (mod && e.key === '/') {
-      const pre = LINE_COMMENT[lang] ?? '//'
-      if (!pre) return
-      e.preventDefault()
       const s0 = v.lastIndexOf('\n', a - 1) + 1
       let e0 = v.indexOf('\n', b > a && v[b - 1] === '\n' ? b - 1 : b)
       if (e0 < 0) e0 = v.length
-      const ls = v.slice(s0, e0).split('\n')
-      const all = ls.filter((l) => l.trim()).every((l) => l.trimStart().startsWith(pre))
-      const out = ls
-        .map((l) =>
-          !l.trim() ? l : all ? l.replace(pre + ' ', '').replace(pre, '') : l.replace(/^(\s*)/, `$1${pre} `),
-        )
-        .join('\n')
+      const res = toggleComment(v.slice(s0, e0).split('\n'), lang)
+      if (!res) return
+      e.preventDefault()
+      const out = res.join('\n')
       replaceRange(t, s0, e0, out, [s0, s0 + out.length])
       return
     }

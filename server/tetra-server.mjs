@@ -107,7 +107,15 @@ async function projectDir(id, name, folder) {
   REG.set(safeName(name), want)
   return want
 }
+const WIN_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
 function inside(dir, rel) {
+  if (
+    process.platform === 'win32' &&
+    String(rel)
+      .split(/[\\/]/)
+      .some((x) => WIN_DEVICE.test(x))
+  )
+    throw Object.assign(new Error('Зарезервированное имя Windows: ' + rel), { status: 400 })
   const abs = path.resolve(dir, rel)
   if (abs !== dir && !abs.startsWith(dir + path.sep))
     throw Object.assign(new Error('Путь вне папки проекта: ' + rel), { status: 400 })

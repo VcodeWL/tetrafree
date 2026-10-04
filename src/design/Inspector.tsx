@@ -100,10 +100,11 @@ function Color({
     <div className="dcol">
       <span>{label}</span>
       <label className="sw" style={{ background: none ? undefined : hex }} data-none={none}>
-        <input type="color" value={hex} onChange={(e) => onChange(e.target.value)} />
+        <input type="color" value={hex} aria-label={label} onChange={(e) => onChange(e.target.value)} />
       </label>
       <input
         className="hx"
+        aria-label={label + ' (HEX)'}
         value={none ? '—' : hex}
         onChange={(e) => /^#[0-9a-f]{6}$/i.test(e.target.value) && onChange(e.target.value)}
       />
@@ -542,7 +543,13 @@ function TextBox({ el, initial, multi }: { el: HTMLElement; initial: string; mul
     t.current = setTimeout(() => setText(el, s), 220)
   }
   return multi ? (
-    <textarea className="dta" rows={3} value={v} onChange={(e) => push(e.target.value)} />
+    <textarea
+      className="dta"
+      rows={3}
+      aria-label="Текст блока"
+      value={v}
+      onChange={(e) => push(e.target.value)}
+    />
   ) : (
     <div className="dnote2">
       <span>Элемент содержит вложенное форматирование. Двойной клик по нему на холсте — править текст.</span>
