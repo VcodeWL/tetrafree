@@ -6,6 +6,7 @@ import './styles/components.css'
 import { App } from './App'
 import { useStore } from './store'
 import { startSync } from './lib/sync'
+import { startDocSync } from './lib/docsync'
 import { initAccount } from './lib/account'
 import { startCloud } from './lib/team'
 import { startAutoBackup } from './lib/autobackup'
@@ -20,6 +21,7 @@ if (import.meta.env.DEV) {
 }
 
 startSync()
+startDocSync()
 initAccount()
 startCloud()
 startAutoBackup()

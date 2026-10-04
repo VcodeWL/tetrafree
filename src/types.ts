@@ -158,6 +158,8 @@ export interface Doc {
   createdBy: ID
   updatedAt: number
   blocks: Block[]
+  /** файл-зеркало в проекте: docs/<название>.md */
+  file?: string
 }
 
 export type TaskStatus = 'backlog' | 'doing' | 'review' | 'done'
