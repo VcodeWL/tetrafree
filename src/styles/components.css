@@ -2979,7 +2979,7 @@ html.no-ambient .grain {
   display: none;
 }
 html.no-ambient body {
-  background: #08080a;
+  background: var(--bg);
 }
 html.no-accents {
   --iris: linear-gradient(115deg, #e4e4ea, #cfcfd8);
