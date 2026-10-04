@@ -139,6 +139,18 @@ export function DocView({ doc }: { doc: Doc }) {
           <span>{useStore.getState().people[doc.createdBy]?.name}</span>
           <span className="vr" />
           <span>изменён {ago(doc.updatedAt)}</span>
+          {doc.file && (
+            <>
+              <span className="vr" />
+              <button
+                className="dfile"
+                title="Открыть Markdown-файл документа"
+                onClick={() => st().openFile(doc.file!)}
+              >
+                {doc.file}
+              </button>
+            </>
+          )}
           {words > 0 && (
             <>
               <span className="vr" />

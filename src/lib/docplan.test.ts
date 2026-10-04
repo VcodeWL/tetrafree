@@ -109,3 +109,32 @@ test('документы с картинками не зеркалятся', () 
   }
   assert.deepEqual(planDocs([d], {}, {} as DocBase, h, false).write, {})
 })
+
+test('переименование документа переносит файл; файл, изменённый снаружи, остаётся на месте', () => {
+  const s = settled('Старое')
+  const renamed = { ...s.d, title: 'Новое' }
+  const r = planDocs([renamed], s.files, s.base, h, false)
+  assert.deepEqual(r.remove, ['docs/Старое.md'])
+  assert.equal(r.attach['1'], 'docs/Новое.md')
+  assert.equal(r.write['docs/Новое.md'], docMd(renamed))
+  const r2 = planDocs([renamed], { 'docs/Старое.md': '# Старое\n\nснаружи\n' }, s.base, h, false)
+  assert.deepEqual(r2.remove, [])
+  assert.equal(r2.attach['1'], undefined)
+})
+
+test('«Заметки (2).md» не считается несовпадением имени и не переименовывается', () => {
+  const r1 = planDocs([doc('1', 'Заметки'), doc('2', 'Заметки')], {}, {}, h, false)
+  const ds = [doc('1', 'Заметки', 'текст', r1.attach['1']), doc('2', 'Заметки', 'текст', r1.attach['2'])]
+  const r2 = planDocs(ds, r1.write, r1.base, h, false)
+  assert.deepEqual(r2.remove, [])
+  assert.deepEqual(r2.write, {})
+})
+
+test('импортированный файл не переименовывается по заголовку', () => {
+  const r = planDocs([], { 'docs/guide.md': '# Гид\n\nтекст' }, {}, h, false)
+  const d = { id: 'n', title: r.add[0].title, blocks: r.add[0].blocks, file: 'docs/guide.md' }
+  const base: DocBase = { n: { file: 'docs/guide.md', h: h('# Гид\n\nтекст'), d: h(docMd(d)), t: d.title } }
+  const r2 = planDocs([d], { 'docs/guide.md': '# Гид\n\nтекст' }, base, h, false)
+  assert.deepEqual(r2.remove, [])
+  assert.deepEqual(r2.write, {})
+})

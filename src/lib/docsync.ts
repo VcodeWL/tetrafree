@@ -66,7 +66,7 @@ export function syncDocs(pid: string) {
   /* новые документы из чужих файлов: файл не трогаем, пока документ не правили */
   const files = S().projects.find((x) => x.id === pid)!.files
   for (const [id, file] of Object.entries(added))
-    plan.base[id] = { file, h: fnv(files[file]), d: fnv(docMd(addedTitle[id])) }
+    plan.base[id] = { file, h: fnv(files[file]), d: fnv(docMd(addedTitle[id])), t: addedTitle[id].title }
   try {
     localStorage.setItem(KEY(pid), JSON.stringify(plan.base))
   } catch {

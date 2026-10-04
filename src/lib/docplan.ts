@@ -10,7 +10,7 @@ export interface DocLite {
   blocks: Block[]
   file?: string
 }
-export type DocBase = Record<string, { file: string; h: string; d: string }>
+export type DocBase = Record<string, { file: string; h: string; d: string; t?: string }>
 export interface DocPlan {
   /** файлы к записи (путь → содержимое) */
   write: Record<string, string>
@@ -44,6 +44,11 @@ export function slugName(title: string): string {
 }
 const isDocFile = (p: string) =>
   p.startsWith(DOCS_DIR + '/') && !p.slice(DOCS_DIR.length + 1).includes('/') && /\.md$/i.test(p)
+
+function nameMatches(path: string, title: string): boolean {
+  const base = slugName(title).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${DOCS_DIR}/${base}( \\(\\d+\\))?\\.md$`, 'i').test(path)
+}
 
 function freePath(title: string, taken: Set<string>, suffix = ''): string {
   const base = `${DOCS_DIR}/${slugName(title)}${suffix}`
@@ -93,6 +98,17 @@ export function planDocs(
     }
     const fileChanged = !rec || h(here) !== rec.h
     const docChanged = !rec || h(want) !== rec.d
+    if (rec?.t !== undefined && rec.t !== d.title && !fileChanged && !nameMatches(file, d.title)) {
+      /* документ переименовали, файл не трогали — переносим файл под новое название */
+      const np = freePath(d.title, taken)
+      put(np, want)
+      plan.remove.push(file)
+      delete cur[file]
+      owned.add(np)
+      plan.attach[d.id] = np
+      plan.base[d.id] = { file: np, h: h(want), d: h(want) }
+      continue
+    }
     if (!fileChanged || here === want) {
       if (docChanged && here !== want) put(file, want)
       plan.base[d.id] = { file, h: h(cur[file]), d: h(want) }
@@ -109,6 +125,10 @@ export function planDocs(
       plan.base[d.id] = { file, h: h(want), d: h(want) }
     }
   }
+  /* запоминаем название, с которым файл был «общим» */
+  const titles = new Map(docs.map((d) => [d.id, d.title]))
+  for (const u of plan.update) titles.set(u.id, u.title)
+  for (const [id, b] of Object.entries(plan.base)) b.t = titles.get(id)
   /* документы, удалённые в приложении: убираем их файл, если его не трогали */
   const live = new Set(docs.map((d) => d.id))
   for (const [id, r] of Object.entries(prev)) {
