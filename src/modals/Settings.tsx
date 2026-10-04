@@ -368,8 +368,6 @@ function Providers() {
         <div
           className={'prov' + (p.on ? '' : ' off')}
           key={p.id}
-          role="button"
-          tabIndex={0}
           onClick={() => st().openModal({ type: 'provider', id: p.id })}
         >
           <span className="pi">
@@ -377,7 +375,9 @@ function Providers() {
           </span>
           <div className="px">
             <div className="pn">
-              {p.name}
+              <button className="popen" onClick={() => st().openModal({ type: 'provider', id: p.id })}>
+                {p.name}
+              </button>
               {model.startsWith(p.id + ':') && <span className="tag">по умолчанию</span>}
             </div>
             <div className="pm">

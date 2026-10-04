@@ -180,7 +180,7 @@ export function Launcher() {
   }
 
   return (
-    <div className="launcher">
+    <main className="launcher">
       <div className="lc-top">
         <Wordmark size={34} text={19} />
         <div className="grow" />
@@ -281,19 +281,17 @@ export function Launcher() {
             <motion.div
               key={p.id}
               className="prow"
-              role="button"
-              tabIndex={0}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.035, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
               onClick={() => st().openProject(p.id)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') st().openProject(p.id)
-                else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                  e.preventDefault()
-                  const rows = [...document.querySelectorAll<HTMLElement>('.plist .prow')]
-                  rows[rows.indexOf(e.currentTarget) + (e.key === 'ArrowDown' ? 1 : -1)]?.focus()
-                }
+                if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+                const rows = [...document.querySelectorAll<HTMLElement>('.plist .popen')]
+                const i = rows.indexOf(e.target as HTMLElement)
+                if (i < 0) return
+                e.preventDefault()
+                rows[i + (e.key === 'ArrowDown' ? 1 : -1)]?.focus()
               }}
               onContextMenu={(e) => menu.at(e, p)}
               onMouseMove={(e) => {
@@ -308,7 +306,9 @@ export function Launcher() {
               </span>
               <div className="pmid">
                 <h3 aria-level={2}>
-                  {p.name}
+                  <button className="popen" onClick={(e) => (e.stopPropagation(), st().openProject(p.id))}>
+                    {p.name}
+                  </button>
                   {p.pinned && <Icon name="pin" size={13} className="pinned-ic" />}
                   {p.lanes.length > 0 && (
                     <span
@@ -462,6 +462,6 @@ export function Launcher() {
           />
         </Menu>
       )}
-    </div>
+    </main>
   )
 }
