@@ -1,3 +1,4 @@
+import { ServerHelp } from '../components/ServerHelp'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { Wordmark } from '../components/ui/primitives'
@@ -314,6 +315,7 @@ export function Auth() {
             <Icon name="refresh" size={15} />
             Проверить снова
           </button>
+          <ServerHelp />
           <div className="divider">или</div>
           <button className="btn" style={{ width: '100%', justifyContent: 'center' }} onClick={localMode}>
             <Icon name="user" size={15} />

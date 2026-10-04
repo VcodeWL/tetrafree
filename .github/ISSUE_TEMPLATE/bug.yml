@@ -12,7 +12,7 @@ body:
     validations: { required: true }
   - type: input
     id: ver
-    attributes: { label: Версия TetraFree и Windows, placeholder: "2.5.0 / Windows 11 23H2" }
+    attributes: { label: Версия TetraFree и Windows, placeholder: '2.5.0 / Windows 11 23H2' }
     validations: { required: true }
   - type: textarea
     id: diag

@@ -13,3 +13,18 @@ jobs:
       - run: npm run format:check
       - run: npm test
       - run: npm run build
+  windows:
+    # то, что на Linux не проверить: ConPTY, DPAPI, запуск сервера по \\?\-пути, компиляция Rust-оболочки
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: node scripts/smoke-win.mjs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: npm run build
+      - run: node scripts/prepare-sidecar.mjs
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --features extras,updater

@@ -79,3 +79,27 @@ export async function onUpdateProgress(
     fn(e.payload.done, e.payload.total),
   )
 }
+
+/* ---- встроенный сервер (server.rs): состояние, лог, перезапуск ---- */
+export interface SrvStatus {
+  running: boolean
+  exit: number | null
+  log: string | null
+}
+export async function srvStatus(): Promise<SrvStatus | null> {
+  if (!isDesktop) return null
+  try {
+    return await call<SrvStatus>('server_status')
+  } catch {
+    return null
+  }
+}
+export async function srvLog(): Promise<string> {
+  if (!isDesktop) return ''
+  try {
+    return await call<string>('server_log')
+  } catch {
+    return ''
+  }
+}
+export const srvRestart = () => call<void>('server_restart')

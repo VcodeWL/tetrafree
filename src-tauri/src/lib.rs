@@ -4,6 +4,7 @@ use tauri::Manager;
 mod extras;
 #[cfg(feature = "updater")]
 mod updates;
+mod server;
 
 /// Версия и платформа — фронтенд показывает их в настройках.
 #[tauri::command]
@@ -15,7 +16,7 @@ fn app_info() -> serde_json::Value {
     })
 }
 
-pub(crate) struct ServerChild(std::sync::Mutex<Option<std::process::Child>>);
+pub(crate) use server::ServerChild;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,78 +34,49 @@ pub fn run() {
         extras::sys_set_autostart,
         extras::sys_set_tray,
         updates::update_check,
-        updates::update_install
+        updates::update_install,
+        server::server_log,
+        server::server_status,
+        server::server_restart
     ]);
     #[cfg(all(feature = "extras", not(feature = "updater")))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         app_info,
         extras::sys_info,
         extras::sys_set_autostart,
-        extras::sys_set_tray
+        extras::sys_set_tray,
+        server::server_log,
+        server::server_status,
+        server::server_restart
     ]);
     #[cfg(all(not(feature = "extras"), feature = "updater"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         app_info,
         updates::update_check,
-        updates::update_install
+        updates::update_install,
+        server::server_log,
+        server::server_status,
+        server::server_restart
     ]);
     #[cfg(all(not(feature = "extras"), not(feature = "updater")))]
-    let builder = builder.invoke_handler(tauri::generate_handler![app_info]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        app_info,
+        server::server_log,
+        server::server_status,
+        server::server_restart
+    ]);
     builder
         .setup(|app| {
             #[cfg(feature = "extras")]
             extras::setup(app)?;
-            // Бэкенд (проекты на диске, shell, git): встроенный node-сервер.
-            // Node берём из sidecar рядом с приложением (его кладёт сборка), иначе — из PATH.
-            // Если порт занят (например, `npm run server`) или Node нет — фронтенд работает в офлайн-режиме.
-            if let Ok(dir) = app.path().resource_dir() {
-                // Windows отдаёт resource_dir с префиксом \\?\ — Node с ним ведёт себя непредсказуемо, убираем
-                let clean = |p: std::path::PathBuf| {
-                    let t = p.to_string_lossy().to_string();
-                    std::path::PathBuf::from(t.strip_prefix(r"\\?\").unwrap_or(&t).to_string())
-                };
-                let script = clean(dir.join("server").join("tetra-server.mjs"));
-                let script = if script.exists() { script } else { std::path::PathBuf::from("server/tetra-server.mjs") };
-                if script.exists() {
-                    let node_name = if cfg!(windows) { "node.exe" } else { "node" };
-                    let node = std::env::current_exe()
-                        .ok()
-                        .and_then(|e| e.parent().map(|d| d.join(node_name)))
-                        .filter(|p| p.exists())
-                        .unwrap_or_else(|| std::path::PathBuf::from("node"));
-                    let mut cmd = std::process::Command::new(node);
-                    // Вывод сервера пишем в ~/TetraFree/server.log — без него причину незапуска не найти
-                    let log = std::env::var("USERPROFILE")
-                        .or_else(|_| std::env::var("HOME"))
-                        .ok()
-                        .map(|h| std::path::PathBuf::from(h).join("TetraFree"))
-                        .and_then(|d| {
-                            let _ = std::fs::create_dir_all(&d);
-                            std::fs::OpenOptions::new()
-                                .create(true)
-                                .write(true)
-                                .truncate(true)
-                                .open(d.join("server.log"))
-                                .ok()
-                        });
-                    cmd.arg(&script).env("TF_SERVE", "1").stdin(std::process::Stdio::null());
-                    match log.and_then(|f| f.try_clone().ok().map(|g| (f, g))) {
-                        Some((o, e)) => {
-                            cmd.stdout(o).stderr(e);
-                        }
-                        None => {
-                            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-                        }
-                    }
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: без чёрного окна консоли
-                    }
-                    if let Ok(child) = cmd.spawn() {
-                        app.manage(ServerChild(std::sync::Mutex::new(Some(child))));
-                    }
+            // Бэкенд (проекты на диске, shell, git): встроенный node-сервер (см. server.rs).
+            // Состояние регистрируем всегда — даже если запуск не удался, команды server_* работают.
+            app.manage(server::ServerChild(std::sync::Mutex::new(None)));
+            match server::spawn(app.handle()) {
+                Ok(child) => {
+                    *app.state::<server::ServerChild>().0.lock().unwrap() = Some(child);
                 }
+                Err(e) => server::note(&e),
             }
             // Окно создаётся из tauri.conf.json; в debug открываем devtools
             #[cfg(debug_assertions)]

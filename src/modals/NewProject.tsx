@@ -1,4 +1,5 @@
 /* Новый проект: настоящая папка на диске. Либо создаём новую (родительская папка + имя), либо открываем существующую. */
+import { ServerHelp } from '../components/ServerHelp'
 import { useEffect, useRef, useState } from 'react'
 import { useStore, toast } from '../store'
 import { Icon, type IconName } from '../components/ui/Icon'
@@ -175,6 +176,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
           <button className="btn sm" disabled={checking} onClick={retry}>
             {checking ? 'Подключаюсь…' : 'Повторить подключение'}
           </button>
+          <ServerHelp />
         </div>
       )}
       {mode === 'new' ? (

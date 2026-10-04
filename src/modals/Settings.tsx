@@ -1,3 +1,4 @@
+import { ServerHelp } from '../components/ServerHelp'
 import { markSeen } from '../lib/whatsnew'
 import { UsagePanel } from './UsagePanel'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -1291,6 +1292,11 @@ function BackendSection() {
           Проверить
         </button>
       </div>
+      {isDesktop && (
+        <div className="srow col">
+          <ServerHelp always />
+        </div>
+      )}
     </>
   )
 }

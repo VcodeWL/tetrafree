@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Logo } from './ui/primitives'
 import { useStore } from '../store'
+import { notesLines } from '../lib/updnotes'
 import { isDesktop, onUpdateProgress, updCheck, updInstall, type UpdateInfo } from '../lib/desktop'
 
 type Phase = 'check' | 'download' | 'install' | 'error' | 'done'
@@ -107,6 +108,13 @@ export function UpdateGate() {
                         : 'Подключаюсь к GitHub…'}
                 </p>
               </>
+            )}
+            {(phase === 'download' || phase === 'install') && notesLines(info?.notes).length > 0 && (
+              <ul className="upd-notes" aria-label="Что нового">
+                {notesLines(info?.notes).map((l, i) => (
+                  <li key={i}>{l}</li>
+                ))}
+              </ul>
             )}
             {phase === 'check' && (
               <div className="upd-bar">

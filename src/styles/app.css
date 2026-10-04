@@ -11423,3 +11423,65 @@ html.light .lc-empty,
 html.light .onb {
   background: rgba(255, 255, 255, 0.78);
 }
+
+/* ---- блок состояния встроенного сервера ---- */
+.srv-help {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+.srv-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.srv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--red, #e5484d);
+}
+.srv-dot.ok {
+  background: var(--green, #30a46c);
+}
+.srv-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.srv-msg {
+  color: var(--tx2, #aaa);
+}
+.srv-log {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--bd, #333);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  font: 11.5px/1.45 var(--mono, monospace);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+.upd-notes {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--tx2, #aaa);
+  text-align: left;
+}
+.upd-notes li::before {
+  content: '•';
+  margin-right: 8px;
+  opacity: 0.6;
+}
