@@ -12,11 +12,16 @@ let WIN_EXE = null
 export let PTY_WHY = ''
 if (WIN) {
   /* Windows: ConPTY через собственный помощник на C# (без Python) */
-  try {
-    WIN_EXE = ensureConPty()
-  } catch (e) {
-    PTY_WHY = e.message
-  }
+  /* компиляция помощника — в фоне: сервер сразу начинает отвечать, терминал станет доступен через пару секунд */
+  PTY_WHY = 'помощник терминала ещё собирается, повтори через несколько секунд'
+  ensureConPty()
+    .then((exe) => {
+      WIN_EXE = exe
+      PTY_WHY = ''
+    })
+    .catch((e) => {
+      PTY_WHY = e.message
+    })
 } else {
   for (const c of ['python3', 'python']) {
     try {
@@ -29,7 +34,7 @@ if (WIN) {
   }
   if (!PY) PTY_WHY = 'нужен Python 3'
 }
-export const HAS_PTY = WIN ? !!WIN_EXE : !!PY
+export const hasPty = () => (WIN ? !!WIN_EXE : !!PY)
 
 const HELPER = `
 import os, pty, sys, select, fcntl, termios, struct, signal
@@ -157,7 +162,7 @@ process.on('exit', () => {
 export async function ptyRoutes(req, res, u, io) {
   if (!u.pathname.startsWith('/api/pty/')) return false
   const out = (c, b) => io.json(res, c, b)
-  if (!HAS_PTY) {
+  if (!hasPty()) {
     out(501, {
       error: {
         message:

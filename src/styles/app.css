@@ -11390,3 +11390,36 @@ html.reduced .upd-bar i.ind {
   width: 100%;
   opacity: 0.5;
 }
+
+/* ---------- лаунчер на фоне-картинке: читаемость и разделение блоков ---------- */
+html .lc-empty {
+  background: rgba(17, 17, 20, 0.72);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px dashed var(--line3);
+  color: var(--t2);
+  margin-bottom: 20px;
+}
+html .lc-empty span {
+  color: var(--t2);
+}
+html .lc-hint {
+  color: var(--t3);
+  margin-top: 20px;
+}
+html .onb {
+  margin-top: 20px;
+  background: rgba(22, 22, 27, 0.82);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line3);
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.6);
+}
+html .onb-step .ot small,
+html .onb-h span {
+  color: var(--t3);
+}
+html.light .lc-empty,
+html.light .onb {
+  background: rgba(255, 255, 255, 0.78);
+}

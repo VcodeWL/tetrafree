@@ -58,7 +58,12 @@ pub fn run() {
             // Node берём из sidecar рядом с приложением (его кладёт сборка), иначе — из PATH.
             // Если порт занят (например, `npm run server`) или Node нет — фронтенд работает в офлайн-режиме.
             if let Ok(dir) = app.path().resource_dir() {
-                let script = dir.join("server").join("tetra-server.mjs");
+                // Windows отдаёт resource_dir с префиксом \\?\ — Node с ним ведёт себя непредсказуемо, убираем
+                let clean = |p: std::path::PathBuf| {
+                    let t = p.to_string_lossy().to_string();
+                    std::path::PathBuf::from(t.strip_prefix(r"\\?\").unwrap_or(&t).to_string())
+                };
+                let script = clean(dir.join("server").join("tetra-server.mjs"));
                 let script = if script.exists() { script } else { std::path::PathBuf::from("server/tetra-server.mjs") };
                 if script.exists() {
                     let node_name = if cfg!(windows) { "node.exe" } else { "node" };
@@ -68,10 +73,29 @@ pub fn run() {
                         .filter(|p| p.exists())
                         .unwrap_or_else(|| std::path::PathBuf::from("node"));
                     let mut cmd = std::process::Command::new(node);
-                    cmd.arg(&script)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null());
+                    // Вывод сервера пишем в ~/TetraFree/server.log — без него причину незапуска не найти
+                    let log = std::env::var("USERPROFILE")
+                        .or_else(|_| std::env::var("HOME"))
+                        .ok()
+                        .map(|h| std::path::PathBuf::from(h).join("TetraFree"))
+                        .and_then(|d| {
+                            let _ = std::fs::create_dir_all(&d);
+                            std::fs::OpenOptions::new()
+                                .create(true)
+                                .write(true)
+                                .truncate(true)
+                                .open(d.join("server.log"))
+                                .ok()
+                        });
+                    cmd.arg(&script).env("TF_SERVE", "1").stdin(std::process::Stdio::null());
+                    match log.and_then(|f| f.try_clone().ok().map(|g| (f, g))) {
+                        Some((o, e)) => {
+                            cmd.stdout(o).stderr(e);
+                        }
+                        None => {
+                            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                        }
+                    }
                     #[cfg(windows)]
                     {
                         use std::os::windows::process::CommandExt;

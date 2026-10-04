@@ -37,6 +37,8 @@ export const serverOnline = () => B().status === 'online'
 export const backendOnline = () => B().status === 'online' && !!B().info?.local && !!getToken()
 
 let custom = ''
+let pollPty = false
+let ptyTries = 0
 export function setBackendUrl(u: string) {
   custom = u.trim().replace(/\/+$/, '')
   void detectBackend()
@@ -63,6 +65,15 @@ export async function detectBackend() {
     const info = await ping(base)
     if (info) {
       useBackend.setState({ status: 'online', base, info, lastError: undefined })
+      /* на Windows терминал собирается в фоне при первом запуске — спросим ещё раз, когда он будет готов */
+      if (info.platform === 'win32' && info.pty === false && !pollPty && ptyTries < 6) {
+        pollPty = true
+        ptyTries++
+        window.setTimeout(() => {
+          pollPty = false
+          void detectBackend()
+        }, 7000)
+      }
       return true
     }
   }

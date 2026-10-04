@@ -2,7 +2,7 @@
    .NET Framework 4 (csc.exe есть в каждой Windows 10/11) и кладётся в %LOCALAPPDATA%\TetraFree\bin.
    Протокол тот же, что у Linux-помощника: ввод — в stdin, вывод — из stdout, смена размера приходит в потоке ввода
    строкой "\0TFRSZ <cols> <rows>\n". Аргументы: cols rows командная_строка. */
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -243,8 +243,8 @@ export const conPtySupported = (release = os.release()) => {
   return build >= 17763
 }
 
-/** путь к собранному помощнику; при первом запуске компилирует. Бросает ошибку с понятным текстом. */
-export function ensureConPty() {
+/** путь к собранному помощнику; при первом запуске компилирует (асинхронно, сервер не блокируется). Бросает ошибку с понятным текстом. */
+export async function ensureConPty() {
   if (!conPtySupported()) throw new Error('нужна Windows 10 версии 1809 или новее')
   const csc = CSC.find((p) => fs.existsSync(p))
   if (!csc) throw new Error('не найден csc.exe (.NET Framework 4)')
@@ -257,11 +257,14 @@ export function ensureConPty() {
   fs.writeFileSync(src, CONPTY_CS, 'utf8')
   const tmpExe = exe + '.tmp.exe'
   try {
-    execFileSync(csc, ['/nologo', '/optimize+', '/target:exe', '/platform:anycpu', `/out:${tmpExe}`, src], {
-      windowsHide: true,
-      timeout: 60000,
-      stdio: 'pipe',
-    })
+    await new Promise((resolve, reject) =>
+      execFile(
+        csc,
+        ['/nologo', '/optimize+', '/target:exe', '/platform:anycpu', `/out:${tmpExe}`, src],
+        { windowsHide: true, timeout: 60000 },
+        (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve()),
+      ),
+    )
   } catch (e) {
     const out = String(e.stdout || e.stderr || e.message)
       .split('\n')

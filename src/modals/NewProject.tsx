@@ -9,6 +9,7 @@ import {
   backendOnline,
   bBrowse,
   bCheckFolder,
+  detectBackend,
   useBackend,
   type DirInfo,
   type FolderCheck,
@@ -46,6 +47,11 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
   const [busy, setBusy] = useState(false)
   const [picking, setPicking] = useState<null | 'parent' | 'folder'>(null)
   const [chk, setChk] = useState<FolderCheck | null>(null)
+  const [checking, setChecking] = useState(false)
+  const retry = () => {
+    setChecking(true)
+    void detectBackend().finally(() => setChecking(false))
+  }
 
   /* родительская папка по умолчанию — корень проектов, который сообщил сервер */
   useEffect(() => {
@@ -70,7 +76,12 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
     if (!online || !target) return
     const my = ++seq.current
     const t = setTimeout(() => {
-      bCheckFolder(target)
+      Promise.race([
+        bCheckFolder(target),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('Сервер не отвечает — проверь ~/TetraFree/server.log')), 10000),
+        ),
+      ])
         .then((r) => my === seq.current && setChk(r))
         .catch((e) => my === seq.current && setChk({ ok: false, reason: (e as Error).message }))
     }, 250)
@@ -156,8 +167,14 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
       {!online && (
         <div className="diff-note">
           <Icon name="warn" size={14} />
-          Сервер TetraFree не запущен. Он создаёт папку на диске — в десктопной сборке стартует сам, в
-          браузере: <code>npm run server</code>.
+          <span>
+            Сервер TetraFree не запущен. Он создаёт папку на диске — в десктопной сборке стартует сам, в
+            браузере: <code>npm run server</code>. Если приложение установлено и сервер так и не поднялся,
+            причина записана в <code>%USERPROFILE%\TetraFree\server.log</code>.
+          </span>
+          <button className="btn sm" disabled={checking} onClick={retry}>
+            {checking ? 'Подключаюсь…' : 'Повторить подключение'}
+          </button>
         </div>
       )}
       {mode === 'new' ? (
@@ -263,7 +280,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
           </div>
         </>
       )}
-      {target && (
+      {target && online && (
         <div className={'np-sum' + (err ? ' bad' : '')}>
           <Icon name={err ? 'warn' : 'info'} size={14} />
           <span>

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { mailMode } from './mail.mjs'
 import { checkFolder, bad } from './folders.mjs'
 import { makeIgnore } from './ignore.mjs'
-import { ptyRoutes, HAS_PTY } from './pty.mjs'
+import { ptyRoutes, hasPty } from './pty.mjs'
 import { createVault, secretRoutes } from './secrets.mjs'
 import { accountRoutes, authed, previewToken, previewValid } from './auth.mjs'
 
@@ -252,7 +252,7 @@ async function handle(req, res, isLocal) {
       ok: true,
       local: isLocal,
       mail: mailMode(),
-      pty: HAS_PTY,
+      pty: hasPty(),
       version: VERSION,
       root: ROOT,
       home: os.homedir(),
@@ -1002,4 +1002,19 @@ export function start(port = +(process.env.PORT || 3001), host = process.env.HOS
   return srv
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) start()
+/* Запуск как программы. Сравнение путей устойчиво к префиксу \\?\ и регистру (установленное приложение
+   на Windows передаёт путь в таком виде); TF_SERVE=1 запускает сервер безусловно. */
+const normPath = (p) =>
+  path
+    .resolve(String(p).replace(/^\\\\\?\\/, ''))
+    .replace(/\\/g, '/')
+    .toLowerCase()
+const isMain = () => {
+  if (process.env.TF_SERVE === '1') return true
+  try {
+    return !!process.argv[1] && normPath(fileURLToPath(import.meta.url)) === normPath(process.argv[1])
+  } catch {
+    return false
+  }
+}
+if (isMain()) start()
