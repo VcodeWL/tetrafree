@@ -191,9 +191,3 @@ src-tauri/     Rust-оболочка Tauri 2
 
 ## Релизы и автообновление (GitHub)
 Репозиторий: https://github.com/VcodeWL/tetrafree. Приложение при запуске смотрит `releases/latest/download/latest.json`, поэтому **репозиторий должен быть публичным** (из приватного релизы без токена не скачать).
-
-Один раз:
-1. `npx tauri signer generate -w tetrafree.key` — создаёт приватный и публичный ключ подписи (файл `tetrafree.key` никому не показывай и не коммить).
-2. GitHub → Settings → Secrets and variables → Actions: секреты `TAURI_SIGNING_PRIVATE_KEY` (содержимое `tetrafree.key`) и `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; переменная (Variables) `TAURI_UPDATER_PUBKEY` (содержимое `tetrafree.key.pub`).
-
-Каждый релиз: поднять версию (см. `AGENTS.md`), закоммитить, затем `git tag v2.5.0 && git push --tags`. Workflow `Release` соберёт установщик Windows, подпишет, выложит в Releases вместе с `latest.json`; у всех, у кого стоит приложение, оно обновится при следующем запуске.
