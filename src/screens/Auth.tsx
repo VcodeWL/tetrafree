@@ -1,3 +1,4 @@
+import { isDesktop } from '../lib/desktop'
 import { ServerHelp } from '../components/ServerHelp'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
@@ -304,13 +305,22 @@ export function Auth() {
             <Wordmark size={42} text={24} />
           </div>
           <h1>Сервер недоступен</h1>
-          <p className="sub">
-            Аккаунты, подтверждение почты и приглашения работают через сервер TetraFree. Запусти его командой
-            и перезагрузи страницу:
-          </p>
-          <pre className="auth-cmd">
-            npm run dev # сервер встроен{'\n'}npm run server # или отдельно, порт 3001
-          </pre>
+          {isDesktop ? (
+            <p className="sub">
+              Аккаунты, подтверждение почты и приглашения работают через встроенный сервер TetraFree. Он не
+              ответил — ниже видно, жив ли процесс, и есть лог запуска.
+            </p>
+          ) : (
+            <>
+              <p className="sub">
+                Аккаунты, подтверждение почты и приглашения работают через сервер TetraFree. Запусти его
+                командой и перезагрузи страницу:
+              </p>
+              <pre className="auth-cmd">
+                npm run dev # сервер встроен{'\n'}npm run server # или отдельно, порт 3001
+              </pre>
+            </>
+          )}
           <button className="btn pri" onClick={() => void detectBackend()}>
             <Icon name="refresh" size={15} />
             Проверить снова

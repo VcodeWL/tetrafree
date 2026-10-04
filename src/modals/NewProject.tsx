@@ -61,7 +61,8 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
 
   const s = slug(name)
   const target = mode === 'new' ? (parent && s ? join(parent.trim(), s, sep) : '') : folder.trim()
-  const projName = mode === 'new' ? s : slug(name) || slug(baseName(folder))
+  /* имя папки для нового проекта — латиница; открытая папка сохраняет своё настоящее название */
+  const projName = mode === 'new' ? s : (name.trim() || baseName(folder)).slice(0, 60)
   const dup = projects.find((p) => p.path && p.path.replace(/[\\/]+$/, '') === target.replace(/[\\/]+$/, ''))
   const nameErr =
     mode === 'new' && name.trim() && !s
@@ -255,8 +256,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
                   value={folder}
                   onChange={(e) => {
                     setFolder(e.target.value)
-                    if (!name.trim() || name === slug(baseName(folder)))
-                      setName(slug(baseName(e.target.value)))
+                    if (!name.trim() || name === baseName(folder)) setName(baseName(e.target.value))
                   }}
                   placeholder="C:\Users\you\work\my-app"
                   spellCheck={false}
@@ -275,7 +275,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
             <label htmlFor="np-name2">Название проекта</label>
             <input
               id="np-name2"
-              value={name || slug(baseName(folder))}
+              value={name || baseName(folder)}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && ready && void create()}
             />

@@ -47,15 +47,16 @@ export function fireTrigger(pid: ID, ev: TriggerEvent) {
   fireTimer = window.setTimeout(async () => {
     const st = S()
     const p = st.projects.find((x) => x.id === pid)
-    if (!p?.deploy.auto || st.projectId !== pid || !backendOnline()) return
-    for (const d of pipelinesFor(pipelinesOf(p.files), ev)) await runPipeline(d.name)
+    if (!p?.deploy.auto || !backendOnline()) return
+    for (const d of pipelinesFor(pipelinesOf(p.files), ev)) await runPipeline(d.name, pid)
   }, 2500)
 }
 export const pipelineRunning = () => active !== null
 
-export async function runPipeline(name = 'release') {
+/** pid — для какого проекта запуск; по умолчанию открытый (триггер мог сработать, пока пользователь уже переключился) */
+export async function runPipeline(name = 'release', forPid?: ID) {
   const st = S()
-  const pid = st.projectId
+  const pid = forPid ?? st.projectId
   if (!pid) return
   if (active) {
     toast({ title: 'Пайплайн уже идёт', desc: 'Дождись окончания текущего запуска', icon: 'clock' })

@@ -7,7 +7,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useStore } from '../store'
 import { PROMPT, COMPLETIONS } from '../lib/shell'
 import { Icon } from '../components/ui/Icon'
-import { backendOnline, bExec, useBackend } from '../lib/backend'
+import { backendOnline, serverOnline, bExec, useBackend } from '../lib/backend'
 import { attachPty, killPty, type PtyHandle } from '../lib/pty'
 import {
   MAX_TABS,
@@ -200,7 +200,9 @@ function TermPane({ pid, tabId, active }: { pid: string; tabId: string; active: 
     term.writeln(
       backendOnline()
         ? '\x1b[38;2;143;230;192mShell\x1b[0m в папке проекта на диске. Интерактивный ввод (stdin) в этом режиме не поддерживается — для долгих команд используй Ctrl+C.'
-        : '\x1b[38;2;255;154;154mСервер TetraFree не запущен\x1b[0m — терминалу нужен бэкенд (десктопная сборка запускает его сама, в браузере: npm run server).',
+        : serverOnline()
+          ? '\x1b[38;2;255;154;154mТерминал доступен после входа в аккаунт\x1b[0m — сервер работает, но в локальном режиме без аккаунта он не пускает к диску и shell.'
+          : '\x1b[38;2;255;154;154mСервер TetraFree не запущен\x1b[0m — терминалу нужен бэкенд (десктопная сборка запускает его сама, в браузере: npm run server).',
     )
     prompt()
     const ro = new ResizeObserver(() => {

@@ -70,7 +70,7 @@ export const projectsActions = (
     }),
   createProject: ({ name, path, template, adopt }) => {
     const id = 'p' + uid()
-    const clean = slug(name) || name
+    const clean = adopt ? name.trim() || name : slug(name) || name
     set((s) => {
       const files: Record<string, string> = adopt ? {} : templateFiles(template, clean)
       const p = emptyProject({

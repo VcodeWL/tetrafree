@@ -29,7 +29,7 @@ export function resolveModel() {
   const [pid, mid] = st.model.split(/:(.+)/)
   const provider = st.providers.find((p) => p.id === pid && p.on)
   const model = provider?.models.find((m) => m.id === mid)
-  const liveOk = !!provider && (!!provider.apiKey || provider.kind === 'ollama')
+  const liveOk = !!provider && !!model && (!!provider.apiKey || provider.kind === 'ollama')
   return { provider, model, live: liveOk, label: model?.name || 'модель не выбрана' }
 }
 

@@ -1,5 +1,5 @@
 import { isVaulted, vaultMode } from '../lib/vault'
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { DateField } from '../components/ui/DateField'
 import { useStore, useProject, toast, actorName } from '../store'
 import { Icon, BrandIcon } from '../components/ui/Icon'
@@ -12,7 +12,8 @@ import { REPEAT_LABEL, canBlock, type Repeat } from '../lib/taskrel'
 import { streamChat, listModels } from '../agent/llm'
 import { sendMessage } from '../agent/engine'
 import { COLS, PRIO } from '../workspace/TasksView'
-import { Shortcuts } from './Settings'
+/* Settings — тяжёлый, грузим отдельным чанком, а не в главный бандл */
+const Shortcuts = lazy(() => import('./Settings').then((m) => ({ default: m.Shortcuts })))
 import {
   TIERS,
   type Actor,
@@ -490,7 +491,9 @@ export function ShortcutsModal() {
     <Modal label="Горячие клавиши" wide>
       <MHead icon="keyboard" title="Горячие клавиши" />
       <div className="sc-in">
-        <Shortcuts />
+        <Suspense fallback={<div className="sd">Загружаю…</div>}>
+          <Shortcuts />
+        </Suspense>
       </div>
     </Modal>
   )
