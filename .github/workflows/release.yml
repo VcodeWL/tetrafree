@@ -1,0 +1,49 @@
+name: Release
+# Релиз: git tag v1.24.0 && git push --tags — соберёт установщик Windows, подпишет и выложит в GitHub Releases
+# вместе с latest.json, по которому приложение находит обновления.
+# Нужно один раз: npx tauri signer generate -w tetrafree.key; затем
+#   Secrets:   TAURI_SIGNING_PRIVATE_KEY (содержимое tetrafree.key), TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#   Variables: TAURI_UPDATER_PUBKEY (содержимое tetrafree.key.pub)
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with: { workspaces: src-tauri }
+      - run: npm ci
+      - name: Node.js как sidecar (сервер работает без установленного Node)
+        run: node scripts/prepare-sidecar.mjs
+      - name: Подставить адрес обновлений и публичный ключ
+        shell: node {0}
+        run: |
+          const fs = require('fs')
+          const p = 'src-tauri/tauri.updater.conf.json'
+          const c = JSON.parse(fs.readFileSync(p, 'utf8'))
+          const key = process.env.PUBKEY
+          if (!key) throw new Error('Не задана переменная TAURI_UPDATER_PUBKEY')
+          c.plugins.updater.pubkey = key
+          c.plugins.updater.endpoints = [`https://github.com/${process.env.REPO}/releases/latest/download/latest.json`]
+          fs.writeFileSync(p, JSON.stringify(c, null, 2))
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          REPO: ${{ github.repository }}
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'TetraFree ${{ github.ref_name }}'
+          releaseBody: 'Список изменений — в приложении: Настройки → Что нового.'
+          releaseDraft: false
+          args: --features extras,updater --config src-tauri/tauri.updater.conf.json

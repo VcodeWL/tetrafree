@@ -1,0 +1,11 @@
+name: Идея
+description: Предложить улучшение
+labels: [enhancement]
+body:
+  - type: textarea
+    id: why
+    attributes: { label: Какую задачу это решает }
+    validations: { required: true }
+  - type: textarea
+    id: how
+    attributes: { label: Как вы себе это представляете }

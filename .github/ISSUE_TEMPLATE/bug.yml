@@ -1,0 +1,21 @@
+name: Ошибка
+description: Что-то работает не так
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes: { label: Что произошло, description: Что ожидалось и что получилось }
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes: { label: Шаги воспроизведения, placeholder: "1. …\n2. …" }
+    validations: { required: true }
+  - type: input
+    id: ver
+    attributes: { label: Версия TetraFree и Windows, placeholder: "2.5.0 / Windows 11 23H2" }
+    validations: { required: true }
+  - type: textarea
+    id: diag
+    attributes:
+      label: Диагностика
+      description: Настройки → Что нового → «Скопировать диагностику». Ключи и файлы в неё не попадают.
