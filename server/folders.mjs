@@ -15,3 +15,9 @@ export function checkFolder(raw, home = os.homedir()) {
   if (abs === path.resolve(home)) throw bad('Выбери подпапку: домашняя папка целиком не подходит для проекта')
   return abs
 }
+
+/** Диски Windows для выбора папки: только существующие, без дублей (exists — проверка наличия пути) */
+export const winDrives = (exists) =>
+  [...'CDEFGHIJKLMNOPQRSTUVWXYZ']
+    .filter((L) => exists(L + ':\\'))
+    .map((L) => ({ name: L + ':', path: L + ':\\' }))

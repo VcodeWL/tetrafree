@@ -1,3 +1,4 @@
+import { useStoreWithEqualityFn } from 'zustand/traditional'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import type { Block, BlockType, Doc } from '../types'
@@ -90,7 +91,8 @@ export function DocView({ doc }: { doc: Doc }) {
   }
   const done = blocks.filter((b) => b.type === 'todo' && b.checked).length,
     todos = blocks.filter((b) => b.type === 'todo').length
-  const links = useStore(
+  const links = useStoreWithEqualityFn(
+    useStore,
     (x) => {
       const p = x.projects.find((q) => q.id === x.projectId)
       return p ? backlinks(doc, p.docs, p.tasks) : []
@@ -102,10 +104,24 @@ export function DocView({ doc }: { doc: Doc }) {
     0,
   )
 
+  /* новый пустой документ: сразу в название, текст «Без названия» выделен — можно печатать */
+  const titleRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    const d = useStore
+      .getState()
+      .projects.find((q) => q.id === useStore.getState().projectId)
+      ?.docs.find((x) => x.id === doc.id)
+    if (d && d.title === 'Без названия' && d.blocks.length === 1 && !blockText(d.blocks[0]).trim()) {
+      titleRef.current?.focus()
+      titleRef.current?.select()
+    }
+  }, [doc.id])
+
   return (
     <div className="doc">
       <div className="doc-in">
         <input
+          ref={titleRef}
           className="dtitle"
           value={doc.title}
           placeholder="Без названия"

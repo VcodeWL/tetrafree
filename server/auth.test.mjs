@@ -292,16 +292,29 @@ test('PTY: настоящий терминал отвечает на ввод и
     }
   })()
   const send = (s) => call('POST', '/api/pty/input', { sid, d: Buffer.from(s).toString('base64') }, tk)
-  await send('echo $((6*7))_ok; test -t 0 && echo istty; stty size\n')
-  for (let i = 0; i < 50 && !/30 100/.test(out); i++) await new Promise((r) => setTimeout(r, 100))
+  /* на Windows терминал — PowerShell (ConPTY): там нет && и stty, ширину спрашиваем у хоста */
+  const win = process.platform === 'win32'
+  const q = win ? '$Host.UI.RawUI.WindowSize.Width\r\n' : 'stty size\n'
+  await send(
+    win ? 'Write-Output ("{0}_ok" -f (6*7)); ' + q : 'echo $((6*7))_ok; test -t 0 && echo istty; ' + q,
+  )
+  const sz = (c, r) => (win ? new RegExp('(^|\\s)' + c + '(\\s|$)') : new RegExp(r + ' ' + c))
+  for (let i = 0; i < 80 && !(/42_ok/.test(out) && sz(100, 30).test(out)); i++)
+    await new Promise((r) => setTimeout(r, 100))
   assert.match(out, /42_ok/)
-  assert.match(out, /istty/)
-  assert.match(out, /30 100/)
+  if (!win) assert.match(out, /istty/)
+  assert.match(out, sz(100, 30))
   await call('POST', '/api/pty/resize', { sid, cols: 120, rows: 40 }, tk)
-  await send('stty size\n')
-  for (let i = 0; i < 50 && !/40 120/.test(out); i++) await new Promise((r) => setTimeout(r, 100))
-  assert.match(out, /40 120/)
+  await send(q)
+  for (let i = 0; i < 80 && !sz(120, 40).test(out); i++) await new Promise((r) => setTimeout(r, 100))
+  assert.match(out, sz(120, 40))
   await call('POST', '/api/pty/close', { sid }, tk)
   ac.abort()
   await pump
+})
+
+test('health: версия сервера берётся из package.json, а не зашита', async () => {
+  const h = await (await fetch(B + '/api/health')).json()
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(h.version, pkg.version)
 })

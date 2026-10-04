@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { checkFolder } from './folders.mjs'
+import { checkFolder, winDrives } from './folders.mjs'
 
 const home = path.resolve('/home/u')
 test('относительный и пустой путь отклоняются', () => {
@@ -17,4 +17,19 @@ test('корень диска и домашняя папка целиком не
 test('обычный абсолютный путь нормализуется', () => {
   assert.equal(checkFolder(home + '/work/../app/', home), path.join(home, 'app'))
   assert.equal(checkFolder('  ' + home + '/a  ', home), path.join(home, 'a'))
+})
+
+test('winDrives: только существующие диски, без фантомных записей', () => {
+  const have = new Set(['C:\\', 'D:\\'])
+  assert.deepEqual(
+    winDrives((p) => have.has(p)),
+    [
+      { name: 'C:', path: 'C:\\' },
+      { name: 'D:', path: 'D:\\' },
+    ],
+  )
+  assert.deepEqual(
+    winDrives(() => false),
+    [],
+  )
 })

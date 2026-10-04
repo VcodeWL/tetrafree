@@ -5,7 +5,7 @@
    • прокси к LLM-провайдерам (обходит CORS)
    • статический превью-сервер /preview/<имя>/…
    Запуск: встроен в `npm run dev` (vite-плагин) или отдельно `npm run server` (порт 3001). */
-import { nameFor, isBackupName, stale } from './backups.mjs'
+import { nameFor, isBackupName, stale, staleTmp } from './backups.mjs'
 import http from 'node:http'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -14,7 +14,7 @@ import os from 'node:os'
 import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { mailMode } from './mail.mjs'
-import { checkFolder, bad } from './folders.mjs'
+import { checkFolder, bad, winDrives } from './folders.mjs'
 import { makeIgnore } from './ignore.mjs'
 import { ptyRoutes, hasPty } from './pty.mjs'
 import { createVault, secretRoutes } from './secrets.mjs'
@@ -35,14 +35,29 @@ const SKIP = new Set([
 ])
 const MAX_FILE = 1024 * 1024
 const MAX_DIFF = 300 * 1024
-const VERSION = '1.0.0'
+const VERSION = (() => {
+  if (process.env.TF_VERSION) return process.env.TF_VERSION
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  } catch {
+    return 'dev' /* в установленной сборке package.json рядом с server/ нет */
+  }
+})()
 let HAS_GIT = false
-try {
-  execFileSync('git', ['--version'], { stdio: 'ignore' })
-  HAS_GIT = true
-} catch {
-  /* git не установлен */
+let gitCheckedAt = 0
+/* git могли поставить уже после запуска сервера: пока его нет, перепроверяем не чаще раза в 20 секунд */
+function hasGit() {
+  if (HAS_GIT || Date.now() - gitCheckedAt < 20000) return HAS_GIT
+  gitCheckedAt = Date.now()
+  try {
+    execFileSync('git', ['--version'], { stdio: 'ignore', timeout: 5000 })
+    HAS_GIT = true
+  } catch {
+    /* git не установлен */
+  }
+  return HAS_GIT
 }
+hasGit()
 
 const safeName = (s) =>
   String(s || 'project')
@@ -180,7 +195,7 @@ function git(dir, args, timeout = 0, input = null) {
   })
 }
 async function ensureGit(dir) {
-  if (!HAS_GIT) return false
+  if (!hasGit()) return false
   if (!fs.existsSync(path.join(dir, '.git'))) {
     await git(dir, ['init', '-q', '-b', 'main'])
     await fsp
@@ -257,7 +272,7 @@ async function handle(req, res, isLocal) {
       root: ROOT,
       home: os.homedir(),
       sep: path.sep,
-      git: HAS_GIT,
+      git: hasGit(),
       node: process.version,
       platform: process.platform,
       shell: process.platform === 'win32' ? 'cmd' : process.env.SHELL || 'sh',
@@ -285,10 +300,7 @@ async function handle(req, res, isLocal) {
       /* корень выбора: домой, папка по умолчанию и (на Windows) диски */
       const roots = [{ name: 'Домашняя папка', path: os.homedir() }]
       if (fs.existsSync(ROOT)) roots.push({ name: 'Папка проектов TetraFree', path: ROOT })
-      if (process.platform === 'win32')
-        for (const L of 'CDEFGHIJKLMNOPQRSTUVWXYZ')
-          if (fs.existsSync(L + ':\\')) roots.push({ name: L + ':', path: L + ':\\' })
-          else roots.push({ name: '/', path: '/' })
+      if (process.platform === 'win32') roots.push(...winDrives(fs.existsSync))
       return json(res, 200, {
         dir: '',
         parent: null,
@@ -407,9 +419,20 @@ async function handle(req, res, isLocal) {
       await fsp.mkdir(dir, { recursive: true })
       const name = nameFor(new Date())
       const tmp = path.join(dir, name + '.tmp')
-      await fsp.writeFile(tmp, JSON.stringify(data))
-      await fsp.rename(tmp, path.join(dir, name))
-      for (const old of stale(await fsp.readdir(dir), 14)) await fsp.rm(path.join(dir, old), { force: true })
+      try {
+        await fsp.writeFile(tmp, JSON.stringify(data))
+        await fsp.rename(tmp, path.join(dir, name))
+      } catch (e) {
+        await fsp.rm(tmp, { force: true }) /* не оставляем половину файла */
+        throw e
+      }
+      const left = await fsp.readdir(dir)
+      for (const old of stale(left, 14)) await fsp.rm(path.join(dir, old), { force: true })
+      for (const t of staleTmp(left)) {
+        /* свежий .tmp может принадлежать соседней записи — трогаем только старше минуты */
+        const st = await fsp.stat(path.join(dir, t)).catch(() => null)
+        if (st && Date.now() - st.mtimeMs > 60000) await fsp.rm(path.join(dir, t), { force: true })
+      }
     }
     const names = (await fsp.readdir(dir).catch(() => [])).filter(isBackupName).sort().reverse()
     const list = []
@@ -955,7 +978,10 @@ export function tetraMiddleware() {
       return json(res, 403, {
         error: { message: 'TetraFree backend принимает запросы только с этого компьютера' },
       })
-    const isLocal = localHost
+    /* заголовок Host подделывается, поэтому «локально» — это ещё и петля на уровне сокета (важно при HOST=0.0.0.0) */
+    const addr = String(req.socket?.remoteAddress || '')
+    const loopback = addr === '::1' || addr === '127.0.0.1' || addr.startsWith('::ffff:127.') || addr === ''
+    const isLocal = localHost && loopback
     handle(req, res, isLocal)
       .then((r) => {
         if (r === false) next()
@@ -996,7 +1022,7 @@ export function start(port = +(process.env.PORT || 3001), host = process.env.HOS
   const srv = http.createServer((req, res) => mw(req, res, () => serveStatic(req, res)))
   srv.listen(port, host, () =>
     console.log(
-      `TetraFree backend → http://${host}:${port}  ·  проекты: ${ROOT}  ·  git: ${HAS_GIT ? 'да' : 'нет'}`,
+      `TetraFree backend → http://${host}:${port}  ·  проекты: ${ROOT}  ·  git: ${hasGit() ? 'да' : 'нет'}`,
     ),
   )
   return srv

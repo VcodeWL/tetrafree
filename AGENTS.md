@@ -25,7 +25,7 @@ npm run desktop:build:full   # установщик с автообновлен�
 4. Новый модуль в `server/`, импортируемый из другого — обязательно добавь в `bundle.resources` (`src-tauri/tauri.conf.json`); тест `server/bundle.test.mjs` это проверяет.
 5. Интерфейс на русском, доступность (axe) без нарушений, учитывай «Меньше анимации» (`html.reduced`).
 6. Новый CSS — в конец `src/styles/app.css`; `components.css` грузится позже и может переопределять.
-7. Ключи API никогда не пишутся в localStorage, логи и бэкапы (`src/lib/vault.ts`, `server/secrets.mjs`).
+7. Ключи API не пишутся в localStorage, логи и бэкапы (`src/lib/vault.ts`, `server/secrets.mjs`). Единственное исключение — сервер недоступен: тогда ключ остаётся в localStorage, пока хранилище не ответит, и сразу уходит в него.
 8. Картинки хранятся как base64 в `binary-assets/`; после замены файла выполни `node scripts/restore-binaries.mjs --pack`.
 9. Честность: если что-то не удалось проверить (нет Windows, Rust, ключа), пиши это явно в описании PR и в changelog.
 

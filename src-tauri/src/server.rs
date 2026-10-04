@@ -66,7 +66,7 @@ pub fn spawn(app: &AppHandle) -> Result<Child, String> {
     let log = log_path().and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
 
     let mut cmd = Command::new(&node);
-    cmd.arg(&script).env("TF_SERVE", "1").stdin(Stdio::null());
+    cmd.arg(&script).env("TF_SERVE", "1").env("TF_VERSION", env!("CARGO_PKG_VERSION")).stdin(Stdio::null());
     match log.and_then(|f| f.try_clone().ok().map(|g| (f, g))) {
         Some((o, e)) => {
             cmd.stdout(o).stderr(e);

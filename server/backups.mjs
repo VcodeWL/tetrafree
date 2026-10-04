@@ -11,3 +11,6 @@ export function stale(names, keep) {
   const own = names.filter(isBackupName).sort()
   return own.slice(0, Math.max(0, own.length - Math.max(1, keep)))
 }
+/** Недописанные временные файлы от сбоя записи (имя автокопии + .tmp) — их можно удалять */
+export const staleTmp = (names) =>
+  names.filter((n) => isBackupName(n.replace(/\.tmp$/, '')) && n.endsWith('.tmp'))

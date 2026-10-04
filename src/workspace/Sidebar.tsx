@@ -189,7 +189,9 @@ export function Sidebar() {
           </div>
         ))}
         {!p.docs.length && (
-          <div className="empty-li">Заметки живут рядом с кодом в docs/ и открываются в Obsidian.</div>
+          <div className="empty-li">
+            Заметки команды хранятся в проекте. Любой документ можно скачать как .md.
+          </div>
         )}
         <div className="sg-head">Планирование</div>
         <div
