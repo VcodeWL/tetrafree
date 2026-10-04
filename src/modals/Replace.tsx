@@ -99,7 +99,7 @@ export function ReplaceModal({ find: f0 = '' }: { find?: string }) {
           Регулярное выражение
         </label>
       </div>
-      <div className="rp-list" role="list">
+      <div className="rp-list" role={q && !res.err && res.hits.length ? 'list' : undefined}>
         {!q ? (
           <div className="rp-none">Введи, что искать — покажу файлы до замены.</div>
         ) : res.err ? null : res.hits.length === 0 ? (

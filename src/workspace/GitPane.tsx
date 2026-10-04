@@ -803,7 +803,7 @@ function GitDiff({
             {view.kind === 'file' ? 'Изменений нет — файл совпадает с последним коммитом.' : 'Пустой коммит.'}
           </div>
         ) : (
-          <div className="gdtab" role="table" aria-label="Изменения">
+          <div className="gdtab" role="group" aria-label="Изменения">
             {lines.map((l, i) => {
               const h = l.t === 'hunk' ? ++hn : -1
               return (

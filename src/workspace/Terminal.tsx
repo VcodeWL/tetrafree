@@ -381,34 +381,36 @@ export function Dock() {
         <span className="dock-t">
           <Icon name="terminal" size={13} />
         </span>
-        <div className="dtabs" role="tablist" aria-label="Вкладки терминала">
-          {ts.tabs.map((t) => (
-            <div
-              key={t.id}
-              role="tab"
-              tabIndex={0}
-              aria-selected={t.id === ts.active}
-              className={'dtab' + (t.id === ts.active ? ' on' : '')}
-              onClick={() => updateTabs(pid, (s) => pickTab(s, t.id))}
-              onAuxClick={(e) => e.button === 1 && close(t.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') updateTabs(pid, (s) => pickTab(s, t.id))
-              }}
-            >
-              Терминал {t.n}
-              <button
-                className="dtab-x"
-                aria-label={`Закрыть терминал ${t.n}`}
-                title="Закрыть вкладку"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  close(t.id)
+        <div className="dtabs">
+          <div className="dtabs-list" role="tablist" aria-label="Вкладки терминала">
+            {ts.tabs.map((t) => (
+              <div
+                key={t.id}
+                role="tab"
+                tabIndex={0}
+                aria-selected={t.id === ts.active}
+                className={'dtab' + (t.id === ts.active ? ' on' : '')}
+                onClick={() => updateTabs(pid, (s) => pickTab(s, t.id))}
+                onAuxClick={(e) => e.button === 1 && close(t.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') updateTabs(pid, (s) => pickTab(s, t.id))
                 }}
               >
-                <Icon name="x" size={10} />
-              </button>
-            </div>
-          ))}
+                Терминал {t.n}
+                <button
+                  className="dtab-x"
+                  aria-label={`Закрыть терминал ${t.n}`}
+                  title="Закрыть вкладку"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    close(t.id)
+                  }}
+                >
+                  <Icon name="x" size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
           <button
             className="iconbtn sm"
             title="Новая вкладка терминала"

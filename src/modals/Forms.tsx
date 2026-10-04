@@ -166,8 +166,9 @@ export function ProviderModal({ id }: { id?: string }) {
           />
         </div>
         <div className="field">
-          <label>Базовый адрес</label>
+          <label htmlFor="pv-base">Базовый адрес</label>
           <input
+            id="pv-base"
             className="mono"
             value={p.baseUrl}
             onChange={(e) => set({ baseUrl: e.target.value.trim() })}
@@ -710,7 +711,12 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
       <div className="fgrid">
         <div className="field">
           <label>Статус</label>
-          <select className="sel" value={stt} onChange={(e) => setStt(e.target.value as TaskStatus)}>
+          <select
+            className="sel"
+            aria-label="Статус"
+            value={stt}
+            onChange={(e) => setStt(e.target.value as TaskStatus)}
+          >
             {COLS.map((c) => (
               <option key={c.k} value={c.k}>
                 {c.t}
@@ -722,7 +728,12 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
           <label>Исполнитель</label>
           <div className="selwrap">
             <ActorAv actor={who} size={18} />
-            <select className="sel" value={whoKey(who)} onChange={(e) => setWho(fromKey(e.target.value))}>
+            <select
+              className="sel"
+              aria-label="Исполнитель"
+              value={whoKey(who)}
+              onChange={(e) => setWho(fromKey(e.target.value))}
+            >
               <option value="">Не назначена</option>
               <optgroup label="Люди">
                 {p.members
@@ -782,7 +793,12 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
       <div className="fgrid">
         <div className="field">
           <label>Повтор</label>
-          <select className="sel" value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat | '')}>
+          <select
+            className="sel"
+            aria-label="Повтор"
+            value={repeat}
+            onChange={(e) => setRepeat(e.target.value as Repeat | '')}
+          >
             <option value="">Не повторяется</option>
             {(Object.keys(REPEAT_LABEL) as Repeat[]).map((k) => (
               <option key={k} value={k}>

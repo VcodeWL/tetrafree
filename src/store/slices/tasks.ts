@@ -2,7 +2,7 @@ import { upsert as upsertView } from '../../lib/taskviews'
 import type { Task } from '../../types'
 import { uid, localDay } from '../../lib/util'
 import { current } from 'immer'
-import { spawnNext, openBlockers } from '../../lib/taskrel'
+import { spawnNext, openBlockers, canBlock } from '../../lib/taskrel'
 import { tomb, find } from '../helpers'
 import type { SetState, GetState, Actions } from '../types'
 
@@ -23,7 +23,11 @@ export const tasksActions = (
       if (ex) {
         if (t.status === 'done' && ex.status !== 'done')
           again = spawnNext({ ...current(ex), ...t } as Task, localDay())
-        Object.assign(ex, t, { updatedAt: Date.now() })
+        /* зависимость, замыкающая цикл (A ждёт B, B ждёт A), не принимается — и из интерфейса, и от агента */
+        const patch = t.blockedBy
+          ? { ...t, blockedBy: t.blockedBy.filter((b) => canBlock(p.tasks, ex.id, b)) }
+          : t
+        Object.assign(ex, patch, { updatedAt: Date.now() })
         return
       }
       id = 't' + uid()

@@ -568,6 +568,7 @@ function List({ tasks, sel, toggle }: { tasks: Task[]; sel: string[]; toggle: (i
                   className={'cbx' + (t.status === 'done' ? ' done' : '')}
                   role="checkbox"
                   aria-checked={t.status === 'done'}
+                  aria-label={`Готово: ${t.title}`}
                   onClick={(e) => {
                     e.stopPropagation()
                     st().moveTask(t.id, t.status === 'done' ? 'doing' : 'done')

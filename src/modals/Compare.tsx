@@ -86,7 +86,7 @@ export function CompareModal({ a: a0, b: b0 }: { a?: string; b?: string }) {
         ) : same ? (
           <div className="git-none">Файлы совпадают.</div>
         ) : (
-          <div className="gdtab" role="table">
+          <div className="gdtab" role="group" aria-label="Различия">
             {rows.map((r, i) =>
               'ia' in r ? (
                 <div key={i} className={'gdr ' + (r.t === '+' ? 'add' : r.t === '-' ? 'del' : 'ctx')}>

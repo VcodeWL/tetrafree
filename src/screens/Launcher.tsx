@@ -307,7 +307,7 @@ export function Launcher() {
                 <Icon name={p.icon} size={22} />
               </span>
               <div className="pmid">
-                <h3>
+                <h3 aria-level={2}>
                   {p.name}
                   {p.pinned && <Icon name="pin" size={13} className="pinned-ic" />}
                   {p.lanes.length > 0 && (

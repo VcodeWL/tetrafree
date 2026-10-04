@@ -475,7 +475,7 @@ async function handle(req, res, isLocal) {
   }
   /* инкрементальные правки */
   if (u.pathname === '/api/fs/batch' && req.method === 'POST') {
-    const { id, name, folder, write = {}, remove = [] } = await readBody(req)
+    const { id, name, folder, write = {}, remove = [], mkdirs = [], rmdirs = [] } = await readBody(req)
     const dir = await projectDir(id, name, folder)
     for (const [rel, content] of Object.entries(write)) {
       const abs = inside(dir, rel)
@@ -486,6 +486,13 @@ async function handle(req, res, isLocal) {
       const abs = inside(dir, rel)
       await fsp.rm(abs, { force: true, recursive: true })
       await pruneEmpty(path.dirname(abs), dir)
+    }
+    /* пустые папки, созданные в приложении; rmdir (не rm -r) — непустую папку не тронет */
+    for (const rel of mkdirs) await fsp.mkdir(inside(dir, rel), { recursive: true })
+    for (const rel of rmdirs) {
+      const abs = inside(dir, rel)
+      await fsp.rmdir(abs).catch(() => {})
+      await pruneEmpty(path.dirname(abs), dir) /* родитель мог остаться пустым */
     }
     return json(res, 200, { ok: true, dir })
   }

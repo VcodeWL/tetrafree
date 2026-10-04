@@ -33,6 +33,22 @@ const loadBase = (pid: string) => {
   }
   return baseline.get(pid)!
 }
+/** пустые папки, которые приложение уже создало на диске (чтобы не слать повторно и уметь убрать) */
+const dirKey = (pid: string) => 'tf-dirs:' + pid
+const loadDirs = (pid: string): Set<string> => {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(dirKey(pid)) || '[]'))
+  } catch {
+    return new Set()
+  }
+}
+const saveDirs = (pid: string, s: Set<string>) => {
+  try {
+    localStorage.setItem(dirKey(pid), JSON.stringify([...s]))
+  } catch {
+    /* квота */
+  }
+}
 const saveBase = (pid: string) => {
   try {
     localStorage.setItem(KEY(pid), JSON.stringify(baseline.get(pid) || {}))
@@ -166,11 +182,20 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
         }
       }
     })
-    if (Object.keys(write).length || remove.length) {
-      await bBatch(proj, write, remove)
+    /* пустые папки из дерева приложения → на диск; убранные из дерева — удалить, если пусты */
+    const pj = proj
+    const hasFile = (d: string) => Object.keys(files).some((f) => f.startsWith(d + '/'))
+    const emptyNow = pj.dirs.filter((d) => !hasFile(d))
+    const madeDirs = loadDirs(pid)
+    const mkdirs = emptyNow.filter((d) => !madeDirs.has(d))
+    const rmdirs = [...madeDirs].filter((d) => !pj.dirs.includes(d))
+    if (Object.keys(write).length || remove.length || mkdirs.length || rmdirs.length) {
+      await bBatch(proj, write, remove, { make: mkdirs, drop: rmdirs })
+      saveDirs(pid, new Set(emptyNow))
       sum.pushed = Object.keys(write).length
       sum.removed += remove.length
-    }
+    } else if (madeDirs.size !== emptyNow.length || emptyNow.some((d) => !madeDirs.has(d)))
+      saveDirs(pid, new Set(emptyNow))
     if (pull.length) {
       const r = await bRead(proj, pull)
       const got: Record<string, string> = {}

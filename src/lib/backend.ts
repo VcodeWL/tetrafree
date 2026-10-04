@@ -112,8 +112,13 @@ export async function backendFetch(url: string, init: RequestInit & { headers: R
 }
 
 export const bSync = (p: Project) => post<{ dir: string }>('/api/sync', { ...pj(p), files: p.files })
-export const bBatch = (p: ProjRef, write: Record<string, string>, remove: string[]) =>
-  post<{ dir: string }>('/api/fs/batch', { ...pj(p), write, remove })
+export const bBatch = (
+  p: ProjRef,
+  write: Record<string, string>,
+  remove: string[],
+  dirs?: { make?: string[]; drop?: string[] },
+) =>
+  post<{ dir: string }>('/api/fs/batch', { ...pj(p), write, remove, mkdirs: dirs?.make, rmdirs: dirs?.drop })
 export const bCommit = (p: ProjRef, message: string) =>
   post<{ ok: boolean; hash?: string }>('/api/git/commit', { ...pj(p), message })
 export type GitFile = {

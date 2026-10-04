@@ -50,7 +50,7 @@ export function TodayModal() {
         )}
         {d.needYou.length > 0 && (
           <section>
-            <h4>
+            <h4 aria-level={3}>
               Ждёт тебя<span>{d.needYou.length}</span>
             </h4>
             {d.needYou.map((c) => (
@@ -68,7 +68,7 @@ export function TodayModal() {
         )}
         {d.fire.length > 0 && (
           <section>
-            <h4>
+            <h4 aria-level={3}>
               Горит<span>{d.fire.length}</span>
             </h4>
             {d.fire.map((f) => task(f.task, WHY[f.why]))}
@@ -76,7 +76,7 @@ export function TodayModal() {
         )}
         {d.running.length > 0 && (
           <section>
-            <h4>
+            <h4 aria-level={3}>
               Агенты работают<span>{d.running.length}</span>
             </h4>
             {d.running.map((c) => (
@@ -94,7 +94,7 @@ export function TodayModal() {
         )}
         {d.doing.length > 0 && (
           <section>
-            <h4>
+            <h4 aria-level={3}>
               В работе<span>{d.doing.length}</span>
             </h4>
             {d.doing.map((t) => task(t, t.status === 'review' ? 'ревью' : undefined))}
@@ -102,7 +102,7 @@ export function TodayModal() {
         )}
         {d.blocked.length > 0 && (
           <section>
-            <h4>
+            <h4 aria-level={3}>
               Заблокировано<span>{d.blocked.length}</span>
             </h4>
             {d.blocked.map((b) => task(b.task, 'ждёт ' + b.by.map((x) => 'T-' + x.key).join(', ')))}

@@ -286,7 +286,7 @@ export function VersionsModal({ focus }: { focus?: number }) {
                 </button>
               </div>
               {isOpen && (
-                <div className="dcode">
+                <div className="dcode" tabIndex={0}>
                   {lines.slice(0, 400).map((l, i) =>
                     l.t === 'gap' ? (
                       <div key={i} className="dl gap">
