@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TetraFree",
+  "version": "2.5.0",
+  "identifier": "dev.tetrafree.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "TetraFree",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "center": true,
+        "decorations": false,
+        "transparent": false,
+        "resizable": true,
+        "backgroundColor": "#070709"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Совместная разработка с ИИ-агентами",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../server/tetra-server.mjs": "server/tetra-server.mjs",
+      "../server/auth.mjs": "server/auth.mjs",
+      "../server/backups.mjs": "server/backups.mjs",
+      "../server/folders.mjs": "server/folders.mjs",
+      "../server/gitparse.mjs": "server/gitparse.mjs",
+      "../server/ignore.mjs": "server/ignore.mjs",
+      "../server/mail.mjs": "server/mail.mjs",
+      "../server/pty.mjs": "server/pty.mjs",
+      "../server/secrets.mjs": "server/secrets.mjs",
+      "../server/conpty-win.mjs": "server/conpty-win.mjs"
+    },
+    "externalBin": [
+      "binaries/node"
+    ]
+  }
+}

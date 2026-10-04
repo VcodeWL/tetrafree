@@ -1,0 +1,10 @@
+{
+  "bundle": { "createUpdaterArtifacts": true },
+  "plugins": {
+    "updater": {
+      "pubkey": "ВСТАВЬ_ПУБЛИЧНЫЙ_КЛЮЧ_ИЗ_tauri_signer_generate",
+      "endpoints": ["https://github.com/VcodeWL/tetrafree/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  }
+}

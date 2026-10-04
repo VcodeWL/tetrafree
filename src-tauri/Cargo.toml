@@ -1,0 +1,36 @@
+[package]
+name = "tetrafree"
+version = "2.5.0"
+description = "TetraFree — совместная разработка с ИИ-агентами"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "tetrafree_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-autostart = { version = "2", optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Системные функции Windows (автозапуск, трей, глобальная клавиша). Включение: npm run desktop:build:extras
+[features]
+default = []
+extras = ["dep:tauri-plugin-autostart", "dep:tauri-plugin-global-shortcut"]
+# Автообновление через GitHub Releases (нужен ключ подписи, см. .github/workflows/release.yml)
+updater = ["dep:tauri-plugin-updater"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

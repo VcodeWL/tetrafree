@@ -1,0 +1,57 @@
+{
+  "name": "tetrafree",
+  "private": true,
+  "version": "2.5.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "server": "node server/tetra-server.mjs",
+    "typecheck": "tsc -b",
+    "tauri": "tauri",
+    "postinstall": "node scripts/restore-binaries.mjs",
+    "sidecar": "node scripts/prepare-sidecar.mjs",
+    "desktop:dev": "npm run sidecar && tauri dev",
+    "desktop:build": "npm run sidecar && tauri build",
+    "desktop:build:extras": "npm run sidecar && tauri build --features extras",
+    "desktop:build:full": "npm run sidecar && tauri build --features extras,updater --config src-tauri/tauri.updater.conf.json",
+    "desktop:icons": "tauri icon public/logo.png",
+    "test": "node --test server/bundle.test.mjs server/secrets.test.mjs server/conpty.test.mjs server/folders.test.mjs server/ignore.test.mjs server/auth.test.mjs server/gitparse.test.mjs server/backups.test.mjs && tsx --test src/lib/vaultState.test.ts src/lib/merge3.test.ts src/lib/qr.test.ts src/lib/util.test.ts src/lib/paths.test.ts src/lib/ignore.test.ts src/lib/unidiff.test.ts src/lib/commitmsg.test.ts src/lib/todos.test.ts src/lib/usage.test.ts src/lib/taskrel.test.ts src/lib/replace.test.ts src/lib/today.test.ts src/lib/gitctx.test.ts src/lib/autobackup.test.ts src/lib/trash.test.ts src/lib/settingsIO.test.ts src/lib/keymap.test.ts src/lib/taskviews.test.ts src/lib/cal.test.ts src/lib/mdimport.test.ts src/lib/scripts.test.ts src/lib/backlinks.test.ts src/lib/docmd.test.ts src/lib/imgscale.test.ts src/lib/opstack.test.ts src/lib/a11y.test.ts src/lib/layout.test.ts src/lib/replay.test.ts src/lib/minimap.test.ts src/lib/hunkpick.test.ts src/lib/contrast.test.ts src/hooks/useFocus.test.ts src/lib/termtabs.test.ts src/lib/folds.test.ts src/agent/queue.test.ts src/agent/triggers.test.ts src/store/persistence.test.ts",
+    "check": "tsc -b && eslint src && prettier --check \"src/**/*.{ts,tsx,css}\" \"server/**/*.mjs\" --log-level warn && npm test",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"server/**/*.mjs\" \"*.{json,md}\" --log-level warn",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"server/**/*.mjs\" --log-level warn",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.0",
+    "@tauri-apps/plugin-opener": "^2.7.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "framer-motion": "^11.3.19",
+    "immer": "^10.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0",
+    "@types/node": "^26.6.4",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.71.0",
+    "vite": "^5.3.5"
+  },
+  "description": "TetraFree — десктоп-приложение для совместной разработки с ИИ-агентами (Tauri 2 + React)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VcodeWL/tetrafree.git"
+  },
+  "homepage": "https://github.com/VcodeWL/tetrafree"
+}
