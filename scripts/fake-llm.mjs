@@ -41,7 +41,7 @@ http
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
         for (let i = 0; i < text.length; i += 12) {
           send(res, { choices: [{ index: 0, delta: { content: text.slice(i, i + 12) } }] })
-          await new Promise((r) => setTimeout(r, 25))
+          await new Promise((r) => setTimeout(r, +(process.env.FAKE_DELAY || 25)))
         }
         send(res, {
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],

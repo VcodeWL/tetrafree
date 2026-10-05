@@ -477,15 +477,25 @@ async function handle(req, res, isLocal) {
   if (u.pathname === '/api/fs/batch' && req.method === 'POST') {
     const { id, name, folder, write = {}, remove = [], mkdirs = [], rmdirs = [] } = await readBody(req)
     const dir = await projectDir(id, name, folder)
+    /* один плохой файл (слишком длинное имя, занято другим процессом…) не должен ронять всю пачку */
+    const failed = []
     for (const [rel, content] of Object.entries(write)) {
-      const abs = inside(dir, rel)
-      await fsp.mkdir(path.dirname(abs), { recursive: true })
-      await fsp.writeFile(abs, content)
+      try {
+        const abs = inside(dir, rel)
+        await fsp.mkdir(path.dirname(abs), { recursive: true })
+        await fsp.writeFile(abs, content)
+      } catch (e) {
+        failed.push({ path: rel, code: e?.code || 'ERR', error: String(e?.message || e).slice(0, 160) })
+      }
     }
     for (const rel of remove) {
-      const abs = inside(dir, rel)
-      await fsp.rm(abs, { force: true, recursive: true })
-      await pruneEmpty(path.dirname(abs), dir)
+      try {
+        const abs = inside(dir, rel)
+        await fsp.rm(abs, { force: true, recursive: true })
+        await pruneEmpty(path.dirname(abs), dir)
+      } catch (e) {
+        failed.push({ path: rel, code: e?.code || 'ERR', error: String(e?.message || e).slice(0, 160) })
+      }
     }
     /* пустые папки, созданные в приложении; rmdir (не rm -r) — непустую папку не тронет */
     for (const rel of mkdirs) await fsp.mkdir(inside(dir, rel), { recursive: true })
@@ -494,7 +504,7 @@ async function handle(req, res, isLocal) {
       await fsp.rmdir(abs).catch(() => {})
       await pruneEmpty(path.dirname(abs), dir) /* родитель мог остаться пустым */
     }
-    return json(res, 200, { ok: true, dir })
+    return json(res, 200, { ok: true, dir, failed })
   }
   /* хеши файлов на диске — для подхвата правок из внешнего редактора */
   if (u.pathname === '/api/fs/hashes') {

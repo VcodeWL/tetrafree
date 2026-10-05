@@ -63,6 +63,8 @@ export function forgetBase(pid: string) {
   saveBase(pid)
 }
 const lostWarned = new Set<string>()
+/** путь → хеш версии (или 'rm'), которую не удалось записать на диск */
+const badPaths = new Map<string, Record<string, string>>()
 
 let seen = new WeakMap<object, true>()
 const busy = new Set<string>()
@@ -86,6 +88,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
   if (!proj || !syncEnabled()) return null
   busy.add(pid)
   useBackend.setState({ syncing: true })
+  let failed: { path: string; code: string; error: string }[] = []
   const sum = { pushed: 0, pulled: 0, removed: 0, conflicts: 0, truncated: false }
   try {
     /* проект из версий до 2.0 не знает свою папку — спрашиваем у сервера и запоминаем */
@@ -139,6 +142,12 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       const d = disk[path],
         s = store[path],
         b = base[path]
+      /* эту версию уже пытались записать/удалить — не вышло; ждём, пока файл изменят (иначе повтор каждые 2,5 с) */
+      const bad = badPaths.get(pid)?.[path]
+      if (bad !== undefined && (bad === 'rm' ? s === undefined : bad === s)) {
+        if (bad === 'rm' && b !== undefined) next[path] = b
+        return
+      }
       /* папка слишком большая и прочитана не вся: отсутствие файла на диске ничего не значит */
       if ((truncated || hidden(path)) && d === undefined && b !== undefined) {
         next[path] = b
@@ -190,7 +199,19 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     const mkdirs = emptyNow.filter((d) => !madeDirs.has(d))
     const rmdirs = [...madeDirs].filter((d) => !pj.dirs.includes(d))
     if (Object.keys(write).length || remove.length || mkdirs.length || rmdirs.length) {
-      await bBatch(proj, write, remove, { make: mkdirs, drop: rmdirs })
+      const r = await bBatch(proj, write, remove, { make: mkdirs, drop: rmdirs })
+      failed = r.failed || []
+      const bad: Record<string, string> = {}
+      for (const f of failed) {
+        if (f.path in write) {
+          bad[f.path] = store[f.path]
+          delete next[f.path]
+        } else {
+          bad[f.path] = 'rm'
+          if (base[f.path] !== undefined) next[f.path] = base[f.path]
+        }
+      }
+      badPaths.set(pid, { ...(badPaths.get(pid) || {}), ...bad })
       saveDirs(pid, new Set(emptyNow))
       sum.pushed = Object.keys(write).length
       sum.removed += remove.length
@@ -225,6 +246,25 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       committed.set(pid, last.n)
     }
     useBackend.setState({ lastSync: Date.now(), lastError: undefined })
+    if (failed.length) {
+      const why = (c: string) =>
+        c === 'ENAMETOOLONG'
+          ? 'слишком длинное имя'
+          : c === 'EBUSY' || c === 'EPERM' || c === 'EACCES'
+            ? 'нет доступа'
+            : c
+      const list = failed.slice(0, 3).map((f) => `${f.path.split('/').pop()} (${why(f.code)})`)
+      useBackend.setState({ lastError: `Не записано на диск: ${failed.length} ф.` })
+      toast({
+        title: 'Не удалось записать на диск',
+        desc:
+          list.join(', ') +
+          (failed.length > 3 ? ` и ещё ${failed.length - 3}` : '') +
+          '. Остальные файлы записаны.',
+        icon: 'warn',
+        tone: 'warn',
+      })
+    }
     if (sum.conflicts && !opts.quiet)
       toast({
         title: 'Файлы менялись и здесь, и на диске',

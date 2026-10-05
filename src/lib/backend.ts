@@ -118,7 +118,13 @@ export const bBatch = (
   remove: string[],
   dirs?: { make?: string[]; drop?: string[] },
 ) =>
-  post<{ dir: string }>('/api/fs/batch', { ...pj(p), write, remove, mkdirs: dirs?.make, rmdirs: dirs?.drop })
+  post<{ dir: string; failed?: { path: string; code: string; error: string }[] }>('/api/fs/batch', {
+    ...pj(p),
+    write,
+    remove,
+    mkdirs: dirs?.make,
+    rmdirs: dirs?.drop,
+  })
 export const bCommit = (p: ProjRef, message: string) =>
   post<{ ok: boolean; hash?: string }>('/api/git/commit', { ...pj(p), message })
 export type GitFile = {
