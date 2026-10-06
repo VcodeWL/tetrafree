@@ -704,6 +704,8 @@ const sendPresence = () => {
       () => {},
     )
 }
+/** где сейчас курсор в редакторе (файл и строка с 1) */
+export const currentCaret = () => myPos
 /** редактор сообщает, где курсор: коллеги увидят метку на этой строке */
 export function reportCaret(file: string, line: number) {
   if (myPos.file === file && myPos.line === line) return

@@ -21,6 +21,7 @@ export const ACTIONS: KeyAction[] = [
   { id: 'pipeline', label: 'Запустить пайплайн', def: 'Mod+Shift+R', ws: true },
   { id: 'project', label: 'Сменить проект', def: 'Mod+O', ws: true },
   { id: 'side', label: 'Показать / скрыть сайдбар', def: 'Mod+B', ws: true },
+  { id: 'editor', label: 'Открыть файл во внешнем редакторе', def: 'Mod+Shift+E', ws: true },
   { id: 'settings', label: 'Настройки', def: 'Mod+,' },
   { id: 'design', label: 'Режим дизайна', def: 'Mod+Shift+D', ws: true },
   { id: 'shortcuts', label: 'Горячие клавиши', def: 'Mod+/' },

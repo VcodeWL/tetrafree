@@ -14,6 +14,7 @@ export const HOTKEYS: { label: string; keys: string[]; id?: string }[] = [
   { id: 'pipeline', label: 'Запустить пайплайн', keys: [modKey, 'Shift', 'R'] },
   { id: 'project', label: 'Сменить проект', keys: [modKey, 'O'] },
   { id: 'side', label: 'Показать / скрыть сайдбар', keys: [modKey, 'B'] },
+  { id: 'editor', label: 'Открыть файл во внешнем редакторе', keys: [modKey, 'Shift', 'E'] },
   { id: 'settings', label: 'Настройки', keys: [modKey, ','] },
   { id: 'design', label: 'Режим дизайна', keys: [modKey, 'Shift', 'D'] },
   { id: 'shortcuts', label: 'Горячие клавиши', keys: [modKey, '/'] },

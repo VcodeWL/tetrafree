@@ -9,6 +9,7 @@ import { exportProject, importProjectFile } from '../lib/projectIO'
 import type { Lane, Project } from '../types'
 import { InviteCards } from '../modals/InviteGate'
 import { logout } from '../lib/account'
+import { openInEditor } from '../lib/editors'
 import { bReveal, bCheckFolder, backendOnline, useBackend } from '../lib/backend'
 import { Onboarding } from './Onboarding'
 
@@ -134,6 +135,7 @@ export function Launcher() {
             tone: 'warn',
           }),
       )
+    if (what === 'editor') void openInEditor(p.id)
     if (what === 'folder') st().openModal({ type: 'projectFolder', id: p.id })
     if (what === 'pin')
       st().up((x) => {
@@ -416,6 +418,7 @@ export function Launcher() {
             label="Показать в проводнике"
             onClick={() => act(menu.st!.data, 'reveal')}
           />
+          <MenuItem icon="code" label="Открыть в редакторе" onClick={() => act(menu.st!.data, 'editor')} />
           <MenuItem icon="folder" label="Сменить папку…" onClick={() => act(menu.st!.data, 'folder')} />
           <MenuItem icon="copy" label="Дублировать" onClick={() => act(menu.st!.data, 'dup')} />
           <MenuItem

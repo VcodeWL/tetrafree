@@ -318,6 +318,8 @@ export interface Settings {
   followAgent?: boolean
   backendUrl?: string
   backendSync?: boolean
+  /** внешний редактор кода по умолчанию (id из списка установленных) */
+  editor?: string
   /** вход без аккаунта (сервер недоступен) */
   localMode?: boolean
   hideOnboarding?: boolean

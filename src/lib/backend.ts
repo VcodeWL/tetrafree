@@ -299,3 +299,13 @@ export const bResolve = (p: ProjRef) => post<{ ok: boolean; dir: string }>('/api
 /** Открыть папку проекта (или файл в ней) в проводнике */
 export const bReveal = (p: ProjRef, rel?: string) =>
   post<{ ok: boolean; reason?: string }>('/api/fs/reveal', { ...pj(p), rel })
+
+/** Установленные на компьютере редакторы кода (VS Code, Cursor, Zed…) */
+export async function bEditors(): Promise<{ id: string; name: string }[]> {
+  const r = await fetch(B().base + '/api/editors', { headers: authHeader() })
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return ((await r.json()) as { editors: { id: string; name: string }[] }).editors
+}
+/** Открыть проект (или файл на строке) во внешнем редакторе */
+export const bOpenIn = (p: ProjRef, editor: string, rel?: string, line?: number) =>
+  post<{ ok: boolean; reason?: string; editor?: string }>('/api/fs/open-in', { ...pj(p), editor, rel, line })

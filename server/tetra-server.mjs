@@ -24,6 +24,7 @@ const ROOT = path.resolve(process.env.TF_ROOT || path.join(os.homedir(), 'TetraF
 const vault = createVault({ dir: path.dirname(ROOT) })
 import { checkRemoteUrl, redactUrl } from './gitremote.mjs'
 import { parseStatus, parseLog, kindOf, parseBlame, splitHunks, pickHunks } from './gitparse.mjs'
+import { EDITORS, detectEditors, findEditor, editorArgs } from './editors.mjs'
 const SKIP = new Set([
   '.git',
   'node_modules',
@@ -487,6 +488,40 @@ async function handle(req, res, isLocal) {
       return json(res, 200, { ok: false, reason: 'Не удалось открыть проводник' })
     }
     return json(res, 200, { ok: true, dir: target })
+  }
+  /* внешние редакторы: какие установлены и открыть в них проект или файл на нужной строке */
+  if (u.pathname === '/api/editors' && req.method === 'GET') {
+    return json(res, 200, { editors: detectEditors().map(({ id, name }) => ({ id, name })) })
+  }
+  if (u.pathname === '/api/fs/open-in' && req.method === 'POST') {
+    const { id, name, folder, editor, rel, line } = await readBody(req)
+    const ed = EDITORS.find((e) => e.id === editor)
+    if (!ed) return json(res, 200, { ok: false, reason: 'Неизвестный редактор' })
+    const exe = findEditor(ed)
+    if (!exe) return json(res, 200, { ok: false, reason: `${ed.name} не найден на этом компьютере` })
+    const dir = await projectDir(id, name, folder)
+    let abs = null
+    if (rel) {
+      abs = inside(dir, String(rel))
+      await realInside(dir, abs)
+      if (!fs.existsSync(abs)) abs = null
+    }
+    fs.mkdirSync(dir, { recursive: true })
+    const failed = await new Promise((ok) => {
+      try {
+        const c = spawn(exe, editorArgs(ed, dir, abs, line), { detached: true, stdio: 'ignore', cwd: dir })
+        c.once('error', (e) => ok(e.message))
+        c.once('spawn', () => {
+          c.unref()
+          ok('')
+        })
+      } catch (e) {
+        ok(String(e.message || e))
+      }
+    })
+    if (failed)
+      return json(res, 200, { ok: false, reason: `Не удалось запустить ${ed.name}: ${failed}`.slice(0, 300) })
+    return json(res, 200, { ok: true, editor: ed.name })
   }
   /* путь для проекта, созданного до 2.0 (лежал в ROOT/<имя>) */
   if (u.pathname === '/api/project/resolve' && req.method === 'POST') {

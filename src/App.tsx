@@ -21,6 +21,7 @@ import { runPipeline } from './agent/ci'
 import { isRunning, stopTurn } from './agent/engine'
 import { isDesktop, platform, onQuickCapture, updCheck, updInstall } from './lib/desktop'
 import { useBackend } from './lib/backend'
+import { openInEditor } from './lib/editors'
 
 export function App() {
   const screen = useStore((s) => s.screen)
@@ -205,6 +206,12 @@ export function App() {
           return act(() => {
             runPipeline('release')
             st.openModal({ type: 'deploy' })
+          })
+        case 'editor':
+          return act(() => {
+            const f = st.activeFile
+            const pr = st.projects.find((x) => x.id === st.projectId)
+            if (pr) void openInEditor(pr.id, f && pr.files[f] !== undefined ? { file: f } : {})
           })
         case 'design':
           return act(() => st.setMode(st.mode === 'design' ? 'dev' : 'design'))

@@ -8,6 +8,7 @@ import { HLine } from '../components/ui/Code'
 import { tokenize } from '../lib/highlight'
 import { ago, clamp, copyText, download, langOf, fmtBytes, plural } from '../lib/util'
 import { openExternal, isDesktop } from '../lib/desktop'
+import { useEditors, loadEditors, pickEditor, openInEditor } from '../lib/editors'
 import type { Project } from '../types'
 import { checkPath, PROTECTED } from '../lib/paths'
 import { useLiveInProject } from '../agent/live'
@@ -188,6 +189,8 @@ function CodePane() {
     setQ('')
   }, [p.id])
   const om = useMenu()
+  const editors = useEditors((x) => x.list)
+  const defEditor = useStore((x) => x.settings.editor)
   const file = active && (active in p.files || active in liveMap) ? active : null
   const lv = file ? liveMap[file] : undefined
   const content = lv ? lv.text : file ? (p.files[file] ?? '') : ''
@@ -1020,7 +1023,14 @@ function CodePane() {
               >
                 <Icon name="down" size={14} />
               </button>
-              <button className="btn sm ext" title="Открыть во внешнем редакторе" onClick={om.open}>
+              <button
+                className="btn sm ext"
+                title="Открыть во внешнем редакторе"
+                onClick={(e) => {
+                  void loadEditors()
+                  om.open(e)
+                }}
+              >
                 <Icon name="external" size={13} />
                 <span>Открыть в…</span>
               </button>
@@ -1255,22 +1265,40 @@ function CodePane() {
       {om.st && file && (
         <Menu anchor={om.st.anchor} onClose={om.close} place="bottom-end">
           <MenuHead>Внешний редактор</MenuHead>
-          <MenuItem
-            icon="code"
-            label="VS Code"
-            onClick={() => {
-              openExternal('vscode://file/' + joinPath(p.path, file).replace(/\\/g, '/'))
-              om.close()
-            }}
-          />
-          <MenuItem
-            icon="bolt"
-            label="Zed"
-            onClick={() => {
-              openExternal('zed://file/' + joinPath(p.path, file).replace(/\\/g, '/'))
-              om.close()
-            }}
-          />
+          {editors.length ? (
+            editors.map((e) => (
+              <MenuItem
+                key={e.id}
+                icon="code"
+                label={e.name}
+                right={e.id === (pickEditor(editors, defEditor)?.id ?? '') ? 'по умолчанию' : undefined}
+                onClick={() => {
+                  om.close()
+                  st().setSetting('editor', e.id)
+                  void openInEditor(p.id, { file, editor: e.id })
+                }}
+              />
+            ))
+          ) : (
+            <>
+              <MenuItem
+                icon="code"
+                label="VS Code"
+                onClick={() => {
+                  openExternal('vscode://file/' + joinPath(p.path, file).replace(/\\/g, '/'))
+                  om.close()
+                }}
+              />
+              <MenuItem
+                icon="bolt"
+                label="Zed"
+                onClick={() => {
+                  openExternal('zed://file/' + joinPath(p.path, file).replace(/\\/g, '/'))
+                  om.close()
+                }}
+              />
+            </>
+          )}
           <MenuItem
             icon="folder"
             label="Показать в проводнике"

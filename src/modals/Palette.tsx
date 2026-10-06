@@ -12,6 +12,7 @@ import { pipelinesOf, runPipeline } from '../agent/ci'
 import { exportProject } from '../lib/projectIO'
 import { modKey, slug, uid } from '../lib/util'
 import { bReveal } from '../lib/backend'
+import { openInEditor } from '../lib/editors'
 import { DOC_TEMPLATES, buildBlocks } from '../data/docTemplates'
 import { exportChat } from '../lib/chatExport'
 import { exportBackup } from '../lib/backup'
@@ -352,6 +353,7 @@ function build(): Item[] {
             st().toast({ title: 'Нужен сервер TetraFree', icon: 'warn', tone: 'warn' }),
           )
       })
+      cmd('ed', 'Открыть проект во внешнем редакторе', 'code', () => void openInEditor(pid))
       cmd('pf', 'Сменить папку проекта', 'folder', () => st().openModal({ type: 'projectFolder', id: pid }))
     }
     cmd('op', 'Открыть папку как проект', 'folder', () =>
@@ -419,6 +421,16 @@ function build(): Item[] {
   cmd('brz', 'Открыть превью в браузере', 'browser', () =>
     st().setRight({ rightOpen: true, rightTab: 'browser' }),
   )
+  cmd('edp', 'Открыть проект во внешнем редакторе', 'code', () => void openInEditor(p.id))
+  if (s.activeFile && p.files[s.activeFile] !== undefined) {
+    const af = s.activeFile
+    cmd(
+      'edf',
+      'Открыть файл во внешнем редакторе: ' + af.split('/').pop(),
+      'code',
+      () => void openInEditor(p.id, { file: af }),
+    )
+  }
   AGENT_TEMPLATES.forEach((t) =>
     cmd(
       'tpl-' + t.id,

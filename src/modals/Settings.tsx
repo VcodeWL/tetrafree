@@ -32,6 +32,7 @@ import {
 } from '../lib/desktop'
 import { backupNow, lastAutoBackup } from '../lib/autobackup'
 import { bBackup, bReveal, type BackupInfo } from '../lib/backend'
+import { useEditors, loadEditors, pickEditor } from '../lib/editors'
 import { APP_VERSION, RELEASES, KIND_LABEL, NOTE_LABEL } from '../data/changelog'
 
 const SECTIONS: { k: string; t: string; icon: IconName; project?: boolean }[] = [
@@ -1056,6 +1057,12 @@ function BackendSection() {
   const [busy, setBusy] = useState(false)
   const autoBk = useStore((x) => x.settings.autoBackup)
   const [bks, setBks] = useState<BackupInfo | null>(null)
+  const eds = useEditors((x) => x.list)
+  const edLoaded = useEditors((x) => x.loaded)
+  const edPref = useStore((x) => x.settings.editor)
+  useEffect(() => {
+    if (b.status === 'online') void loadEditors()
+  }, [b.status])
   useEffect(() => {
     if (b.status === 'online')
       bBackup()
@@ -1140,6 +1147,28 @@ function BackendSection() {
           </button>
         </div>
       </div>
+      {b.status === 'online' && (
+        <div className="srow">
+          <div className="sl">
+            <div className="t">Внешний редактор</div>
+            <div className="d">
+              {!edLoaded
+                ? 'Ищу установленные редакторы…'
+                : eds.length
+                  ? 'Открывается из меню файла, палитры и проекта на главном экране — сразу на нужной строке.'
+                  : 'Не найден: установи VS Code, Cursor, Zed или Sublime Text, TetraFree увидит их сам.'}
+            </div>
+          </div>
+          {eds.length > 0 && (
+            <Segmented
+              label="Редактор по умолчанию"
+              value={pickEditor(eds, edPref)?.id ?? ''}
+              options={eds.map((e) => ({ k: e.id, t: e.name }))}
+              onChange={(k) => set('editor', k)}
+            />
+          )}
+        </div>
+      )}
       <div className="srow">
         <div className="sl">
           <div className="t">Синхронизация с диском</div>
