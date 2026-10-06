@@ -357,6 +357,9 @@ function build(): Item[] {
     cmd('op', 'Открыть папку как проект', 'folder', () =>
       st().openModal({ type: 'newProject', mode: 'open' }),
     )
+    cmd('cl', 'Клонировать репозиторий как проект', 'link', () =>
+      st().openModal({ type: 'newProject', mode: 'clone' }),
+    )
     cmd('set', 'Настройки', 'gear', () => st().openModal({ type: 'settings' }), hk('settings'))
     cmd('hk', 'Горячие клавиши', 'keyboard', () => st().openModal({ type: 'shortcuts' }))
     s.projects.forEach((x) =>
@@ -540,6 +543,7 @@ function build(): Item[] {
     hk('replace'),
   )
   cmd('todo', 'TODO из кода → задачи', 'task', () => openPalette('!'))
+  cmd('remote', 'Git: удалённый репозиторий и зеркало', 'link', () => st().openModal({ type: 'remote' }))
   cmd('git', 'Открыть Git', 'git', () => st().setRight({ rightOpen: true, rightTab: 'git' }), hk('git'))
   cmd('code', 'Показать код', 'code', () => st().setRight({ rightOpen: true, rightTab: 'code' }))
   cmd(

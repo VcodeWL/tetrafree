@@ -51,3 +51,7 @@ export const cleanApiBase = (u: string) =>
     .replace(/\/+$/, '')
     .replace(/\/(chat\/completions|completions|messages|models)$/, '')
     .replace(/\/+$/, '')
+
+/** Имя проекта из адреса репозитория: …/team/app.git → app */
+export const repoName = (u: string) =>
+  (u.trim().replace(/\/+$/, '').split(/[/:]/).pop() || '').replace(/\.git$/i, '')

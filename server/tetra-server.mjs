@@ -22,6 +22,7 @@ import { accountRoutes, authed, previewToken, previewValid } from './auth.mjs'
 
 const ROOT = path.resolve(process.env.TF_ROOT || path.join(os.homedir(), 'TetraFree', 'projects'))
 const vault = createVault({ dir: path.dirname(ROOT) })
+import { checkRemoteUrl, redactUrl } from './gitremote.mjs'
 import { parseStatus, parseLog, kindOf, parseBlame, splitHunks, pickHunks } from './gitparse.mjs'
 const SKIP = new Set([
   '.git',
@@ -389,6 +390,38 @@ async function handle(req, res, isLocal) {
       entries: items.filter((x) => !SKIP.has(x)).length,
       git: items.includes('.git'),
     })
+  }
+  /* клонировать репозиторий в новую или пустую папку (затем она открывается как обычный проект) */
+  if (u.pathname === '/api/git-clone' && req.method === 'POST') {
+    const { url, folder } = await readBody(req)
+    const c = checkRemoteUrl(url)
+    if (!c.ok) return json(res, 200, { ok: false, reason: c.reason })
+    let abs
+    try {
+      abs = checkFolder(folder)
+    } catch (e) {
+      return json(res, 200, { ok: false, reason: e.message })
+    }
+    if (!hasGit()) return json(res, 200, { ok: false, reason: 'git не установлен — поставь Git for Windows' })
+    if (fs.existsSync(abs)) {
+      const items = await fsp.readdir(abs).catch(() => [])
+      if (items.length)
+        return json(res, 200, { ok: false, reason: 'Папка не пуста — клонировать можно только в пустую' })
+    }
+    await fsp.mkdir(path.dirname(abs), { recursive: true })
+    const r = await git(path.dirname(abs), ['clone', '--', c.url, abs], 10 * 60000)
+    if (r.code !== 0) {
+      /* неудачная попытка не должна оставлять недокачанную папку */
+      await fsp.rm(abs, { recursive: true, force: true }).catch(() => {})
+      const why = r.se
+        .trim()
+        .split('\n')
+        .filter((x) => !/^Cloning into/.test(x))
+        .slice(-2)
+        .join(' ')
+      return json(res, 200, { ok: false, reason: (why || 'git clone не удался').slice(0, 300) })
+    }
+    return json(res, 200, { ok: true, dir: abs })
   }
   /* показать папку проекта (или файл в ней) в проводнике ОС */
   if (u.pathname === '/api/fs/reveal' && req.method === 'POST') {
@@ -890,6 +923,47 @@ async function handle(req, res, isLocal) {
             ? undefined
             : r.se.trim().split('\n').slice(0, 3).join(' ') || 'git checkout не удался',
       })
+    }
+    if (op === 'remote') {
+      const names = (await git(dir, ['remote'])).so.trim().split('\n').filter(Boolean)
+      const name = names[0] || ''
+      const url = name ? (await git(dir, ['remote', 'get-url', name])).so.trim() : ''
+      const up = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+      return json(res, 200, {
+        ok: true,
+        name,
+        url: redactUrl(url),
+        upstream: up.code === 0 ? up.so.trim() : '',
+      })
+    }
+    if (op === 'remote-set' || op === 'remote-test') {
+      const c = checkRemoteUrl(body.url)
+      if (!c.ok) return json(res, 200, { ok: false, reason: c.reason })
+      if (op === 'remote-test') {
+        /* только чтение: убеждаемся, что адрес существует и доступен */
+        const r = await git(dir, ['ls-remote', '--heads', '--', c.url], 20000)
+        return json(res, 200, {
+          ok: r.code === 0,
+          heads: r.so.split('\n').filter(Boolean).length,
+          reason:
+            r.code === 0
+              ? undefined
+              : (r.se.trim().split('\n').slice(-2).join(' ') || 'Репозиторий не отвечает').slice(0, 300),
+        })
+      }
+      const names = (await git(dir, ['remote'])).so.trim().split('\n').filter(Boolean)
+      const r = names.length
+        ? await git(dir, ['remote', 'set-url', names[0], c.url])
+        : await git(dir, ['remote', 'add', 'origin', c.url])
+      return json(res, 200, {
+        ok: r.code === 0,
+        reason: r.code === 0 ? undefined : r.se.trim().slice(0, 300),
+      })
+    }
+    if (op === 'remote-remove') {
+      const names = (await git(dir, ['remote'])).so.trim().split('\n').filter(Boolean)
+      for (const n of names) await git(dir, ['remote', 'remove', n])
+      return json(res, 200, { ok: true })
     }
     if (op === 'fetch' || op === 'pull' || op === 'push') {
       const rm = (await git(dir, ['remote'])).so.trim()

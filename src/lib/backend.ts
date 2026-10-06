@@ -164,7 +164,11 @@ export const bGit = <T>(
     | 'stashpop'
     | 'stashdrop'
     | 'merge'
-    | 'delbranch',
+    | 'delbranch'
+    | 'remote'
+    | 'remote-set'
+    | 'remote-test'
+    | 'remote-remove',
   p: ProjRef,
   extra: Record<string, unknown> = {},
 ) => post<T>('/api/git/' + op, { ...pj(p), ...extra })
@@ -287,6 +291,9 @@ export interface FolderCheck {
   git?: boolean
 }
 export const bCheckFolder = (folder: string) => post<FolderCheck>('/api/project/check', { folder })
+/** Клонировать репозиторий в новую (или пустую) папку */
+export const bClone = (url: string, folder: string) =>
+  post<{ ok: boolean; dir?: string; reason?: string }>('/api/git-clone', { url, folder })
 /** Абсолютный путь для проекта, созданного до 2.0 (папка в корне проектов TetraFree) */
 export const bResolve = (p: ProjRef) => post<{ ok: boolean; dir: string }>('/api/project/resolve', pj(p))
 

@@ -1,4 +1,5 @@
 /* Новый проект: настоящая папка на диске. Либо создаём новую (родительская папка + имя), либо открываем существующую. */
+import { repoName } from '../lib/paths'
 import { ServerHelp } from '../components/ServerHelp'
 import { useEffect, useRef, useState } from 'react'
 import { useStore, toast } from '../store'
@@ -10,6 +11,7 @@ import {
   backendOnline,
   bBrowse,
   bCheckFolder,
+  bClone,
   detectBackend,
   useBackend,
   type DirInfo,
@@ -34,16 +36,17 @@ const baseName = (p: string) =>
     .pop() || ''
 const parentOf = (p: string) => p.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '')
 
-export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' }) {
+export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 'clone' }) {
   const st = useStore.getState
   const projects = useStore((s) => s.projects)
   const info = useBackend((b) => b.info)
   const online = backendOnline()
   const sep = info?.sep || '/'
-  const [mode, setMode] = useState<'new' | 'open'>(m0)
+  const [mode, setMode] = useState<'new' | 'open' | 'clone'>(m0)
   const [name, setName] = useState('')
   const [parent, setParent] = useState(() => localStorage.getItem(LAST) || '')
   const [folder, setFolder] = useState('') // режим «открыть»
+  const [url, setUrl] = useState('') // режим «клонировать»
   const [tpl, setTpl] = useState('Пустой')
   const [busy, setBusy] = useState(false)
   const [picking, setPicking] = useState<null | 'parent' | 'folder'>(null)
@@ -60,12 +63,13 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
   }, [info?.root, parent])
 
   const s = slug(name)
-  const target = mode === 'new' ? (parent && s ? join(parent.trim(), s, sep) : '') : folder.trim()
+  const isNew = mode !== 'open'
+  const target = isNew ? (parent && s ? join(parent.trim(), s, sep) : '') : folder.trim()
   /* имя папки для нового проекта — латиница; открытая папка сохраняет своё настоящее название */
-  const projName = mode === 'new' ? s : (name.trim() || baseName(folder)).slice(0, 60)
+  const projName = isNew ? s : (name.trim() || baseName(folder)).slice(0, 60)
   const dup = projects.find((p) => p.path && p.path.replace(/[\\/]+$/, '') === target.replace(/[\\/]+$/, ''))
   const nameErr =
-    mode === 'new' && name.trim() && !s
+    isNew && name.trim() && !s
       ? 'Используй буквы, цифры и дефисы'
       : projName && projects.some((p) => p.name === projName)
         ? 'Проект с таким именем уже есть'
@@ -90,7 +94,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
     return () => clearTimeout(t)
   }, [target, online])
 
-  const nonEmpty = mode === 'new' && !!chk?.ok && !!chk.entries
+  const nonEmpty = isNew && !!chk?.ok && !!chk.entries
   const missing = mode === 'open' && !!chk?.ok && !chk.exists
   const err = !online
     ? ''
@@ -103,22 +107,37 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
           : missing
             ? 'Такой папки нет'
             : nameErr
-  const ready = online && !!target && !!projName && !!chk?.ok && !err && !busy
+  const ready =
+    online && !!target && !!projName && !!chk?.ok && !err && !busy && (mode !== 'clone' || !!url.trim())
 
   const create = async () => {
     if (!ready || !chk?.dir) return
     setBusy(true)
-    if (mode === 'new') localStorage.setItem(LAST, parent.trim())
+    if (isNew) localStorage.setItem(LAST, parent.trim())
+    if (mode === 'clone') {
+      try {
+        const c = await bClone(url, chk.dir)
+        if (!c.ok) {
+          setBusy(false)
+          toast({ title: 'Не удалось клонировать', desc: c.reason, icon: 'warn', tone: 'err' })
+          return
+        }
+      } catch (e) {
+        setBusy(false)
+        toast({ title: 'Нет связи с сервером', desc: (e as Error).message, icon: 'warn', tone: 'err' })
+        return
+      }
+    }
     const id = st().createProject({
       name: projName,
       path: chk.dir,
       template: mode === 'new' ? tpl : 'Пустой',
-      adopt: mode === 'open',
+      adopt: mode !== 'new',
     })
     const r = await reconcile(id, { quiet: true })
-    if (mode === 'open')
+    if (mode !== 'new')
       toast({
-        title: `Открыто: ${projName}`,
+        title: `${mode === 'clone' ? 'Клонировано' : 'Открыто'}: ${projName}`,
         desc: r
           ? r.truncated
             ? `Папка большая — прочитана часть файлов (${nFiles(r.pulled)})`
@@ -152,16 +171,23 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
   return (
     <Modal label="Новый проект" busy={busy}>
       <MHead
-        icon={mode === 'new' ? 'plus' : 'folder'}
-        title={mode === 'new' ? 'Новый проект' : 'Открыть папку как проект'}
+        icon={mode === 'new' ? 'plus' : mode === 'clone' ? 'link' : 'folder'}
+        title={
+          mode === 'new'
+            ? 'Новый проект'
+            : mode === 'clone'
+              ? 'Клонировать репозиторий'
+              : 'Открыть папку как проект'
+        }
         sub="Проект — это настоящая папка на твоём диске: файлы, git и терминал работают прямо в ней."
       />
       <div className="field">
         <Segmented
           value={mode}
-          onChange={(v) => setMode(v as 'new' | 'open')}
+          onChange={(v) => setMode(v as 'new' | 'open' | 'clone')}
           options={[
             { k: 'new', t: 'Создать новый' },
+            { k: 'clone', t: 'Клонировать из Git' },
             { k: 'open', t: 'Открыть существующую папку' },
           ]}
         />
@@ -180,13 +206,34 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
           <ServerHelp />
         </div>
       )}
-      {mode === 'new' ? (
+      {isNew ? (
         <>
+          {mode === 'clone' && (
+            <div className="field">
+              <label htmlFor="np-url">Адрес репозитория</label>
+              <input
+                id="np-url"
+                autoFocus
+                value={url}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (!name.trim() || name === repoName(url)) setName(repoName(v))
+                  setUrl(v)
+                }}
+                placeholder="https://github.com/команда/проект.git"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              <div className="fhint">
+                Вход в приватные репозитории выполняет менеджер учётных данных Git. Токен в адрес не вписывай.
+              </div>
+            </div>
+          )}
           <div className={'field' + (nameErr ? ' bad' : '')}>
             <label htmlFor="np-name">Название</label>
             <input
               id="np-name"
-              autoFocus
+              autoFocus={mode === 'new'}
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && ready && void create()}
@@ -222,25 +269,27 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
               </button>
             </div>
           </div>
-          <div className="field">
-            <label>Шаблон</label>
-            <div className="tpls">
-              {TEMPLATES.map((t) => (
-                <button
-                  key={t.k}
-                  className={'tpl' + (tpl === t.k ? ' on' : '')}
-                  aria-pressed={tpl === t.k}
-                  onClick={() => setTpl(t.k)}
-                >
-                  <span className="tpl-i">
-                    <Icon name={t.icon} size={18} />
-                  </span>
-                  <b>{t.k}</b>
-                  <span>{t.d}</span>
-                </button>
-              ))}
+          {mode === 'new' && (
+            <div className="field">
+              <label>Шаблон</label>
+              <div className="tpls">
+                {TEMPLATES.map((t) => (
+                  <button
+                    key={t.k}
+                    className={'tpl' + (tpl === t.k ? ' on' : '')}
+                    aria-pressed={tpl === t.k}
+                    onClick={() => setTpl(t.k)}
+                  >
+                    <span className="tpl-i">
+                      <Icon name={t.icon} size={18} />
+                    </span>
+                    <b>{t.k}</b>
+                    <span>{t.d}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </>
       ) : (
         <>
@@ -306,7 +355,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
               </>
             ) : chk?.ok ? (
               <>
-                {mode === 'new' ? 'Будет создана: ' : 'Откроется: '}
+                {mode === 'new' ? 'Будет создана: ' : mode === 'clone' ? 'Склонируется в: ' : 'Откроется: '}
                 <b className="mono">{chk.dir}</b>
                 {mode === 'open' && chk.git ? ' · есть git' : ''}
                 {mode === 'open' && !chk.entries ? ' · папка пуста' : ''}
@@ -326,10 +375,12 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' })
           {busy ? (
             <>
               <span className="bspin" />
-              Читаю папку…
+              {mode === 'clone' ? 'Клонирую…' : 'Читаю папку…'}
             </>
           ) : mode === 'new' ? (
             'Создать проект'
+          ) : mode === 'clone' ? (
+            'Клонировать'
           ) : (
             'Открыть проект'
           )}

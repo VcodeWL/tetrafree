@@ -257,13 +257,18 @@ export function VersionsModal({ focus }: { focus?: number }) {
           const lines = compact(d.lines)
           return (
             <div className="dfile" key={d.path}>
-              <div
-                className="dfile-h"
-                role="button"
-                onClick={() => setOpen((o) => ({ ...o, [d.path]: !isOpen }))}
-              >
-                <Icon name={isOpen ? 'chevd' : 'chev'} size={12} />
-                <span className="dpath">{d.path}</span>
+              <div className="dfile-h" onClick={() => setOpen((o) => ({ ...o, [d.path]: !isOpen }))}>
+                <button
+                  className="dfile-t"
+                  aria-expanded={isOpen}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setOpen((o) => ({ ...o, [d.path]: !isOpen }))
+                  }}
+                >
+                  <Icon name={isOpen ? 'chevd' : 'chev'} size={12} />
+                  <span className="dpath">{d.path}</span>
+                </button>
                 <span className={'dst ' + d.status}>
                   {d.status === 'added' ? 'новый' : d.status === 'removed' ? 'удалён' : 'изменён'}
                 </span>

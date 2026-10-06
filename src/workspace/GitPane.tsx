@@ -82,9 +82,10 @@ export function GitPane() {
       /* меню покажет текущую */
     }
   }
+  const modalOpen = useStore((x) => !!x.modal)
   useEffect(() => {
-    void loadBranches()
-  }, [p.id, status?.branch]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!modalOpen) void loadBranches()
+  }, [p.id, status?.branch, modalOpen]) // eslint-disable-line react-hooks/exhaustive-deps
   const loadStashes = async () => {
     try {
       setStashes(
@@ -378,6 +379,16 @@ export function GitPane() {
           </span>
         )}
         <span className="grow" />
+        <button
+          className={'iconbtn sm' + (remote ? '' : ' warnic')}
+          title={
+            remote ? 'Удалённый репозиторий: ' + remote : 'Подключить удалённый репозиторий (GitHub, GitLab…)'
+          }
+          aria-label="Удалённый репозиторий"
+          onClick={() => st().openModal({ type: 'remote' })}
+        >
+          <Icon name="link" size={14} />
+        </button>
         <button
           className="iconbtn sm"
           title={remote ? 'Pull — подтянуть изменения' : 'Нет удалённого репозитория'}

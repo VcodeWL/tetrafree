@@ -202,6 +202,10 @@ export function Launcher() {
           <Icon name="folder" size={14} />
           Открыть папку
         </button>
+        <button className="btn" onClick={() => st().openModal({ type: 'newProject', mode: 'clone' })}>
+          <Icon name="link" size={14} />
+          Клонировать
+        </button>
         <button className="btn pri" onClick={() => st().openModal({ type: 'newProject' })}>
           <Icon name="plus" size={15} />
           Новый проект

@@ -11,6 +11,7 @@ import {
   bHashes,
   bRead,
   bCommit,
+  bGit,
   bResolve,
   isAbsPath,
   fnv,
@@ -242,7 +243,10 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     const vs = S().projects.find((p) => p.id === pid)?.versions || []
     const last = vs[vs.length - 1]
     if (last && committed.get(pid) !== last.n) {
-      if (committed.has(pid)) void bCommit(proj, `v${last.n}: ${last.title}`).catch(() => {})
+      if (committed.has(pid))
+        void bCommit(proj, `v${last.n}: ${last.title}`)
+          .then(() => mirrorPush(pid))
+          .catch(() => {})
       committed.set(pid, last.n)
     }
     useBackend.setState({ lastSync: Date.now(), lastError: undefined })
@@ -280,6 +284,34 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     busy.delete(pid)
     useBackend.setState({ syncing: false })
     if (queued.delete(pid)) schedule(pid, 150)
+  }
+}
+
+const pushing = new Set<string>()
+let mirrorWarned = ''
+/** Зеркало: после коммита новой версии отправляем историю на удалённый репозиторий (если включено в проекте) */
+async function mirrorPush(pid: string) {
+  const p = S().projects.find((x) => x.id === pid)
+  if (!p?.mirror || pushing.has(pid)) return
+  pushing.add(pid)
+  try {
+    const r = await bGit<{ ok: boolean; reason?: string }>('push', p)
+    if (r.ok) {
+      mirrorWarned = ''
+    } else if (r.reason !== mirrorWarned) {
+      mirrorWarned = r.reason || 'ошибка'
+      toast({
+        title: 'Зеркало: не удалось отправить версию',
+        desc: r.reason,
+        icon: 'warn',
+        tone: 'warn',
+        action: { label: 'Репозиторий', run: () => S().openModal({ type: 'remote' }) },
+      })
+    }
+  } catch {
+    /* сервер недоступен — в следующий раз */
+  } finally {
+    pushing.delete(pid)
   }
 }
 

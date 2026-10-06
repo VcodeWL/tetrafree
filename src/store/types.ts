@@ -40,9 +40,10 @@ export type ModalState =
   | { type: 'provider'; id?: ID }
   | { type: 'newChat' }
   | { type: 'projectFolder'; id: ID }
-  | { type: 'newProject'; mode?: 'new' | 'open' }
+  | { type: 'newProject'; mode?: 'new' | 'open' | 'clone' }
   | { type: 'task'; id?: ID; status?: TaskStatus }
   | { type: 'replace'; find?: string }
+  | { type: 'remote' }
   | { type: 'today' }
   | { type: 'compare'; a?: string; b?: string }
   | { type: 'trash' }

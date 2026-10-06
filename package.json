@@ -1,7 +1,7 @@
 {
   "name": "tetrafree",
   "private": true,
-  "version": "2.7.3",
+  "version": "2.8.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,7 @@
     "desktop:build:extras": "npm run sidecar && tauri build --features extras",
     "desktop:build:full": "npm run sidecar && tauri build --features extras,updater --config src-tauri/tauri.updater.conf.json",
     "desktop:icons": "tauri icon public/logo.png",
-    "test": "node --test server/bundle.test.mjs server/secrets.test.mjs server/conpty.test.mjs server/folders.test.mjs server/ignore.test.mjs server/auth.test.mjs server/gitparse.test.mjs server/backups.test.mjs server/release-notes.test.mjs && tsx --test src/lib/docplan.test.ts src/lib/vaultState.test.ts src/lib/merge3.test.ts src/lib/qr.test.ts src/lib/util.test.ts src/lib/paths.test.ts src/lib/ignore.test.ts src/lib/unidiff.test.ts src/lib/commitmsg.test.ts src/lib/todos.test.ts src/lib/usage.test.ts src/lib/taskrel.test.ts src/lib/replace.test.ts src/lib/today.test.ts src/lib/gitctx.test.ts src/lib/autobackup.test.ts src/lib/trash.test.ts src/lib/settingsIO.test.ts src/lib/keymap.test.ts src/lib/taskviews.test.ts src/lib/cal.test.ts src/lib/mdimport.test.ts src/lib/scripts.test.ts src/lib/backlinks.test.ts src/lib/docmd.test.ts src/lib/imgscale.test.ts src/lib/opstack.test.ts src/lib/a11y.test.ts src/lib/layout.test.ts src/lib/replay.test.ts src/lib/minimap.test.ts src/lib/hunkpick.test.ts src/lib/contrast.test.ts src/hooks/useFocus.test.ts src/lib/updnotes.test.ts src/workspace/codeEditor.test.ts src/lib/chatExport.test.ts src/lib/termtabs.test.ts src/lib/folds.test.ts src/agent/queue.test.ts src/agent/triggers.test.ts src/store/persistence.test.ts",
+    "test": "node --test server/gitremote.test.mjs server/bundle.test.mjs server/secrets.test.mjs server/conpty.test.mjs server/folders.test.mjs server/ignore.test.mjs server/auth.test.mjs server/gitparse.test.mjs server/backups.test.mjs server/release-notes.test.mjs && tsx --test src/lib/docplan.test.ts src/lib/vaultState.test.ts src/lib/merge3.test.ts src/lib/qr.test.ts src/lib/util.test.ts src/lib/paths.test.ts src/lib/ignore.test.ts src/lib/unidiff.test.ts src/lib/commitmsg.test.ts src/lib/todos.test.ts src/lib/usage.test.ts src/lib/taskrel.test.ts src/lib/replace.test.ts src/lib/today.test.ts src/lib/gitctx.test.ts src/lib/autobackup.test.ts src/lib/trash.test.ts src/lib/settingsIO.test.ts src/lib/keymap.test.ts src/lib/taskviews.test.ts src/lib/cal.test.ts src/lib/mdimport.test.ts src/lib/scripts.test.ts src/lib/backlinks.test.ts src/lib/docmd.test.ts src/lib/imgscale.test.ts src/lib/opstack.test.ts src/lib/a11y.test.ts src/lib/layout.test.ts src/lib/replay.test.ts src/lib/minimap.test.ts src/lib/hunkpick.test.ts src/lib/contrast.test.ts src/hooks/useFocus.test.ts src/lib/updnotes.test.ts src/workspace/codeEditor.test.ts src/lib/chatExport.test.ts src/lib/termtabs.test.ts src/lib/folds.test.ts src/agent/queue.test.ts src/agent/triggers.test.ts src/store/persistence.test.ts",
     "check": "tsc -b && eslint src && prettier --check \"src/**/*.{ts,tsx,css}\" \"server/**/*.mjs\" --log-level warn && npm test",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"server/**/*.mjs\" \"*.{json,md}\" --log-level warn",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"server/**/*.mjs\" --log-level warn",

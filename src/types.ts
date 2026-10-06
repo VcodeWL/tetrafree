@@ -235,6 +235,8 @@ export interface Lane {
 
 export interface Project {
   id: ID
+  /** после каждой новой версии отправлять коммиты на удалённый репозиторий (зеркало) */
+  mirror?: boolean
   /** закреплён вверху списка проектов */
   pinned?: boolean
   name: string

@@ -11,6 +11,7 @@ const VersionsModal = lazy(() => import('./Versions').then((m) => ({ default: m.
 const ActivityModal = lazy(() => import('./Activity').then((m) => ({ default: m.ActivityModal })))
 const DeployModal = lazy(() => import('./Deploy').then((m) => ({ default: m.DeployModal })))
 const ReplaceModal = lazy(() => import('./Replace').then((m) => ({ default: m.ReplaceModal })))
+const RemoteModal = lazy(() => import('./Remote').then((m) => ({ default: m.RemoteModal })))
 const TodayModal = lazy(() => import('./Today').then((m) => ({ default: m.TodayModal })))
 const CompareModal = lazy(() => import('./Compare').then((m) => ({ default: m.CompareModal })))
 const ReplayModal = lazy(() => import('./Replay').then((m) => ({ default: m.ReplayModal })))
@@ -37,6 +38,7 @@ function useModalBody() {
     'blame',
     'trash',
     'replace',
+    'remote',
   ].includes(m.type)
   if (needsProject && !hasProject) return null
   switch (m.type) {
@@ -64,6 +66,8 @@ function useModalBody() {
       return <ConfirmModal {...m} />
     case 'rename':
       return <RenameModal {...m} />
+    case 'remote':
+      return <RemoteModal />
     case 'replace':
       return <ReplaceModal find={m.find} />
     case 'today':

@@ -55,3 +55,12 @@ test('checkPath: зарезервированные имена Windows', () => {
   assert.equal(checkPath(p, 'console.txt'), null)
   assert.equal(checkPath(p, 'src/connect.ts'), null)
 })
+
+test('имя проекта из адреса репозитория', async () => {
+  const { repoName } = await import('./paths')
+  assert.equal(repoName('https://github.com/VcodeWL/tetrafree.git'), 'tetrafree')
+  assert.equal(repoName('git@github.com:team/app.git'), 'app')
+  assert.equal(repoName('https://host/team/app/'), 'app')
+  assert.equal(repoName('https://host/a/b.GIT'), 'b')
+  assert.equal(repoName(''), '')
+})
