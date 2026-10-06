@@ -60,7 +60,7 @@ pub fn setup(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .tooltip("TetraFree")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
+        .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main(app),
             "quit" => app.exit(0),
             _ => {}

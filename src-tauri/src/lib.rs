@@ -80,8 +80,10 @@ pub fn run() {
             }
             // Окно создаётся из tauri.conf.json; в debug открываем devtools
             #[cfg(debug_assertions)]
-            if let Some(w) = app.get_webview_window("main") {
-                w.open_devtools();
+            {
+                if let Some(w) = app.get_webview_window("main") {
+                    w.open_devtools();
+                }
             }
             Ok(())
         })

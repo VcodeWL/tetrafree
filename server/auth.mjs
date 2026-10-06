@@ -85,6 +85,7 @@ setInterval(() => {
   const t = now()
   for (const [k, v] of hits) if (v.reset < t) hits.delete(k)
   for (const [k, v] of tickets) if (v.exp < t) tickets.delete(k)
+  for (const [k, v] of oauthStates) if (v.exp < t) oauthStates.delete(k)
 }, 5 * MIN).unref()
 
 /* ───────── валидация ───────── */
@@ -683,6 +684,12 @@ export async function accountRoutes(req, res, u, io) {
             verified: true,
           }
           db.users[user.id] = user
+        }
+        if (!user.verified) {
+          /* аккаунт с этой почтой создали по паролю, но не подтвердили: пароль мог задать не владелец почты — сбрасываем его и сессии */
+          user.passHash = undefined
+          user.totp = undefined
+          for (const s of Object.values(db.sessions)) if (s.userId === user.id) delete db.sessions[s.id]
         }
         user.verified = true
         ;(user.oauth ||= {})[m[1]] = prof.sub
