@@ -64,6 +64,9 @@ export function forgetBase(pid: string) {
   saveBase(pid)
 }
 const lostWarned = new Set<string>()
+const synced = new Set<string>()
+/** Была ли хоть одна успешная сверка проекта с диском (до неё файлы на диске ещё не видны приложению) */
+export const hasSynced = (pid: string) => synced.has(pid)
 /** путь → хеш версии (или 'rm'), которую не удалось записать на диск */
 const badPaths = new Map<string, Record<string, string>>()
 
@@ -221,13 +224,21 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     if (pull.length) {
       const r = await bRead(proj, pull)
       const got: Record<string, string> = {}
+      /* пока читали диск, файл могли изменить в приложении — такую правку не затираем (разберёмся на следующем проходе) */
+      const nowFiles = S().projects.find((p) => p.id === pid)?.files ?? {}
+      const untouched = (k: string) => (nowFiles[k] === undefined ? undefined : fnv(nowFiles[k])) === store[k]
       for (const k of pull) {
         const v = r.files[k]
-        if (typeof v === 'string') {
+        if (typeof v === 'string' && untouched(k)) {
           got[k] = v
           next[k] = disk[k]
-        }
+        } else if (base[k] !== undefined) next[k] = base[k]
       }
+      for (let i = dropLocal.length - 1; i >= 0; i--)
+        if (!untouched(dropLocal[i])) {
+          next[dropLocal[i]] = base[dropLocal[i]]
+          dropLocal.splice(i, 1)
+        }
       if (Object.keys(got).length || dropLocal.length) {
         importExternal(pid, got, dropLocal)
         sum.pulled = Object.keys(got).length
@@ -249,6 +260,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
           .catch(() => {})
       committed.set(pid, last.n)
     }
+    synced.add(pid)
     useBackend.setState({ lastSync: Date.now(), lastError: undefined })
     if (failed.length) {
       const why = (c: string) =>

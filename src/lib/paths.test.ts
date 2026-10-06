@@ -64,3 +64,26 @@ test('имя проекта из адреса репозитория', async () 
   assert.equal(repoName('https://host/a/b.GIT'), 'b')
   assert.equal(repoName(''), '')
 })
+
+test('пути от агента: только внутри проекта и не в служебных папках', async () => {
+  const { agentPathError } = await import('./paths')
+  for (const ok of ['a.ts', 'src/a/b.ts', '.github/workflows/x.yml', 'docs/Идея.md'])
+    assert.equal(agentPathError(ok), null, ok)
+  for (const bad of [
+    '',
+    '../x',
+    'a/../../x',
+    '/etc/passwd',
+    'C:/x',
+    'C:\\x',
+    '~/x',
+    '.git/hooks/pre-commit',
+    '.GIT/config',
+    '.tetrafree/id',
+    'a\\b',
+    'a//b',
+    'con.txt',
+    'x/NUL',
+  ])
+    assert.ok(agentPathError(bad), bad)
+})

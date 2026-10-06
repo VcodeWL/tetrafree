@@ -122,6 +122,29 @@ function inside(dir, rel) {
     throw Object.assign(new Error('Путь вне папки проекта: ' + rel), { status: 400 })
   return abs
 }
+/** Символическая ссылка внутри проекта (например, из склонированного репозитория) не должна выводить запись за его пределы */
+export async function realInside(dir, abs) {
+  const root = await fsp.realpath(dir).catch(() => dir)
+  let p = abs
+  for (;;) {
+    try {
+      const rp = await fsp.realpath(p)
+      if (rp !== root && !rp.startsWith(root + path.sep))
+        throw Object.assign(
+          new Error('Путь ведёт за пределы папки проекта (ссылка): ' + path.relative(dir, abs)),
+          {
+            status: 400,
+          },
+        )
+      return abs
+    } catch (e) {
+      if (e.status) throw e
+      const up = path.dirname(p)
+      if (up === p) return abs
+      p = up
+    }
+  }
+}
 const MAX_FILES = 2500
 const MAX_TOTAL = 4 * 1024 * 1024
 /** Читает текстовые файлы папки. lim.cut = true, если упёрлись в лимит числа/объёма (часть файлов не прочитана). */
@@ -214,6 +237,13 @@ async function ensureGit(dir) {
   return true
 }
 
+/** Отдать файл; ошибка чтения (файл пропал, нет прав) не должна ронять сервер */
+function pipeFile(abs, res) {
+  const rs = fs.createReadStream(abs)
+  rs.on('error', () => res.destroy())
+  res.on('close', () => rs.destroy())
+  rs.pipe(res)
+}
 const json = (res, code, body) => {
   res.writeHead(code, {
     'content-type': 'application/json; charset=utf-8',
@@ -484,28 +514,6 @@ async function handle(req, res, isLocal) {
     return json(res, 200, { ok: true, dir, list })
   }
 
-  /* полная синхронизация: браузер — источник правды */
-  if (u.pathname === '/api/sync' && req.method === 'POST') {
-    const { id, name, folder, files = {}, prune = true } = await readBody(req)
-    const dir = await projectDir(id, name, folder)
-    for (const [rel, content] of Object.entries(files)) {
-      const abs = inside(dir, rel)
-      await fsp.mkdir(path.dirname(abs), { recursive: true })
-      await fsp.writeFile(abs, content)
-    }
-    if (prune) {
-      const lim = { n: 0, bytes: 0, cut: false }
-      const disk = await walk(dir, dir, {}, lim)
-      if (!lim.cut)
-        for (const rel of Object.keys(disk))
-          if (!(rel in files) && rel !== '.gitignore') {
-            await fsp.rm(inside(dir, rel), { force: true })
-            await pruneEmpty(path.dirname(inside(dir, rel)), dir)
-          }
-    }
-    await ensureGit(dir)
-    return json(res, 200, { ok: true, dir })
-  }
   /* инкрементальные правки */
   if (u.pathname === '/api/fs/batch' && req.method === 'POST') {
     const { id, name, folder, write = {}, remove = [], mkdirs = [], rmdirs = [] } = await readBody(req)
@@ -515,6 +523,7 @@ async function handle(req, res, isLocal) {
     for (const [rel, content] of Object.entries(write)) {
       try {
         const abs = inside(dir, rel)
+        await realInside(dir, abs)
         await fsp.mkdir(path.dirname(abs), { recursive: true })
         await fsp.writeFile(abs, content)
       } catch (e) {
@@ -524,6 +533,7 @@ async function handle(req, res, isLocal) {
     for (const rel of remove) {
       try {
         const abs = inside(dir, rel)
+        await realInside(dir, path.dirname(abs))
         await fsp.rm(abs, { force: true, recursive: true })
         await pruneEmpty(path.dirname(abs), dir)
       } catch (e) {
@@ -531,11 +541,23 @@ async function handle(req, res, isLocal) {
       }
     }
     /* пустые папки, созданные в приложении; rmdir (не rm -r) — непустую папку не тронет */
-    for (const rel of mkdirs) await fsp.mkdir(inside(dir, rel), { recursive: true })
+    for (const rel of mkdirs) {
+      try {
+        const abs = inside(dir, rel)
+        await realInside(dir, abs)
+        await fsp.mkdir(abs, { recursive: true })
+      } catch (e) {
+        failed.push({ path: rel, code: e?.code || 'ERR', error: String(e?.message || e).slice(0, 160) })
+      }
+    }
     for (const rel of rmdirs) {
-      const abs = inside(dir, rel)
-      await fsp.rmdir(abs).catch(() => {})
-      await pruneEmpty(path.dirname(abs), dir) /* родитель мог остаться пустым */
+      try {
+        const abs = inside(dir, rel)
+        await fsp.rmdir(abs).catch(() => {})
+        await pruneEmpty(path.dirname(abs), dir) /* родитель мог остаться пустым */
+      } catch {
+        /* пустая папка не важнее остальной пачки */
+      }
     }
     return json(res, 200, { ok: true, dir, failed })
   }
@@ -562,7 +584,9 @@ async function handle(req, res, isLocal) {
     const out = {}
     for (const rel of paths) {
       try {
-        out[rel] = await fsp.readFile(inside(dir, rel), 'utf8')
+        const abs = inside(dir, rel)
+        await realInside(dir, abs)
+        out[rel] = await fsp.readFile(abs, 'utf8')
       } catch {
         out[rel] = null
       }
@@ -1047,7 +1071,7 @@ async function handle(req, res, isLocal) {
         (MIME[abs.split('.').pop().toLowerCase()] || 'application/octet-stream') + '; charset=utf-8',
       'cache-control': 'no-store',
     })
-    return fs.createReadStream(abs).pipe(res)
+    return pipeFile(abs, res)
   }
   return false
 }
@@ -1097,9 +1121,15 @@ const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'd
 function serveStatic(req, res) {
   if (!fs.existsSync(path.join(DIST, 'index.html')) || (req.method !== 'GET' && req.method !== 'HEAD'))
     return json(res, 404, { error: { message: 'not found' } })
-  const url = decodeURIComponent(new URL(req.url, 'http://x').pathname)
+  let url
+  try {
+    url = decodeURIComponent(new URL(req.url, 'http://x').pathname)
+  } catch {
+    res.writeHead(400)
+    return res.end()
+  }
   let abs = path.join(DIST, url)
-  if (!abs.startsWith(DIST)) {
+  if (abs !== DIST && !abs.startsWith(DIST + path.sep)) {
     res.writeHead(400)
     return res.end()
   }
@@ -1113,7 +1143,7 @@ function serveStatic(req, res) {
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'same-origin',
   })
-  fs.createReadStream(abs).pipe(res)
+  pipeFile(abs, res)
 }
 
 export function start(port = +(process.env.PORT || 3001), host = process.env.HOST || '127.0.0.1') {

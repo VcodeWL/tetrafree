@@ -113,7 +113,13 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 
   const create = async () => {
     if (!ready || !chk?.dir) return
     setBusy(true)
-    if (isNew) localStorage.setItem(LAST, parent.trim())
+    if (isNew) {
+      try {
+        localStorage.setItem(LAST, parent.trim())
+      } catch {
+        /* хранилище недоступно */
+      }
+    }
     if (mode === 'clone') {
       try {
         const c = await bClone(url, chk.dir)

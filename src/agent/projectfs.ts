@@ -19,10 +19,10 @@ export function putFile(pid: ID, path: string, content: string | null) {
     st.up((p) => {
       delete p.files[path]
     }, pid)
-  pruneDirs(pid)
+  pruneDirs(pid, path)
 }
-/** Папки, в которых не осталось файлов, исчезают вместе с ними */
-export function pruneDirs(pid: ID) {
+/** Папки, в которых не осталось файлов, исчезают вместе с ними. С `after` — только папки удалённого пути (чужие пустые папки не трогаем). */
+export function pruneDirs(pid: ID, after?: string) {
   S().up((p) => {
     const keep = new Set<string>()
     for (const f of Object.keys(p.files)) {
@@ -30,7 +30,13 @@ export function pruneDirs(pid: ID) {
       seg.pop()
       for (let i = 1; i <= seg.length; i++) keep.add(seg.slice(0, i).join('/'))
     }
-    p.dirs = p.dirs.filter((d) => keep.has(d))
+    const mine = after ? new Set<string>() : null
+    if (mine && after) {
+      const seg = after.split('/')
+      seg.pop()
+      for (let i = 1; i <= seg.length; i++) mine.add(seg.slice(0, i).join('/'))
+    }
+    p.dirs = p.dirs.filter((d) => keep.has(d) || (mine !== null && !mine.has(d)))
   }, pid)
 }
 export function expandDelete(pid: ID, path: string): string[] {

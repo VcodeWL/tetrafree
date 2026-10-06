@@ -95,7 +95,11 @@ function TermPane({ pid, tabId, active }: { pid: string; tabId: string; active: 
       if (next === null) return true
       const v = Math.min(22, Math.max(9, next))
       term.options.fontSize = v
-      localStorage.setItem('tf.termSize', String(v))
+      try {
+        localStorage.setItem('tf.termSize', String(v))
+      } catch {
+        /* хранилище недоступно */
+      }
       try {
         fit.fit()
       } catch {

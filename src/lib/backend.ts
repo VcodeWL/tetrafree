@@ -111,7 +111,6 @@ export async function backendFetch(url: string, init: RequestInit & { headers: R
   }
 }
 
-export const bSync = (p: Project) => post<{ dir: string }>('/api/sync', { ...pj(p), files: p.files })
 export const bBatch = (
   p: ProjRef,
   write: Record<string, string>,

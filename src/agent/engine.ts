@@ -4,6 +4,7 @@
 import { shiftQueue, enqueue } from './queue'
 import { Turn, tally, commitFiles } from './turn'
 import { history, systemPrompt } from './prompt'
+import { agentPathError } from '../lib/paths'
 import { fileOf, putFile, expandDelete, countLines } from './projectfs'
 import { diffStat } from '../lib/diff'
 import { useStore, getChat, toast } from '../store'
@@ -761,6 +762,13 @@ function syncSegs(
     switch (s.kind) {
       case 'write': {
         if (!path) return
+        const perr = agentPathError(path)
+        if (perr) {
+          if (!T.part(id)) T.begin(id, 'create', path)
+          T.fail(id, 'create', path, perr)
+          applied.add(i)
+          return
+        }
         if (!T.part(id)) T.begin(id, 'create', path)
         const body = cleanBody(s.body)
         if (s.closed) {
@@ -815,10 +823,17 @@ function syncSegs(
         applied.add(i)
         break
       }
-      case 'rename':
+      case 'rename': {
+        const perr = agentPathError(s.attrs.to || '')
+        if (perr) {
+          T.fail(id, 'rename', s.attrs.to || '', perr)
+          applied.add(i)
+          break
+        }
         T.endRename(id, s.attrs.from || '', s.attrs.to || '')
         applied.add(i)
         break
+      }
       case 'run':
         if (!T.part(id) && s.closed) T.upsert({ k: 'cmd', id, cmd: s.body.trim(), state: 'running', out: '' })
         else if (!T.part(id)) T.step(id, 'Готовит команду…')

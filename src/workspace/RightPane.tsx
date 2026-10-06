@@ -227,7 +227,11 @@ function CodePane() {
     const up = () => {
       window.removeEventListener('pointermove', mv)
       window.removeEventListener('pointerup', up)
-      localStorage.setItem('tf.treeW', String(w))
+      try {
+        localStorage.setItem('tf.treeW', String(w))
+      } catch {
+        /* хранилище недоступно */
+      }
     }
     window.addEventListener('pointermove', mv)
     window.addEventListener('pointerup', up)

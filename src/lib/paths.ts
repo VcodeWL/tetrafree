@@ -30,6 +30,17 @@ export function checkPath(p: Pick<Project, 'files' | 'dirs'>, path: string, self
   return null
 }
 
+/** Путь, который предлагает агент (или внешний источник): только относительный, внутри проекта, не в служебных папках */
+export function agentPathError(path: string): string | null {
+  const e = checkPath({ files: {}, dirs: [] }, path)
+  if (e) return 'Недопустимый путь «' + path + '»: ' + e
+  if (/^[a-zA-Z]:/.test(path) || path.startsWith('~'))
+    return 'Недопустимый путь «' + path + '»: нужен путь внутри проекта'
+  const top = path.split('/')[0].toLowerCase()
+  if (top === '.git' || top === '.tetrafree') return 'Недопустимый путь «' + path + '»: служебная папка'
+  return null
+}
+
 /** Абсолютный путь ОС: C:\\dir, \\\\server\\share или /dir */
 export const isAbsPath = (p?: string) =>
   !!p && (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('/') || p.startsWith('\\\\'))

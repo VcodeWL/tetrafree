@@ -1,6 +1,7 @@
 /* Применяет план docplan к стору: документы появляются на диске как docs/<название>.md и обратно. */
 import { useStore } from '../store'
 import { fnv } from './backend'
+import { hasSynced, syncEnabled } from './sync'
 import { docMd } from './docmd'
 import { planDocs, type DocBase } from './docplan'
 import { uid } from './util'
@@ -76,6 +77,7 @@ export function syncDocs(pid: string) {
 }
 
 let started = false
+const tries = new Map<string, number>()
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
 const seenDocs = new WeakMap<object, true>()
 const seenFiles = new WeakMap<object, true>()
@@ -88,6 +90,12 @@ export function startDocSync() {
       pid,
       setTimeout(() => {
         timers.delete(pid)
+        /* пока файлы с диска не прочитаны, нельзя решать, что в docs/ «новое»: ждём первую сверку */
+        if (syncEnabled() && !hasSynced(pid) && (tries.get(pid) ?? 0) < 20) {
+          tries.set(pid, (tries.get(pid) ?? 0) + 1)
+          return run(pid)
+        }
+        tries.delete(pid)
         syncDocs(pid)
       }, 700),
     )
