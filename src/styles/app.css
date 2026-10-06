@@ -11557,3 +11557,46 @@ html.light {
 .prov .pn .popen {
   font-weight: inherit;
 }
+
+.rm-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid var(--line2);
+  border-radius: 10px;
+  margin: 4px 0 10px;
+}
+.rm-row b {
+  font-size: 13px;
+}
+.rm-row .t4 {
+  font-size: 12px;
+  margin-top: 2px;
+}
+.fhint.rm-ok {
+  color: var(--ok);
+}
+
+.dfile-t {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-width: 0;
+  text-align: left;
+}
+html.light .cl-h.feat {
+  color: #4350c4;
+}
+html.light .cl-h.chg {
+  color: #24569f;
+}
