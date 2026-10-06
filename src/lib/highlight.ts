@@ -116,11 +116,16 @@ const KW: Record<string, string[]> = {
   ],
 }
 
+/** Строки файлов с Windows-переводами строк (CRLF) приходят с хвостовым \r: он не должен ломать разбор и подсветку */
 export function tokenize(line: string, lang: string): Tok[] {
+  if (line.endsWith('\r')) return [...tokenizeLine(line.slice(0, -1), lang), { t: '\r' }]
+  return tokenizeLine(line, lang)
+}
+function tokenizeLine(line: string, lang: string): Tok[] {
   if (lang === 'md') {
     if (/^\s*#/.test(line)) return [{ t: line, c: 'h' }]
     if (/^\s*[-*] /.test(line)) {
-      const m = line.match(/^(\s*[-*] )(.*)$/)!
+      const m = line.match(/^(\s*[-*] )([\s\S]*)$/)!
       return [{ t: m[1], c: 'k' }, ...inlineMd(m[2])]
     }
     return inlineMd(line)

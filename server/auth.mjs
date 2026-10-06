@@ -62,6 +62,7 @@ export const flushDb = () => {
 }
 process.on('exit', flushDb)
 
+const isPlain = (x) => !!x && typeof x === 'object' && !Array.isArray(x)
 const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, extra })
 
 /* ───────── лимиты ───────── */
@@ -824,6 +825,16 @@ export async function accountRoutes(req, res, u, io) {
       for (const s of Object.values(db.sessions)) if (s.userId === a.user.id) delete db.sessions[s.id]
       for (const t of Object.values(db.teams)) {
         t.members = t.members.filter((x) => x !== a.user.id)
+        delete t.presence?.[a.user.id]
+        if (t.ownerId === a.user.id) {
+          /* проект не должен остаться без владельца: передаём первому участнику, а если людей нет — убираем из облака */
+          if (t.members.length) t.ownerId = t.members.shift()
+          else {
+            dropStreams(t.id)
+            delete db.teams[t.id]
+            for (const i of Object.values(db.invites)) if (i.pid === t.id) i.status = 'revoked'
+          }
+        }
       }
       delete db.users[a.user.id]
       delete db.audit[a.user.id]
@@ -843,6 +854,8 @@ export async function accountRoutes(req, res, u, io) {
       let t = teamOf(pid)
       if (t && !isMember(t, a.user.id)) throw err(403, 'Нет доступа к проекту')
       if (!t) {
+        if (!isPlain(body.files) || (body.dirs !== undefined && !Array.isArray(body.dirs)))
+          throw err(400, 'Неверный формат проекта')
         if (JSON.stringify([body.files, body.meta]).length > TEAM_MAX)
           throw err(413, 'Проект слишком большой для облака (25 МБ)')
         t = db.teams[pid] = {
@@ -1031,7 +1044,9 @@ export async function accountRoutes(req, res, u, io) {
           const size = JSON.stringify([body.files, body.meta]).length
           if (size > TEAM_MAX) throw err(413, 'Проект больше 25 МБ — облако его не принимает')
           if (+body.baseRev !== t.rev) return (out({ conflict: true, rev: t.rev }, 409), true)
-          t.files = body.files || {}
+          if (!isPlain(body.files) || (body.dirs !== undefined && !Array.isArray(body.dirs)))
+            throw err(400, 'Неверный формат проекта')
+          t.files = body.files
           t.dirs = body.dirs || t.dirs
           if (body.meta) t.meta = body.meta
           t.rev++

@@ -47,10 +47,10 @@ export function toggleComment(lines: string[], lang: string): string[] | null {
     return lines.map((l) => {
       if (!l.trim()) return l
       if (all) {
-        const m = /^(\s*)(.*?)\s*$/.exec(l)!
+        const m = /^(\s*)([\s\S]*?)\s*$/.exec(l)!
         return m[1] + m[2].slice(o.length, m[2].length - c.length).trim()
       }
-      return l.replace(/^(\s*)(.*?)\s*$/, `$1${o} $2 ${c}`)
+      return l.replace(/^(\s*)([\s\S]*?)\s*$/, `$1${o} $2 ${c}`)
     })
   }
   const all = body.every((l) => l.trimStart().startsWith(pre))

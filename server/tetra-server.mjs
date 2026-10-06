@@ -155,7 +155,11 @@ async function walk(dir, base = dir, out = {}, lim = { n: 0, bytes: 0, cut: fals
     const gi = await fsp.readFile(path.join(base, '.gitignore'), 'utf8').catch(() => '')
     lim.ig = makeIgnore(gi)
   }
-  for (const e of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+  const ents = await fsp.readdir(dir, { withFileTypes: true }).catch((e) => {
+    if (e.code !== 'ENOENT') lim.partial = true /* папка недоступна: её файлы не считаем удалёнными */
+    return []
+  })
+  for (const e of ents) {
     if (lim.cut) break
     if (SKIP.has(e.name)) continue
     const abs = path.join(dir, e.name)
@@ -163,9 +167,17 @@ async function walk(dir, base = dir, out = {}, lim = { n: 0, bytes: 0, cut: fals
     if (lim.ig(rel, e.isDirectory())) continue
     if (e.isDirectory()) await walk(abs, base, out, lim)
     else if (e.isFile()) {
-      const st = await fsp.stat(abs)
-      if (st.size > MAX_FILE) continue
-      const buf = await fsp.readFile(abs)
+      /* файл мог исчезнуть или быть занят другой программой (антивирус, редактор) — пропускаем его, а не ломаем весь обход */
+      let st, buf
+      try {
+        st = await fsp.stat(abs)
+        if (st.size > MAX_FILE) continue
+        buf = await fsp.readFile(abs)
+      } catch (e) {
+        /* занят — отсутствие в списке не должно читаться как «удалён» (lim.partial → truncated) */
+        if (e.code !== 'ENOENT') lim.partial = true
+        continue
+      }
       if (buf.includes(0)) continue // бинарные пропускаем
       if (lim.n >= MAX_FILES || lim.bytes + buf.length > MAX_TOTAL) {
         lim.cut = true
@@ -574,7 +586,7 @@ async function handle(req, res, isLocal) {
     const files = await walk(dir, dir, {}, lim)
     return json(res, 200, {
       dir,
-      truncated: lim.cut,
+      truncated: lim.cut || !!lim.partial,
       ignore: await fsp.readFile(path.join(dir, '.gitignore'), 'utf8').catch(() => ''),
       skip: [...SKIP],
       hashes: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, fnv(v)])),

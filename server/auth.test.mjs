@@ -251,6 +251,12 @@ test('приглашение: только для своей почты, оди�
     .token
   assert.equal((await call('GET', '/api/team/p-1', null, gt)).status, 404)
   assert.equal((await call('POST', `/api/invites/${token}/accept`, {}, gt)).status, 403)
+  assert.equal(
+    (await call('PUT', '/api/team/p-1', { baseRev: 4, files: 'oops' }, owner)).status,
+    400,
+    'неверный формат файлов отклоняется, а не стирает проект',
+  )
+  assert.equal((await call('PUT', '/api/team/p-1', { baseRev: 4 }, owner)).status, 400)
   /* владелец убирает участника */
   const vid = (await call('GET', '/api/auth/me', null, vt)).body.user.id
   assert.equal((await call('DELETE', `/api/team/p-1/members/${vid}`, null, owner)).status, 200)
@@ -317,4 +323,28 @@ test('health: версия сервера берётся из package.json, а �
   const h = await (await fetch(B + '/api/health')).json()
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(h.version, pkg.version)
+})
+
+test('удаление аккаунта владельца передаёт проект участнику, а пустой проект убирает из облака', async () => {
+  const reg = async (name, email, password) => {
+    await call('POST', '/api/auth/register', { name, email, password })
+    return (await call('POST', '/api/auth/verify', { email, code: await lastCode(email) })).body.token
+  }
+  const it = await reg('Ира', 'ira@test.dev', 'Ir4!Pass1234')
+  const pt = await reg('Павел', 'pavel@test.dev', 'P4vel!Pass55')
+  const inv = await call(
+    'POST',
+    '/api/invites',
+    { pid: 'p-own', name: 'Свой', email: 'pavel@test.dev', files: { 'a.txt': '1' }, dirs: [] },
+    it,
+  )
+  assert.equal(inv.status, 201)
+  await call('POST', `/api/invites/${inv.body.link.split('invite=')[1]}/accept`, {}, pt)
+  const pid = (await call('GET', '/api/auth/me', null, pt)).body.user.id
+  assert.equal((await call('DELETE', '/api/auth/account', { password: 'Ir4!Pass1234' }, it)).status, 200)
+  const m = await call('GET', '/api/team/p-own/members', null, pt)
+  assert.equal(m.status, 200)
+  assert.equal(m.body.owner, pid)
+  /* единственный участник удаляется — проекта в облаке больше нет */
+  assert.equal((await call('DELETE', '/api/auth/account', { password: 'P4vel!Pass55' }, pt)).status, 200)
 })
