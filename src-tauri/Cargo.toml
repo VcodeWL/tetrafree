@@ -1,6 +1,6 @@
 [package]
 name = "tetrafree"
-version = "2.8.1"
+version = "2.8.2"
 description = "TetraFree — совместная разработка с ИИ-агентами"
 edition = "2021"
 rust-version = "1.77"

@@ -139,6 +139,8 @@ export async function realInside(dir, abs) {
       return abs
     } catch (e) {
       if (e.status) throw e
+      /* самой папки проекта ещё нет (первая запись) — выйти через ссылку нечем */
+      if (p === dir) return abs
       const up = path.dirname(p)
       if (up === p) return abs
       p = up
@@ -596,7 +598,10 @@ async function handle(req, res, isLocal) {
 
   /* shell: NDJSON-стрим {t:'o'|'e', d} … {t:'x', code, cwd} */
   if (u.pathname === '/api/exec' && req.method === 'POST') {
-    const { id, name, folder, cmd, cwd = '', timeout = 600, runId } = await readBody(req)
+    const { id, name, folder, cmd: rawCmd, cwd = '', timeout: rawTimeout = 600, runId } = await readBody(req)
+    const cmd = typeof rawCmd === 'string' ? rawCmd : ''
+    /* setTimeout больше ~24 дней срабатывает сразу — зажимаем срок в разумные рамки */
+    const timeout = Math.min(86400, Math.max(1, Number(rawTimeout) || 600))
     const dir = await projectDir(id, name, folder)
     const wd = inside(dir, cwd)
     res.writeHead(200, {
@@ -1172,4 +1177,9 @@ const isMain = () => {
     return false
   }
 }
-if (isMain()) start()
+if (isMain()) {
+  /* страховка: случайная ошибка в фоновом обработчике не должна ронять сервер вместе со всеми терминалами и синхронизацией */
+  process.on('uncaughtException', (e) => console.error('[uncaughtException]', e))
+  process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e))
+  start()
+}

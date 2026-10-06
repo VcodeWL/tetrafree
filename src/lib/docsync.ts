@@ -12,7 +12,8 @@ const S = () => useStore.getState()
 const load = (pid: string): { base: DocBase; init: boolean } => {
   try {
     const raw = localStorage.getItem(KEY(pid))
-    if (raw) return { base: JSON.parse(raw), init: false }
+    const b = raw ? JSON.parse(raw) : null
+    if (b && typeof b === 'object' && !Array.isArray(b)) return { base: b, init: false }
   } catch {
     /* повреждено — начнём заново */
   }

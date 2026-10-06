@@ -15,3 +15,7 @@ test('toggleComment: js строчные, json без комментариев',
   assert.deepEqual(toggleComment(['// let a'], 'ts'), ['let a'])
   assert.equal(toggleComment(['{}'], 'json'), null)
 })
+
+test('раскомментирование снимает только ведущий маркер', () => {
+  assert.deepEqual(toggleComment(['//x // y', '// z'], 'ts'), ['x // y', 'z'])
+})

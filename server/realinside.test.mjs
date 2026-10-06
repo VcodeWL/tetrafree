@@ -32,3 +32,9 @@ test('ссылка на папку вне проекта: запись и чте
   await assert.rejects(realInside(proj, path.join(proj, 'link', 'secret.txt')), /за пределы/)
   await assert.rejects(realInside(proj, path.join(proj, 'link', 'a', 'b.txt')), /за пределы/)
 })
+
+test('папки проекта ещё нет на диске (первая запись нового проекта) — путь разрешён', async () => {
+  const fresh = path.join(tmp, 'not-created-yet')
+  await realInside(fresh, path.join(fresh, 'README.md'))
+  await realInside(fresh, path.join(fresh, 'src', 'a.ts'))
+})

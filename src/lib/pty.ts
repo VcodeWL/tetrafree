@@ -70,7 +70,12 @@ export async function attachPty(
         const ln = buf.slice(0, i)
         buf = buf.slice(i + 1)
         if (!ln) continue
-        const m = JSON.parse(ln) as { d?: string; x?: number }
+        let m: { d?: string; x?: number }
+        try {
+          m = JSON.parse(ln)
+        } catch {
+          continue
+        }
         if (m.d) onData(unb64(m.d))
         else if (typeof m.x === 'number') {
           dead = true

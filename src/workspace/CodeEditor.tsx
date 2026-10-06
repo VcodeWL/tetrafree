@@ -55,7 +55,11 @@ export function toggleComment(lines: string[], lang: string): string[] | null {
   }
   const all = body.every((l) => l.trimStart().startsWith(pre))
   return lines.map((l) =>
-    !l.trim() ? l : all ? l.replace(pre + ' ', '').replace(pre, '') : l.replace(/^(\s*)/, `$1${pre} `),
+    !l.trim()
+      ? l
+      : all
+        ? l.replace(new RegExp('^(\\s*)' + pre + ' ?'), '$1')
+        : l.replace(/^(\s*)/, `$1${pre} `),
   )
 }
 
@@ -210,7 +214,7 @@ export const CodeSurface = memo(function CodeSurface({
       return
     }
     if (mod && e.key === '/') {
-      const s0 = v.lastIndexOf('\n', a - 1) + 1
+      const s0 = a > 0 ? v.lastIndexOf('\n', a - 1) + 1 : 0
       let e0 = v.indexOf('\n', b > a && v[b - 1] === '\n' ? b - 1 : b)
       if (e0 < 0) e0 = v.length
       const res = toggleComment(v.slice(s0, e0).split('\n'), lang)
@@ -226,7 +230,7 @@ export const CodeSurface = memo(function CodeSurface({
         replaceRange(t, a, b, '  ', [a + 2, a + 2])
         return
       }
-      const s0 = v.lastIndexOf('\n', a - 1) + 1
+      const s0 = a > 0 ? v.lastIndexOf('\n', a - 1) + 1 : 0
       let e0 = v.indexOf('\n', b > a && v[b - 1] === '\n' ? b - 1 : b)
       if (e0 < 0) e0 = v.length
       const out = v
@@ -238,7 +242,7 @@ export const CodeSurface = memo(function CodeSurface({
       return
     }
     if (e.key === 'Enter' && !mod && !e.shiftKey && !e.altKey) {
-      const s0 = v.lastIndexOf('\n', a - 1) + 1
+      const s0 = a > 0 ? v.lastIndexOf('\n', a - 1) + 1 : 0
       const cur = v.slice(s0, a)
       const ind = /^[ \t]*/.exec(cur)![0]
       const before = v[a - 1],

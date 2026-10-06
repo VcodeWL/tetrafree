@@ -149,11 +149,11 @@ function fromMeta(meta: Meta): Partial<Project> {
     icon: meta.icon,
     template: meta.template,
     tools: meta.tools,
-    docs: meta.docs,
-    tasks: meta.tasks,
-    taskSeq: meta.taskSeq,
-    memory: meta.memory,
-    chats: meta.chats,
+    docs: meta.docs || [],
+    tasks: meta.tasks || [],
+    taskSeq: meta.taskSeq || 1,
+    memory: meta.memory || [],
+    chats: meta.chats || [],
     ...(meta.deploy ? { deploy: { auto: meta.deploy.auto, runs: meta.deploy.runs } } : {}),
     ...(meta.comments ? { comments: meta.comments } : {}),
   }
@@ -416,6 +416,16 @@ function mergeRuns(local: DeployRun[], remote: DeployRun[]): DeployRun[] {
 
 /** вливаем чужую мету в проект. unchanged — у меня с прошлой синхронизации ничего не менялось, можно просто взять чужое */
 function applyMeta(p: Project, rm: Meta, unchanged: boolean) {
+  /* мета пришла по сети: у клиента старой версии каких-то полей может не быть — не падаем, а берём пустые */
+  rm = {
+    ...rm,
+    docs: rm.docs || [],
+    tasks: rm.tasks || [],
+    memory: rm.memory || [],
+    chats: rm.chats || [],
+    taskSeq: rm.taskSeq || 0,
+    desc: rm.desc ?? p.desc,
+  }
   const tomb: Record<string, number> = { ...(p.cloud?.tomb || {}) }
   for (const [k, v] of Object.entries(rm.tomb || {})) tomb[k] = Math.max(tomb[k] || 0, v)
   for (const k in tomb) if (tomb[k] < Date.now() - 90 * 864e5) delete tomb[k]

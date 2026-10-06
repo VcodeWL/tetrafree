@@ -39,6 +39,7 @@ export async function importProjectFile(file: File): Promise<Project> {
     const meta = JSON.parse(metaRaw)
     if (meta.format !== 'tetrafree-project') throw new Error('Неизвестный формат архива')
     const pr = meta.project as Project
+    if (!pr || typeof pr !== 'object') throw new Error('Архив повреждён: нет данных проекта')
     ;((meta.generated as string[]) || []).forEach((f) => {
       delete files[f]
     })

@@ -104,6 +104,8 @@ function open(dir, name, cols, rows) {
         ],
         { cwd: dir, detached: true, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], env },
       )
+  for (const k of ['SMTP_URL', 'GITHUB_CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET'])
+    delete env[k] /* секреты сервера не нужны оболочке */
   const s = {
     id: crypto.randomBytes(9).toString('base64url'),
     child,
@@ -120,6 +122,11 @@ function open(dir, name, cols, rows) {
     for (const r of s.subs) r.write(JSON.stringify({ d: d.toString('base64') }) + '\n')
   })
   child.stderr.on('data', () => {})
+  /* запись в завершившийся процесс даёт EPIPE: без обработчика это необработанная ошибка и падение сервера */
+  child.stdin.on('error', () => {})
+  child.stdio[3]?.on('error', () => {})
+  child.stdout.on('error', () => {})
+  child.stderr.on('error', () => {})
   child.on('error', () => {
     s.exit = 127
     for (const r of s.subs) {

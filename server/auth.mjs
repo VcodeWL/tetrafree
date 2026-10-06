@@ -23,8 +23,17 @@ const now = () => Date.now()
 let db = { users: {}, sessions: {}, codes: {}, invites: {}, teams: {}, audit: {}, secret: rnd(32) }
 try {
   db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) }
-} catch {
-  /* первый запуск */
+} catch (e) {
+  /* первый запуск — или файл повреждён: тогда сохраняем копию рядом, иначе первая же запись затрёт все аккаунты */
+  if (e.code !== 'ENOENT') {
+    try {
+      const bad = FILE + '.broken-' + Date.now()
+      fs.copyFileSync(FILE, bad)
+      console.error('[db] db.json не читается (' + e.message + '), копия сохранена в ' + bad)
+    } catch {
+      /* нечего копировать */
+    }
+  }
 }
 let saveT = null
 function save() {
@@ -44,7 +53,9 @@ export const flushDb = () => {
   clearTimeout(saveT)
   try {
     fs.mkdirSync(DATA, { recursive: true, mode: 0o700 })
-    fs.writeFileSync(FILE, JSON.stringify(db), { mode: 0o600 })
+    const tmp = FILE + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(db), { mode: 0o600 })
+    fs.renameSync(tmp, FILE)
   } catch {
     /* ignore */
   }
