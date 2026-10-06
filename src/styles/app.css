@@ -11600,3 +11600,15 @@ html.light .cl-h.feat {
 html.light .cl-h.chg {
   color: #24569f;
 }
+
+/* 2.8.1: светлая тема — предупреждающий чип и ошибка Git читаются на светлом фоне */
+html.light .chip.warn {
+  color: #8a4b00;
+  background: rgba(255, 170, 40, 0.18);
+  border-color: rgba(190, 110, 0, 0.35);
+}
+html.light .git-err {
+  color: #a4161a;
+  background: rgba(220, 60, 60, 0.08);
+  border-color: rgba(200, 50, 50, 0.3);
+}
