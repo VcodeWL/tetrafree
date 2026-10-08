@@ -94,7 +94,10 @@ function Password({ user }: { user: Acc }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const save = async () => {
+    if (busy) return
+    if (n.length < 8) return setErr('Пароль: минимум 8 символов')
     if (n !== n2) return setErr('Пароли не совпадают')
+    if (user.hasPassword && n === o) return setErr('Новый пароль совпадает с текущим')
     setBusy(true)
     setErr('')
     try {
@@ -131,7 +134,13 @@ function Password({ user }: { user: Acc }) {
         </button>
       </div>
       {open && (
-        <div className="subform">
+        <form
+          className="subform"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void save()
+          }}
+        >
           {user.hasPassword && (
             <div className="field">
               <label>Текущий пароль</label>
@@ -148,6 +157,7 @@ function Password({ user }: { user: Acc }) {
             <input
               type="password"
               autoComplete="new-password"
+              placeholder="не короче 8 символов"
               value={n}
               onChange={(e) => setN(e.target.value)}
             />
@@ -162,10 +172,10 @@ function Password({ user }: { user: Acc }) {
             />
           </div>
           {err && <div className="ferr">{err}</div>}
-          <button className="btn pri" disabled={busy || !n} onClick={save}>
+          <button type="submit" className="btn pri" disabled={busy || !n || !n2}>
             {busy ? <span className="bspin" /> : null}Сохранить
           </button>
-        </div>
+        </form>
       )}
     </div>
   )
@@ -248,7 +258,13 @@ function TwoFA({ user }: { user: Acc }) {
         )}
       </div>
       {setup && (
-        <div className="subform">
+        <form
+          className="subform"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!busy && code.replace(/\s/g, '').length === 6) void enable()
+          }}
+        >
           <p className="hint">
             1. Отсканируй QR-код в приложении-аутентификаторе (Google Authenticator, 1Password, Aegis…) — или
             выбери «Ввести ключ вручную».
@@ -287,18 +303,22 @@ function TwoFA({ user }: { user: Acc }) {
           </div>
           {err && <div className="ferr">{err}</div>}
           <div className="set-actions">
-            <button
-              className="btn pri"
-              disabled={busy || code.replace(/\s/g, '').length !== 6}
-              onClick={enable}
-            >
-              Подтвердить и включить
+            <button type="submit" className="btn pri" disabled={busy || code.replace(/\s/g, '').length !== 6}>
+              {busy && <i className="bspin" />}Подтвердить и включить
             </button>
-            <button className="btn gho" onClick={() => setSetup(null)}>
+            <button
+              type="button"
+              className="btn gho"
+              onClick={() => {
+                setSetup(null)
+                setCode('')
+                setErr('')
+              }}
+            >
               Отмена
             </button>
           </div>
-        </div>
+        </form>
       )}
       {rec && (
         <div className="subform recbox">
@@ -329,16 +349,28 @@ function TwoFA({ user }: { user: Acc }) {
         </div>
       )}
       {off && (
-        <div className="subform">
+        <form
+          className="subform"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!busy && pw) void disable()
+          }}
+        >
           <div className="field">
             <label>Пароль для подтверждения</label>
-            <input type="password" aria-label="Пароль" value={pw} onChange={(e) => setPw(e.target.value)} />
+            <input
+              type="password"
+              aria-label="Пароль"
+              autoComplete="current-password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+            />
           </div>
           {err && <div className="ferr">{err}</div>}
-          <button className="btn danger" disabled={busy || !pw} onClick={disable}>
-            Отключить 2FA
+          <button type="submit" className="btn danger" disabled={busy || !pw}>
+            {busy && <i className="bspin" />}Отключить 2FA
           </button>
-        </div>
+        </form>
       )}
       {!setup && !off && !rec && err && <div className="ferr">{err}</div>}
     </div>
@@ -439,8 +471,8 @@ function AuditLog() {
       .catch(() => setBad(true))
   }, [])
   useEffect(() => {
-    if (open && !ev) load()
-  }, [open]) // eslint-disable-line
+    if (open) load() // каждый раз заново: после смены пароля или входа журнал уже другой
+  }, [open, load])
   return (
     <div className="srow col">
       <div className="rowtop">
@@ -448,7 +480,7 @@ function AuditLog() {
           <div className="t">Журнал безопасности</div>
           <div className="d">Входы, смена пароля, 2FA, приглашения — последние 100 событий.</div>
         </div>
-        <button className="btn sm" onClick={() => setOpen(!open)}>
+        <button className="btn sm" aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? 'Скрыть' : 'Показать'}
         </button>
       </div>
@@ -481,13 +513,18 @@ function DeleteAccount({ user }: { user: Acc }) {
   const [open, setOpen] = useState(false)
   const [pw, setPw] = useState('')
   const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
   const del = async () => {
+    if (busy) return
+    setBusy(true)
+    setErr('')
     try {
       await api('DELETE', '/api/auth/account', { password: pw })
       toast({ title: 'Аккаунт удалён', icon: 'trash' })
       await logout()
     } catch (e) {
       setErr((e as Error).message)
+      setBusy(false)
     }
   }
   return (
@@ -506,7 +543,13 @@ function DeleteAccount({ user }: { user: Acc }) {
           </button>
         </div>
         {open && (
-          <div className="subform">
+          <form
+            className="subform"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (!user.hasPassword || pw) void del()
+            }}
+          >
             {user.hasPassword && (
               <div className="field">
                 <label>Пароль</label>
@@ -519,10 +562,10 @@ function DeleteAccount({ user }: { user: Acc }) {
               </div>
             )}
             {err && <div className="ferr">{err}</div>}
-            <button className="btn danger" disabled={user.hasPassword && !pw} onClick={del}>
-              Удалить навсегда
+            <button type="submit" className="btn danger" disabled={busy || (user.hasPassword && !pw)}>
+              {busy && <i className="bspin" />}Удалить навсегда
             </button>
-          </div>
+          </form>
         )}
       </div>
     </div>
