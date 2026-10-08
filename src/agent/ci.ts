@@ -5,13 +5,14 @@ import type { DeployRun, ID } from '../types'
 import { uid } from '../lib/util'
 import { backendOnline, bExec } from '../lib/backend'
 import { reconcile } from '../lib/sync'
-import { pipelinesFor, type TriggerEvent } from './triggers'
+import { pipelinesFor, parseSchedule, scheduleDue, type Schedule, type TriggerEvent } from './triggers'
 
 const S = () => useStore.getState()
 export interface PipelineDef {
   file: string
   name: string
   trigger: string[]
+  schedule: Schedule | null
   steps: { name: string; run: string }[]
 }
 
@@ -30,7 +31,8 @@ export function parsePipeline(file: string, src: string): PipelineDef {
   const re = /-\s*name:\s*(.+)\n\s+run:\s*(.+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) steps.push({ name: m[1].trim(), run: m[2].trim() })
-  return { file, name, trigger, steps }
+  const schedule = parseSchedule(src.match(/^schedule:\s*(.+?)\s*$/m)?.[1])
+  return { file, name, trigger, schedule, steps }
 }
 export function pipelinesOf(files: Record<string, string>) {
   return Object.keys(files)
@@ -52,6 +54,46 @@ export function fireTrigger(pid: ID, ev: TriggerEvent) {
   }, 2500)
 }
 export const pipelineRunning = () => active !== null
+
+/* Расписание: пока приложение открыто, раз в 30 с проверяем, не пора ли запустить пайплайн со строкой `schedule:`.
+   Работает так же, как триггеры: только при включённом «Автодеплое» и живом бэкенде. Последний запуск помним в localStorage. */
+const lastKey = (pid: ID, name: string) => `tf-sched:${pid}:${name}`
+const readLast = (k: string) => {
+  try {
+    return +(localStorage.getItem(k) || 0) || 0
+  } catch {
+    return 0
+  }
+}
+const writeLast = (k: string, t: number) => {
+  try {
+    localStorage.setItem(k, String(t))
+  } catch {
+    /* квота — запуск всё равно состоится, при следующем старте расписание начнётся заново */
+  }
+}
+export async function schedulerTick(now = Date.now()) {
+  if (active || !backendOnline()) return
+  for (const p of S().projects) {
+    if (!p.deploy.auto) continue
+    for (const d of pipelinesOf(p.files)) {
+      if (!d.schedule || !d.steps.length) continue
+      const k = lastKey(p.id, d.name)
+      const last = readLast(k)
+      if (!last) writeLast(k, now)
+      else if (scheduleDue(d.schedule, last, now)) {
+        writeLast(k, now)
+        await runPipeline(d.name, p.id)
+        return
+      }
+    }
+  }
+}
+let schedTimer = 0
+export function startScheduler() {
+  if (schedTimer) return
+  schedTimer = window.setInterval(() => void schedulerTick(), 30_000)
+}
 
 /** pid — для какого проекта запуск; по умолчанию открытый (триггер мог сработать, пока пользователь уже переключился) */
 export async function runPipeline(name = 'release', forPid?: ID) {

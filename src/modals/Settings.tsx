@@ -9,6 +9,7 @@ import { Modal } from '../components/ui/Modal'
 import { ME } from '../data/seed'
 import { isEmail, ago, modKey, download, copyText } from '../lib/util'
 import { pipelinesOf, runPipeline } from '../agent/ci'
+import { describeSchedule } from '../agent/triggers'
 import { HOTKEYS } from '../lib/hotkeys'
 import { ACTIONS, effective, comboOf, check, parts } from '../lib/keymap'
 import { useBackend, detectBackend, setBackendUrl } from '../lib/backend'
@@ -455,7 +456,10 @@ function Deploy() {
                   </span>
                 ))}
               </div>
-              <div className="pm">триггер: {d.trigger.join(', ')}</div>
+              <div className="pm">
+                триггер: {d.trigger.join(', ')}
+                {d.schedule ? ` · ${describeSchedule(d.schedule)}` : ''}
+              </div>
             </div>
             <div className="pacts">
               <button

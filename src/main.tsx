@@ -9,6 +9,7 @@ import { startSync } from './lib/sync'
 import { startDocSync } from './lib/docsync'
 import { initAccount } from './lib/account'
 import { startCloud } from './lib/team'
+import { startScheduler } from './agent/ci'
 import { startAutoBackup } from './lib/autobackup'
 import { startVault } from './lib/vault'
 
@@ -24,6 +25,7 @@ startSync()
 startDocSync()
 initAccount()
 startCloud()
+startScheduler()
 startAutoBackup()
 startVault()
 
