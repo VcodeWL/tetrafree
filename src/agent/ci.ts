@@ -5,7 +5,14 @@ import type { DeployRun, ID } from '../types'
 import { uid } from '../lib/util'
 import { backendOnline, bExec } from '../lib/backend'
 import { reconcile } from '../lib/sync'
-import { pipelinesFor, parseSchedule, scheduleDue, type Schedule, type TriggerEvent } from './triggers'
+import {
+  pipelinesFor,
+  parseSchedule,
+  nextRun,
+  scheduleDue,
+  type Schedule,
+  type TriggerEvent,
+} from './triggers'
 
 const S = () => useStore.getState()
 export interface PipelineDef {
@@ -13,6 +20,8 @@ export interface PipelineDef {
   name: string
   trigger: string[]
   schedule: Schedule | null
+  /** строка `schedule:` есть, но не разобралась — покажем в Настройках, а не будем молча игнорировать */
+  badSchedule: string | null
   steps: { name: string; run: string }[]
 }
 
@@ -31,8 +40,9 @@ export function parsePipeline(file: string, src: string): PipelineDef {
   const re = /-\s*name:\s*(.+)\n\s+run:\s*(.+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) steps.push({ name: m[1].trim(), run: m[2].trim() })
-  const schedule = parseSchedule(src.match(/^schedule:\s*(.+?)\s*$/m)?.[1])
-  return { file, name, trigger, schedule, steps }
+  const rawSched = src.match(/^schedule:[ \t]*(.+?)\s*$/m)?.[1]
+  const schedule = parseSchedule(rawSched)
+  return { file, name, trigger, schedule, badSchedule: rawSched && !schedule ? rawSched : null, steps }
 }
 export function pipelinesOf(files: Record<string, string>) {
   return Object.keys(files)
@@ -71,6 +81,20 @@ const writeLast = (k: string, t: number) => {
   } catch {
     /* квота — запуск всё равно состоится, при следующем старте расписание начнётся заново */
   }
+}
+/** Состояние расписания пайплайна для Настроек: когда следующий запуск или почему расписание сейчас не работает. */
+export function scheduleStatus(
+  pid: ID,
+  d: PipelineDef,
+  autoOn: boolean,
+  now = Date.now(),
+): { ok: true; at: number } | { ok: false; text: string } | null {
+  if (!d.schedule) return null
+  if (!d.steps.length) return { ok: false, text: 'в пайплайне нет шагов' }
+  if (!autoOn) return { ok: false, text: 'не работает: «Автодеплой» выключен' }
+  if (!backendOnline()) return { ok: false, text: 'не работает: сервер не запущен' }
+  const at = nextRun(d.schedule, readLast(lastKey(pid, d.name)), now)
+  return { ok: true, at }
 }
 export async function schedulerTick(now = Date.now()) {
   if (active || !backendOnline()) return

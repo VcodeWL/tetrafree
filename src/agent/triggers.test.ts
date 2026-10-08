@@ -29,7 +29,7 @@ test('pipelinesFor: пустые пайплайны пропускаются, п
   )
 })
 
-import { parseSchedule, scheduleDue, describeSchedule } from './triggers'
+import { parseSchedule, scheduleDue, describeSchedule, nextRun } from './triggers'
 
 test('parseSchedule: every и daily, мусор и слишком частое отклоняются', () => {
   assert.deepEqual(parseSchedule('every 30m'), { kind: 'every', ms: 30 * 60e3 })
@@ -69,4 +69,19 @@ test('describeSchedule', () => {
   assert.equal(describeSchedule(parseSchedule('every 90m')!), 'каждые 90 мин')
   assert.equal(describeSchedule(parseSchedule('every 2h')!), 'каждые 2 ч')
   assert.equal(describeSchedule(parseSchedule('daily 9:05')!), 'каждый день в 09:05')
+})
+
+test('parseSchedule: кавычки и комментарий', () => {
+  assert.deepEqual(parseSchedule('"every 30m"  # раз в полчаса'), { kind: 'every', ms: 30 * 60e3 })
+  assert.deepEqual(parseSchedule("'daily 09:30'"), { kind: 'daily', h: 9, m: 30 })
+  assert.equal(parseSchedule('every 1m'), null)
+})
+test('nextRun', () => {
+  const t = new Date(2025, 0, 10, 12, 0).getTime()
+  assert.equal(nextRun({ kind: 'every', ms: 600e3 }, t, t + 1000), t + 600e3)
+  assert.equal(nextRun({ kind: 'daily', h: 9, m: 0 }, t, t), new Date(2025, 0, 11, 9, 0).getTime())
+  assert.equal(nextRun({ kind: 'daily', h: 13, m: 0 }, t, t), new Date(2025, 0, 10, 13, 0).getTime())
+  // компьютер спал, время прошло — запуск «сейчас»
+  const late = new Date(2025, 0, 10, 14, 0).getTime()
+  assert.equal(nextRun({ kind: 'daily', h: 13, m: 0 }, t, late), late)
 })

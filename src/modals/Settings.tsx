@@ -8,7 +8,7 @@ import { Avatar, Switch, Kbd, Segmented } from '../components/ui/primitives'
 import { Modal } from '../components/ui/Modal'
 import { ME } from '../data/seed'
 import { isEmail, ago, modKey, download, copyText } from '../lib/util'
-import { pipelinesOf, runPipeline } from '../agent/ci'
+import { pipelinesOf, runPipeline, scheduleStatus } from '../agent/ci'
 import { describeSchedule } from '../agent/triggers'
 import { HOTKEYS } from '../lib/hotkeys'
 import { ACTIONS, effective, comboOf, check, parts } from '../lib/keymap'
@@ -411,6 +411,7 @@ function Deploy() {
   const p = useProject()!
   const st = useStore.getState
   const pipes = useMemo(() => pipelinesOf(p.files), [p.files])
+  useBackend((b) => b.status)
   const running = p.deploy.runs.some((r) => r.status === 'running')
   return (
     <>
@@ -460,6 +461,24 @@ function Deploy() {
                 триггер: {d.trigger.join(', ')}
                 {d.schedule ? ` · ${describeSchedule(d.schedule)}` : ''}
               </div>
+              {d.badSchedule && (
+                <div className="pm pm-warn">
+                  Расписание «{d.badSchedule}» не распознано. Пример:{' '}
+                  <span className="mono">schedule: every 30m</span> (от 5 минут) или{' '}
+                  <span className="mono">schedule: daily 09:30</span>
+                </div>
+              )}
+              {(() => {
+                const ss = scheduleStatus(p.id, d, p.deploy.auto)
+                if (!ss) return null
+                return (
+                  <div className={'pm' + (ss.ok ? '' : ' pm-warn')}>
+                    {ss.ok
+                      ? `следующий запуск: ${new Date(ss.at).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+                      : ss.text}
+                  </div>
+                )
+              })()}
             </div>
             <div className="pacts">
               <button

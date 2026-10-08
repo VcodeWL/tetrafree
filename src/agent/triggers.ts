@@ -15,7 +15,13 @@ export const pipelinesFor = <T extends { trigger: string[]; steps: unknown[] }>(
 export type Schedule = { kind: 'every'; ms: number } | { kind: 'daily'; h: number; m: number }
 
 export function parseSchedule(src?: string): Schedule | null {
-  const s = (src || '').trim().toLowerCase()
+  /* допускаем кавычки и комментарий в конце строки: `schedule: "every 30m"  # раз в полчаса` */
+  const s = (src || '')
+    .replace(/\s+#.*$/, '')
+    .trim()
+    .replace(/^(['"])(.*)\1$/, '$2')
+    .trim()
+    .toLowerCase()
   let m = /^every\s+(\d{1,4})\s*(m|min|h)$/.exec(s)
   if (m) {
     const ms = +m[1] * (m[2] === 'h' ? 3600e3 : 60e3)
@@ -41,4 +47,14 @@ export function scheduleDue(s: Schedule, last: number, now: number): boolean {
   occ.setHours(s.h, s.m, 0, 0)
   if (occ.getTime() > now) occ.setDate(occ.getDate() - 1)
   return last < occ.getTime()
+}
+
+/** Когда расписание сработает в следующий раз (last = 0 — отсчёт ещё не начался: ждём один интервал от now). */
+export function nextRun(s: Schedule, last: number, now: number): number {
+  if (s.kind === 'every') return (last || now) + s.ms
+  const occ = new Date(now)
+  occ.setHours(s.h, s.m, 0, 0)
+  if (last && last < occ.getTime() && occ.getTime() <= now) return now
+  if (occ.getTime() <= now) occ.setDate(occ.getDate() + 1)
+  return occ.getTime()
 }

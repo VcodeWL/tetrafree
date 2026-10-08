@@ -11612,3 +11612,10 @@ html.light .git-err {
   background: rgba(220, 60, 60, 0.08);
   border-color: rgba(200, 50, 50, 0.3);
 }
+
+html .pipe .pm-warn {
+  color: var(--warn, #e6b450);
+}
+html.light .pipe .pm-warn {
+  color: #9a5b00;
+}
