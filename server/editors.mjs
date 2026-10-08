@@ -85,9 +85,59 @@ export function detectEditors(opts) {
   return EDITORS.map((e) => ({ id: e.id, name: e.name, exe: findEditor(e, opts) })).filter((e) => e.exe)
 }
 
+/** Свой редактор по полному пути (портативная установка, нестандартная папка): нужен существующий файл. */
+export function customEditor(
+  exe,
+  { exists = (p) => fs.existsSync(p), isFile = (p) => fs.statSync(p).isFile() } = {},
+) {
+  const p = String(exe || '')
+    .trim()
+    .replace(/^"(.*)"$/, '$1')
+  if (!p || p.length > 500 || p.includes('\0') || !(path.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p)))
+    return null
+  try {
+    if (!exists(p) || !isFile(p)) return null
+  } catch {
+    return null
+  }
+  const base = p
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\.[a-z]+$/i, '')
+  /* семейство VS Code понимает --goto, остальные — путь:строка */
+  const style = /code|cursor|windsurf|codium/i.test(base) ? 'code' : 'colon'
+  return { id: 'custom', name: base || 'Свой редактор', style, exe: p }
+}
+
 /** Аргументы: папка проекта, а если указан файл — ещё и он на нужной строке. */
 export function editorArgs(ed, dir, abs, line) {
   const ln = Math.max(1, Math.min(1e7, Math.floor(Number(line)) || 1))
   if (!abs) return [dir]
   return ed.style === 'code' ? [dir, '--goto', `${abs}:${ln}`] : [dir, `${abs}:${ln}`]
+}
+
+/** Как открыть отдельное окно терминала в папке проекта. Папка передаётся рабочей директорией или отдельным аргументом без оболочки. */
+export function terminalLaunch(
+  dir,
+  { platform = process.platform, env = process.env, exists = (p) => fs.existsSync(p) } = {},
+) {
+  if (platform === 'win32') {
+    const wt = env.LOCALAPPDATA ? path.win32.join(env.LOCALAPPDATA, 'Microsoft', 'WindowsApps', 'wt.exe') : ''
+    if (wt && exists(wt)) return { cmd: wt, args: ['-d', dir], cwd: dir }
+    return { cmd: 'cmd.exe', args: ['/c', 'start', '', 'powershell.exe', '-NoExit'], cwd: dir }
+  }
+  if (platform === 'darwin') return { cmd: 'open', args: ['-a', 'Terminal', dir], cwd: dir }
+  const dirs = String(env.PATH || '')
+    .split(path.delimiter)
+    .filter(Boolean)
+  const on = (b) => dirs.some((d) => exists(path.join(d, b)))
+  const list = [
+    ['x-terminal-emulator', []],
+    ['gnome-terminal', ['--working-directory=' + dir]],
+    ['konsole', ['--workdir', dir]],
+    ['xfce4-terminal', ['--working-directory=' + dir]],
+    ['xterm', []],
+  ]
+  const hit = list.find(([b]) => on(b))
+  return hit ? { cmd: hit[0], args: hit[1], cwd: dir } : null
 }

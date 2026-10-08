@@ -1,7 +1,7 @@
 /* Внешние редакторы кода: список установленных (спрашиваем у сервера) и «открыть проект / файл на строке». */
 import { create } from 'zustand'
 import { useStore } from '../store'
-import { backendOnline, bEditors, bOpenIn } from './backend'
+import { backendOnline, bEditors, bOpenIn, bOpenTerminal } from './backend'
 import { reconcile, syncEnabled } from './sync'
 import { currentCaret } from './team'
 
@@ -10,6 +10,14 @@ export interface EditorInfo {
   name: string
 }
 export const useEditors = create<{ list: EditorInfo[]; loaded: boolean }>(() => ({ list: [], loaded: false }))
+
+/** имя своего редактора для списка: файл без папки и расширения */
+export const customName = (exe: string) =>
+  exe
+    .replace(/^"(.*)"$/, '$1')
+    .split(/[\\/]/)
+    .pop()!
+    .replace(/\.[a-z]+$/i, '') || 'Свой редактор'
 
 let inflight: Promise<EditorInfo[]> | null = null
 /** обновить список (при открытии меню или настроек): редактор могли установить, пока приложение работало */
@@ -20,7 +28,9 @@ export function loadEditors(): Promise<EditorInfo[]> {
   }
   inflight ||= bEditors()
     .catch(() => [] as EditorInfo[])
-    .then((list) => {
+    .then((found) => {
+      const exe = useStore.getState().settings.editorPath
+      const list = exe ? [...found, { id: 'custom', name: customName(exe) }] : found
       useEditors.setState({ list, loaded: true })
       return list
     })
@@ -72,6 +82,7 @@ export async function openInEditor(
       ed.id,
       opts.file,
       line,
+      ed.id === 'custom' ? st.settings.editorPath : undefined,
     )
     if (!r.ok) {
       toast({ title: 'Не открылось', desc: r.reason, icon: 'warn', tone: 'warn' })
@@ -85,6 +96,26 @@ export async function openInEditor(
     return true
   } catch (e) {
     toast({ title: 'Не открылось', desc: (e as Error).message, icon: 'warn', tone: 'warn' })
+    return false
+  }
+}
+
+/** Открыть отдельное окно терминала ОС в папке проекта (после дозаписи файлов на диск) */
+export async function openOsTerminal(pid: string) {
+  const st = useStore.getState()
+  const p = st.projects.find((x) => x.id === pid)
+  if (!p) return false
+  if (!backendOnline()) {
+    st.toast({ title: 'Нужен сервер TetraFree', icon: 'warn', tone: 'warn' })
+    return false
+  }
+  try {
+    if (syncEnabled()) await reconcile(pid, { quiet: true })
+    const r = await bOpenTerminal(useStore.getState().projects.find((x) => x.id === pid) || p)
+    if (!r.ok) st.toast({ title: 'Не открылось', desc: r.reason, icon: 'warn', tone: 'warn' })
+    return r.ok
+  } catch (e) {
+    st.toast({ title: 'Не открылось', desc: (e as Error).message, icon: 'warn', tone: 'warn' })
     return false
   }
 }

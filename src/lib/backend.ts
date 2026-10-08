@@ -307,5 +307,17 @@ export async function bEditors(): Promise<{ id: string; name: string }[]> {
   return ((await r.json()) as { editors: { id: string; name: string }[] }).editors
 }
 /** Открыть проект (или файл на строке) во внешнем редакторе */
-export const bOpenIn = (p: ProjRef, editor: string, rel?: string, line?: number) =>
-  post<{ ok: boolean; reason?: string; editor?: string }>('/api/fs/open-in', { ...pj(p), editor, rel, line })
+export const bOpenIn = (p: ProjRef, editor: string, rel?: string, line?: number, exe?: string) =>
+  post<{ ok: boolean; reason?: string; editor?: string }>('/api/fs/open-in', {
+    ...pj(p),
+    editor,
+    rel,
+    line,
+    exe,
+  })
+/** Проверить путь к своему редактору */
+export const bCheckEditor = (exe: string) =>
+  post<{ ok: boolean; name?: string; reason?: string }>('/api/editors/check', { exe })
+/** Отдельное окно терминала ОС в папке проекта */
+export const bOpenTerminal = (p: ProjRef) =>
+  post<{ ok: boolean; reason?: string }>('/api/fs/open-terminal', pj(p))

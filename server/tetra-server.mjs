@@ -24,7 +24,7 @@ const ROOT = path.resolve(process.env.TF_ROOT || path.join(os.homedir(), 'TetraF
 const vault = createVault({ dir: path.dirname(ROOT) })
 import { checkRemoteUrl, redactUrl } from './gitremote.mjs'
 import { parseStatus, parseLog, kindOf, parseBlame, splitHunks, pickHunks } from './gitparse.mjs'
-import { EDITORS, detectEditors, findEditor, editorArgs } from './editors.mjs'
+import { EDITORS, detectEditors, findEditor, editorArgs, customEditor, terminalLaunch } from './editors.mjs'
 const SKIP = new Set([
   '.git',
   'node_modules',
@@ -493,11 +493,58 @@ async function handle(req, res, isLocal) {
   if (u.pathname === '/api/editors' && req.method === 'GET') {
     return json(res, 200, { editors: detectEditors().map(({ id, name }) => ({ id, name })) })
   }
+  /* отдельное окно терминала ОС в папке проекта (Windows Terminal, иначе PowerShell) */
+  if (u.pathname === '/api/fs/open-terminal' && req.method === 'POST') {
+    const { id, name, folder } = await readBody(req)
+    const dir = await projectDir(id, name, folder)
+    fs.mkdirSync(dir, { recursive: true })
+    const l = terminalLaunch(dir)
+    if (!l)
+      return json(res, 200, {
+        ok: false,
+        reason: 'Не нашёл программу терминала (gnome-terminal, konsole, xterm…)',
+      })
+    const failed = await new Promise((ok) => {
+      try {
+        const c = spawn(l.cmd, l.args, { detached: true, stdio: 'ignore', cwd: l.cwd })
+        c.once('error', (e) => ok(e.message))
+        c.once('spawn', () => {
+          c.unref()
+          ok('')
+        })
+      } catch (e) {
+        ok(String(e.message || e))
+      }
+    })
+    if (failed)
+      return json(res, 200, { ok: false, reason: ('Не удалось открыть терминал: ' + failed).slice(0, 300) })
+    return json(res, 200, { ok: true })
+  }
+  if (u.pathname === '/api/editors/check' && req.method === 'POST') {
+    const ed = customEditor((await readBody(req)).exe)
+    return json(
+      res,
+      200,
+      ed
+        ? { ok: true, name: ed.name }
+        : {
+            ok: false,
+            reason: 'Такого файла нет — укажи полный путь к программе, например C:\\Tools\\Code\\Code.exe',
+          },
+    )
+  }
   if (u.pathname === '/api/fs/open-in' && req.method === 'POST') {
-    const { id, name, folder, editor, rel, line } = await readBody(req)
-    const ed = EDITORS.find((e) => e.id === editor)
-    if (!ed) return json(res, 200, { ok: false, reason: 'Неизвестный редактор' })
-    const exe = findEditor(ed)
+    const { id, name, folder, editor, rel, line, exe: customExe } = await readBody(req)
+    const ed = editor === 'custom' ? customEditor(customExe) : EDITORS.find((e) => e.id === editor)
+    if (!ed)
+      return json(res, 200, {
+        ok: false,
+        reason:
+          editor === 'custom'
+            ? 'Файл редактора не найден: проверь путь в настройках'
+            : 'Неизвестный редактор',
+      })
+    const exe = ed.exe || findEditor(ed)
     if (!exe) return json(res, 200, { ok: false, reason: `${ed.name} не найден на этом компьютере` })
     const dir = await projectDir(id, name, folder)
     let abs = null

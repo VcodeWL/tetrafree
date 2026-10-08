@@ -31,7 +31,7 @@ import {
   type UpdateInfo,
 } from '../lib/desktop'
 import { backupNow, lastAutoBackup } from '../lib/autobackup'
-import { bBackup, bReveal, type BackupInfo } from '../lib/backend'
+import { bBackup, bReveal, bCheckEditor, type BackupInfo } from '../lib/backend'
 import { useEditors, loadEditors, pickEditor } from '../lib/editors'
 import { APP_VERSION, RELEASES, KIND_LABEL, NOTE_LABEL } from '../data/changelog'
 
@@ -1060,6 +1060,28 @@ function BackendSection() {
   const eds = useEditors((x) => x.list)
   const edLoaded = useEditors((x) => x.loaded)
   const edPref = useStore((x) => x.settings.editor)
+  const edPath = useStore((x) => x.settings.editorPath || '')
+  const [edDraft, setEdDraft] = useState(edPath)
+  const [edMsg, setEdMsg] = useState('')
+  const applyEdPath = async () => {
+    const v = edDraft.trim().replace(/^"(.*)"$/, '$1')
+    if (!v) {
+      set('editorPath', undefined)
+      setEdMsg('')
+      void loadEditors()
+      return
+    }
+    try {
+      const r = await bCheckEditor(v)
+      if (!r.ok) return setEdMsg(r.reason || 'Файл не найден')
+      set('editorPath', v)
+      set('editor', 'custom')
+      setEdMsg('Добавлено: ' + r.name)
+      void loadEditors()
+    } catch (e) {
+      setEdMsg((e as Error).message)
+    }
+  }
   useEffect(() => {
     if (b.status === 'online') void loadEditors()
   }, [b.status])
@@ -1167,6 +1189,29 @@ function BackendSection() {
               onChange={(k) => set('editor', k)}
             />
           )}
+        </div>
+      )}
+      {b.status === 'online' && (
+        <div className="srow">
+          <div className="sl">
+            <div className="t">Свой редактор</div>
+            <div className="d">
+              {edMsg ||
+                'Если твоего редактора нет в списке (портативная версия, другая папка) — укажи полный путь к программе. Пусто — убрать.'}
+            </div>
+          </div>
+          <input
+            className="inp mono"
+            style={{ width: 260 }}
+            value={edDraft}
+            placeholder="C:\\Tools\\Code\\Code.exe"
+            aria-label="Путь к редактору"
+            onChange={(e) => setEdDraft(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void applyEdPath()}
+          />
+          <button className="btn sm" onClick={() => void applyEdPath()}>
+            Применить
+          </button>
         </div>
       )}
       <div className="srow">

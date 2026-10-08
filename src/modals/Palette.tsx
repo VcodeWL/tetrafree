@@ -12,7 +12,7 @@ import { pipelinesOf, runPipeline } from '../agent/ci'
 import { exportProject } from '../lib/projectIO'
 import { modKey, slug, uid } from '../lib/util'
 import { bReveal } from '../lib/backend'
-import { openInEditor } from '../lib/editors'
+import { openInEditor, openOsTerminal } from '../lib/editors'
 import { DOC_TEMPLATES, buildBlocks } from '../data/docTemplates'
 import { exportChat } from '../lib/chatExport'
 import { exportBackup } from '../lib/backup'
@@ -422,6 +422,7 @@ function build(): Item[] {
     st().setRight({ rightOpen: true, rightTab: 'browser' }),
   )
   cmd('edp', 'Открыть проект во внешнем редакторе', 'code', () => void openInEditor(p.id))
+  cmd('ost', 'Открыть терминал системы в папке проекта', 'terminal', () => void openOsTerminal(p.id))
   if (s.activeFile && p.files[s.activeFile] !== undefined) {
     const af = s.activeFile
     cmd(

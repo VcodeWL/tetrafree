@@ -320,6 +320,8 @@ export interface Settings {
   backendSync?: boolean
   /** внешний редактор кода по умолчанию (id из списка установленных) */
   editor?: string
+  /** полный путь к своему редактору (портативная установка, нестандартная папка) */
+  editorPath?: string
   /** вход без аккаунта (сервер недоступен) */
   localMode?: boolean
   hideOnboarding?: boolean
