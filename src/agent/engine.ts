@@ -75,7 +75,7 @@ function refreshTurn(pid: ID, chatId: ID, msgId: ID, version?: number) {
 }
 
 /** Применить предложенные правки (все или одну карточку) */
-export function applyProposed(chatId: ID, msgId: ID, partId?: ID, pickedText?: string) {
+export function applyProposed(chatId: ID, msgId: ID, partId?: ID, pickedText?: string, force = false) {
   const pid = S().projectId!
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
@@ -83,6 +83,27 @@ export function applyProposed(chatId: ID, msgId: ID, partId?: ID, pickedText?: s
     (p): p is FilePart => p.k === 'file' && p.state === 'proposed' && (!partId || p.id === partId),
   )
   if (!targets.length) return
+  /* файл поменяли после того, как агент его предложил: запись затрёт чужие правки — спросим, а не перезапишем молча */
+  if (!force) {
+    const stale = targets.filter((t) => {
+      if (t.op !== 'edit' && t.op !== 'create') return false
+      const cur = fileOf(pid, t.path)
+      if (cur === undefined) return false
+      /* у больших файлов «до» в карточке не хранится (before = null) — сверить нечего */
+      return t.op === 'create' ? true : t.before != null && cur !== t.before
+    })
+    if (stale.length) {
+      S().openModal({
+        type: 'confirm',
+        title: 'Файл изменился после предложения',
+        body: `${stale.map((t) => t.path).join(', ')} — с тех пор файл поменяли. Применение перезапишет текущее содержимое версией агента.`,
+        danger: true,
+        confirm: 'Перезаписать',
+        run: () => applyProposed(chatId, msgId, partId, pickedText, true),
+      })
+      return
+    }
+  }
   const applied: FilePart[] = []
   const parts = m.parts.map((p) => ({ ...p }))
   for (const t of targets) {
@@ -134,7 +155,7 @@ export function rejectProposed(chatId: ID, msgId: ID, partId?: ID) {
   refreshTurn(pid, chatId, msgId)
 }
 /** Вернуть файлы к состоянию «до» этого хода агента */
-export function revertTurn(chatId: ID, msgId: ID) {
+export function revertTurn(chatId: ID, msgId: ID, force = false) {
   const pid = S().projectId!
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
@@ -145,13 +166,17 @@ export function revertTurn(chatId: ID, msgId: ID) {
   const changed = files.filter(
     (f) => f.op !== 'delete' && f.op !== 'rename' && f.after != null && p.files[f.path] !== f.after,
   )
-  if (
-    changed.length &&
-    !window.confirm(
-      `С тех пор вы или другой агент меняли: ${changed.map((f) => f.path).join(', ')}.\nОткат перезапишет эти правки. Продолжить?`,
-    )
-  )
+  if (changed.length && !force) {
+    S().openModal({
+      type: 'confirm',
+      title: 'Откатить правки агента?',
+      body: `С тех пор вы или другой агент меняли: ${changed.map((f) => f.path).join(', ')}. Откат перезапишет эти правки.`,
+      danger: true,
+      confirm: 'Откатить',
+      run: () => revertTurn(chatId, msgId, true),
+    })
     return
+  }
   const reverted: FilePart[] = []
   for (const f of [...files].reverse()) {
     const orig =
@@ -354,8 +379,6 @@ async function runTurn(
     T.stop()
     live.endChat(chatId)
     T.flush(true)
-    const cur = turnMsg(chatId, msgId, pid)
-    const hadText = !!cur?.text
     if (aborted) {
       T.finish('')
       T.patch({
@@ -368,7 +391,6 @@ async function runTurn(
       const err = `Не удалось получить ответ от **${label}**: ${(e as Error).message}\n\nПроверь ключ и Base URL в Настройках → Провайдеры.${backendOnline() ? '' : ' Если провайдер не разрешает запросы из браузера (CORS), запусти локальный бэкенд (`npm run server`) — запросы пойдут через него.'}`
       T.upsert({ k: 'text', id: 'err', text: err })
       T.finish('')
-      void hadText
       T.patch({ streaming: false, thinking: undefined, error: true, endedAt: Date.now() })
       osNotify(`${agent}: ошибка`, (e as Error).message.slice(0, 140), () => {
         S().openProject(pid)
