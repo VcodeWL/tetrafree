@@ -2,6 +2,7 @@
    текст, шаги, карточки файлов (создаёт / правит / удаляет), команды. Всё применяется к проекту
    по мере того, как модель пишет, и в конце собирается в одну версию. */
 import { shiftQueue, enqueue } from './queue'
+import { dangerOf } from './danger'
 import { Turn, tally, commitFiles } from './turn'
 import { history, systemPrompt } from './prompt'
 import { agentPathError } from '../lib/paths'
@@ -670,7 +671,12 @@ async function verifyAfter(T: Turn, chatId: ID, pid: ID, depth: number) {
 }
 const autoFix = new Set<ID>()
 
-async function runCommand(T: Turn, id: ID, cmd: string): Promise<{ text: string; code: number }> {
+async function runCommand(
+  T: Turn,
+  id: ID,
+  cmd: string,
+  force = false,
+): Promise<{ text: string; code: number }> {
   const upd = (patch: Partial<Extract<Part, { k: 'cmd' }>>) => {
     const p = T.parts.find((x) => x.id === id)
     if (p && p.k === 'cmd') {
@@ -681,6 +687,20 @@ async function runCommand(T: Turn, id: ID, cmd: string): Promise<{ text: string;
   if (T.tier === 'Эскалация') {
     upd({ state: 'error', out: 'Команда не запущена: на уровне «Эскалация» запуск требует подтверждения.' })
     return { text: 'Пользователь не разрешил запуск команд на уровне «Эскалация».', code: 126 }
+  }
+  if (T.tier === 'Спросить' && !force) {
+    const why = dangerOf(cmd)
+    if (why) {
+      upd({
+        state: 'error',
+        code: 126,
+        out: `Нужно твоё «да»: ${why}.\nНажми «Повторить» на этой карточке, чтобы запустить команду.`,
+      })
+      return {
+        text: `Команда не запущена: на уровне «Спросить» нужно разрешение пользователя (${why}). Объясни пользователю, зачем она нужна, — он запустит её кнопкой «Повторить» на карточке.`,
+        code: 126,
+      }
+    }
   }
   const proj = S().projects.find((p) => p.id === T.pid)!
   let out = ''
