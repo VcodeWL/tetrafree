@@ -8,7 +8,7 @@ import type { Message } from '../types'
 const full = () => ({ ...initialPersisted(), ...initialUI() }) as unknown as Full
 
 test('версия схемы не менялась без осознанного решения', () => {
-  assert.equal(PERSIST_VERSION, 6)
+  assert.equal(PERSIST_VERSION, 7)
 })
 
 test('migrate v4→v5: лишние демо-агенты сводятся к builder, данные остаются', () => {
@@ -173,4 +173,33 @@ test('stripVolatile: прерванный стрим становится зак
   assert.equal(r.streaming, false)
   assert.ok(r.text.includes('прерван'))
   assert.equal(r.parts[0].state, 'error')
+})
+
+test('сохранение: версии пакуются разницей и собираются обратно через merge', () => {
+  const files = { 'a.txt': 'x'.repeat(5000), 'b.txt': '1' }
+  const mk = (n: number, b: string) => ({
+    n,
+    title: 't' + n,
+    at: n,
+    by: 'human' as const,
+    author: 'me',
+    tag: 'build' as const,
+    feats: [],
+    changes: [],
+    fixes: [],
+    details: [],
+    snapshot: { ...files, 'b.txt': b },
+  })
+  const cur = full()
+  const base = initialPersisted().projects[0] ?? ({ id: 'p', versions: [], chats: [], files: {} } as never)
+  cur.projects = [{ ...base, id: 'p1', chats: [], versions: [mk(1, '1'), mk(2, '2'), mk(3, '3')] }] as never
+  const saved = JSON.parse(JSON.stringify(partialize(cur)))
+  assert.ok(JSON.stringify(saved.projects[0].versions).length < 6500)
+  const back = merge(saved, full())
+  assert.deepEqual(back.projects[0].versions, cur.projects[0].versions)
+})
+test('migrate: данные схемы 6 принимаются как есть, из будущего — сбрасываются', () => {
+  const old = { projects: [{ id: 'x', versions: [] }], people: {} }
+  assert.equal(migrate(old, 6), old as never)
+  assert.deepEqual((migrate(old, 8) as unknown as { projects: unknown[] }).projects, [])
 })

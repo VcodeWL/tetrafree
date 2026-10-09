@@ -3,10 +3,11 @@ import { createJSONStorage } from 'zustand/middleware'
 import type { Attachment, Message, Person, Project, Provider } from '../types'
 import { pickFile } from './helpers'
 import { initialPersisted } from './defaults'
+import { packVersions, unpackVersions, type PackedVersion } from './snapshots'
 import type { Full, Persisted, S, UI } from './types'
 
 /** Версия схемы localStorage. Менять вместе с веткой в migrate() — иначе у пользователя сбросятся данные. */
-export const PERSIST_VERSION = 6
+export const PERSIST_VERSION = 7
 
 /* localStorage с защитой от переполнения: вместо падения — одно предупреждение */
 let quotaWarned = false
@@ -113,6 +114,7 @@ export const partialize = (
   people: s.people,
   projects: s.projects.map((p) => ({
     ...p,
+    versions: packVersions(p.versions) as unknown as Project['versions'],
     chats: p.chats.map((c) => ({ ...c, messages: c.messages.map(stripVolatile) })),
   })),
   providers: stripSecrets(s.providers),
@@ -134,6 +136,11 @@ export const partialize = (
 export const merge = (persisted: unknown, current: Full): Full => {
   const p = persisted as Partial<S>
   const merged = { ...current, ...p } as Full
+  /* версии лежат в хранилище как разница с предыдущей — собираем полные снимки обратно */
+  merged.projects = (merged.projects || []).map((pr) => ({
+    ...pr,
+    versions: unpackVersions((pr.versions || []) as unknown as PackedVersion[]),
+  }))
   if (!merged.authed) merged.screen = 'auth'
   if (merged.screen === 'workspace' && !merged.projects.find((x) => x.id === merged.projectId))
     merged.screen = 'launcher'
@@ -144,9 +151,11 @@ export const merge = (persisted: unknown, current: Full): Full => {
 
 /* старые версии → текущая; неизвестная версия сбрасывается к начальному состоянию */
 export const migrate = (old: unknown, from: number): S => {
-  if (!old || typeof old !== 'object' || from < 4 || from > 5) return initialPersisted() as unknown as S
+  if (!old || typeof old !== 'object' || from < 4 || from > 6) return initialPersisted() as unknown as S
   if (from === 4) v4to5(old as { projects?: Project[] })
-  return v5to6(old as Record<string, unknown>) as unknown as S
+  /* 6 → 7 («Разница версий»): формат читается и старый, и новый — переносить нечего */
+  if (from <= 5) return v5to6(old as Record<string, unknown>) as unknown as S
+  return old as S
 }
 
 /* v4 → v5: в демо остался один агент (builder) — переносим старые данные, ничего не теряя */
