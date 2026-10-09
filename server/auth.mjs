@@ -61,6 +61,12 @@ export const flushDb = () => {
   }
 }
 process.on('exit', flushDb)
+/* Ctrl+C и штатное завершение: без этого правки последних 150 мс (дебаунс записи) терялись */
+for (const sig of ['SIGINT', 'SIGTERM'])
+  process.on(sig, () => {
+    flushDb()
+    process.exit(0)
+  })
 
 const isPlain = (x) => !!x && typeof x === 'object' && !Array.isArray(x)
 const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, extra })
@@ -86,7 +92,17 @@ setInterval(() => {
   for (const [k, v] of hits) if (v.reset < t) hits.delete(k)
   for (const [k, v] of tickets) if (v.exp < t) tickets.delete(k)
   for (const [k, v] of oauthStates) if (v.exp < t) oauthStates.delete(k)
+  gcDb(t)
 }, 5 * MIN).unref()
+/** Просроченные сессии и коды иначе копятся в db.json вечно: клиент, который не вернулся, их сам не удалит. */
+export function gcDb(t = now()) {
+  let n = 0
+  for (const [k, v] of Object.entries(db.sessions)) if (v.exp < t) (delete db.sessions[k], n++)
+  for (const [k, v] of Object.entries(db.codes)) if (v.exp < t) (delete db.codes[k], n++)
+  if (n) save()
+  return n
+}
+gcDb()
 
 /* ───────── валидация ───────── */
 const EMAIL = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/
@@ -363,11 +379,13 @@ const OAUTH = {
   },
 }
 const oauthStates = new Map()
+/** fetch с таймаутом: зависший провайдер не должен держать запрос входа бесконечно */
+const xfetch = (url, init = {}) => fetch(url, { ...init, signal: AbortSignal.timeout(10_000) })
 async function oauthProfile(p, code, redirect) {
   const o = OAUTH[p]
   if (p === 'github') {
     const t = await (
-      await fetch('https://github.com/login/oauth/access_token', {
+      await xfetch('https://github.com/login/oauth/access_token', {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json' },
         body: JSON.stringify({ client_id: o.id, client_secret: o.secret, code, redirect_uri: redirect }),
@@ -379,8 +397,8 @@ async function oauthProfile(p, code, redirect) {
       'user-agent': 'TetraFree',
       accept: 'application/vnd.github+json',
     }
-    const me = await (await fetch('https://api.github.com/user', { headers: h })).json()
-    const em = await (await fetch('https://api.github.com/user/emails', { headers: h })).json()
+    const me = await (await xfetch('https://api.github.com/user', { headers: h })).json()
+    const em = await (await xfetch('https://api.github.com/user/emails', { headers: h })).json()
     const primary = Array.isArray(em)
       ? em.find((e) => e.primary && e.verified) || em.find((e) => e.verified)
       : null
@@ -388,7 +406,7 @@ async function oauthProfile(p, code, redirect) {
     return { sub: String(me.id), email: normEmail(primary.email), name: me.name || me.login }
   }
   const t = await (
-    await fetch('https://oauth2.googleapis.com/token', {
+    await xfetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -402,7 +420,7 @@ async function oauthProfile(p, code, redirect) {
   ).json()
   if (!t.access_token) throw err(400, 'Google не принял код авторизации')
   const me = await (
-    await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    await xfetch('https://openidconnect.googleapis.com/v1/userinfo', {
       headers: { authorization: 'Bearer ' + t.access_token },
     })
   ).json()
@@ -598,6 +616,7 @@ export async function accountRoutes(req, res, u, io) {
         throw err(429, 'Слишком много попыток — войди заново')
       }
       const user = db.users[t.uid]
+      if (!user) throw err(400, 'Аккаунт не найден — войди заново')
       const code = String(body.code || '')
       const ok = /^\d[\d\s]{5,}$/.test(code) ? totpOk(user, code) : useRecovery(user, code)
       if (!ok) {
@@ -707,6 +726,7 @@ export async function accountRoutes(req, res, u, io) {
       tickets.delete('o:' + body.ticket)
       if (!t || t.exp < now()) throw err(400, 'Ссылка входа устарела')
       const user = db.users[t.uid]
+      if (!user) throw err(400, 'Аккаунт не найден — войди заново')
       return (out({ token: newSession(user, req, true), user: pub(user) }), true)
     }
 

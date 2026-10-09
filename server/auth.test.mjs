@@ -348,3 +348,16 @@ test('удаление аккаунта владельца передаёт пр
   /* единственный участник удаляется — проекта в облаке больше нет */
   assert.equal((await call('DELETE', '/api/auth/account', { password: 'P4vel!Pass55' }, pt)).status, 200)
 })
+
+test('gcDb: просроченные сессии и коды удаляются, живые остаются', async () => {
+  const { gcDb } = await import('./auth.mjs')
+  const U = { name: 'Глеб', email: 'gc-user2@test.dev', password: 'G1eb!Pass-77' }
+  assert.equal((await call('POST', '/api/auth/register', U)).status, 201)
+  const code = await lastCode(U.email)
+  const v = await call('POST', '/api/auth/verify', { email: U.email, code })
+  assert.equal(v.status, 200)
+  assert.equal(gcDb(Date.now() + 1000), 0)
+  assert.equal((await call('GET', '/api/auth/me', null, v.body.token)).status, 200)
+  assert.ok(gcDb(Date.now() + 60 * 24 * 3600e3) >= 1)
+  assert.equal((await call('GET', '/api/auth/me', null, v.body.token)).status, 401)
+})
