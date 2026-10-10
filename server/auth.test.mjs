@@ -361,3 +361,22 @@ test('gcDb: просроченные сессии и коды удаляются
   assert.ok(gcDb(Date.now() + 60 * 24 * 3600e3) >= 1)
   assert.equal((await call('GET', '/api/auth/me', null, v.body.token)).status, 401)
 })
+
+test('битый JSON и null вместо тела — 400/понятная ошибка, а не 500 с текстом исключения', async () => {
+  const send = (body) =>
+    fetch(B + '/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+  const r1 = await send('{bad json')
+  assert.ok(r1.status < 500)
+  const r2 = await fetch(B + '/api/editors/check', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{bad',
+  })
+  assert.notEqual(r2.status, 500)
+  const r3 = await fetch(B + '/api/editors/check', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: 'null',
+  })
+  assert.notEqual(r3.status, 500)
+})

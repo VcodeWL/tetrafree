@@ -273,15 +273,16 @@ const readBody = (req) =>
     req.on('data', (d) => {
       b += d
       if (b.length > 50e6) {
-        fail(new Error('Слишком большой запрос'))
+        fail(Object.assign(new Error('Слишком большой запрос'), { status: 413 }))
         req.destroy()
       }
     })
     req.on('end', () => {
       try {
-        ok(b ? JSON.parse(b) : {})
-      } catch (e) {
-        fail(e)
+        /* null вместо тела ломал деструктуризацию в обработчиках (500 с текстом исключения) */
+        ok((b ? JSON.parse(b) : {}) ?? {})
+      } catch {
+        fail(Object.assign(new Error('Тело запроса — не корректный JSON'), { status: 400 }))
       }
     })
     req.on('error', fail)

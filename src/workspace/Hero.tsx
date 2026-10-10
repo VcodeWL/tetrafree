@@ -42,7 +42,19 @@ export function Hero() {
         <Logo size={58} />
       </div>
       <h1>
-        Что соберём в <em>{p.name}</em>?
+        {['Что', 'соберём', 'в'].map((w, i) => (
+          <span key={w}>
+            <span className="wd" style={{ '--i': i } as React.CSSProperties}>
+              {w}
+            </span>{' '}
+          </span>
+        ))}
+        <em className="wd" style={{ '--i': 3 } as React.CSSProperties}>
+          {p.name}
+        </em>
+        <span className="wd" style={{ '--i': 3 } as React.CSSProperties}>
+          ?
+        </span>
       </h1>
       <p>Опиши задачу — builder изменит файлы проекта, а ты примешь или отклонишь правки.</p>
       {!live && (

@@ -11643,3 +11643,22 @@ html .srow .meter.full i {
 html.light .srow .meter {
   background: rgba(0, 0, 0, 0.1);
 }
+
+/* заголовок пустого чата: слова выплывают по очереди (как SplitText), для prefers-reduced-motion анимация отключена глобально */
+html .hero h1 .wd {
+  display: inline-block;
+  animation: wordin 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 70ms + 80ms);
+}
+@keyframes wordin {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em);
+    filter: blur(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: blur(0);
+  }
+}
