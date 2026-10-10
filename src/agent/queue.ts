@@ -7,11 +7,16 @@ export interface Queued {
   id: ID
   text: string
   atts: Attachment[]
+  /** развёрнутая команда или навык: уходит модели вместе с сообщением */
+  extra?: string
 }
 export const useQueue = create<{ q: Record<ID, Queued[]> }>(() => ({ q: {} }))
-export const enqueue = (chatId: ID, text: string, atts: Attachment[]) =>
+export const enqueue = (chatId: ID, text: string, atts: Attachment[], extra?: string) =>
   useQueue.setState((s) => ({
-    q: { ...s.q, [chatId]: [...(s.q[chatId] || []), { id: uid('q'), text, atts }] },
+    q: {
+      ...s.q,
+      [chatId]: [...(s.q[chatId] || []), { id: uid('q'), text, atts, ...(extra ? { extra } : {}) }],
+    },
   }))
 export const dequeue = (chatId: ID, id: ID) =>
   useQueue.setState((s) => ({ q: { ...s.q, [chatId]: (s.q[chatId] || []).filter((x) => x.id !== id) } }))

@@ -58,6 +58,7 @@ screens / workspace / modals / design / components   ← UI (React)
 | `protocol.ts`, `llm.ts`, `live.ts` | формат ответа модели, запросы к провайдерам, живой режим                  |
 | `queue.ts`, `ci.ts`, `triggers.ts` | очередь сообщений, пайплайны и расписание (настоящие команды через бэкенд) |
 | `danger.ts`, `rules.ts`            | опасные команды на уровне «Спросить»; инструкции проекта (`AGENTS.md`)    |
+| `slash.ts`, `commands.ts`, `loop.ts` | слэш-команды, навыки (`SKILL.md`), цикл `/loop` — см. `docs/SLASH.md`   |
 
 ## Стили
 

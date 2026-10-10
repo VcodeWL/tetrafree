@@ -51,7 +51,7 @@ export interface PlanItem {
 }
 
 export type Message =
-  | { id: ID; kind: 'sys'; text: string; at: number }
+  | { id: ID; kind: 'sys'; text: string; at: number; reset?: boolean }
   | {
       id: ID
       kind: 'human'

@@ -3,11 +3,15 @@ import type { Attachment, ID, Message, Project } from '../types'
 import { AGENTS } from '../data/seed'
 import type { ChatMsg } from './llm'
 import { projectRules } from './rules'
+import { skillsIndex } from './slash'
 
 /* ------------------------------------------------------------------ контекст для модели */
 
-export function history(msgs: Message[], exclude: ID): ChatMsg[] {
+export function history(all: Message[], exclude: ID): ChatMsg[] {
   const out: ChatMsg[] = []
+  /* «/clear»: всё, что было до последней отметки сброса, модель не видит */
+  const cut = all.map((m) => m.kind === 'sys' && m.reset).lastIndexOf(true)
+  const msgs = cut >= 0 ? all.slice(cut + 1) : all
   for (const m of msgs) {
     if (m.id === exclude) continue
     if (m.kind === 'human')
@@ -58,6 +62,7 @@ export function systemPrompt(p: Project, agent: string, att: Attachment[]) {
     })
     .join('\n\n')
   const rules = projectRules(p.files)
+  const skills = skillsIndex(p.files)
   return `Ты — агент «${agent}» (${AGENTS[agent]?.role || 'помощник разработчика'}) в TetraFree, среде совместной разработки людей и ИИ-агентов.
 Проект: ${p.name} — ${p.desc}
 Отвечай по-русски, коротко и по делу.
@@ -78,7 +83,7 @@ export function systemPrompt(p: Project, agent: string, att: Attachment[]) {
 5. Не придумывай содержимого файлов, которых не видел: если файл показан не целиком — сначала <read>.
 6. Если просьба неясна или опасна — сначала спроси словами, не делай правок.
 ${att.length ? 'Вложения пользователя: ' + att.map((a) => a.name).join(', ') + '\n' : ''}
-${rules ? 'ПРАВИЛА И ИНСТРУКЦИИ ПРОЕКТА (задала команда, соблюдай их):\n' + rules + '\n\n' : ''}Общая память проекта (решения из всех чатов):
+${skills ? 'НАВЫКИ ПРОЕКТА (готовые инструкции; если задача подходит под описание — сначала прочитай SKILL.md и следуй ему):\n' + skills + '\n\n' : ''}${rules ? 'ПРАВИЛА И ИНСТРУКЦИИ ПРОЕКТА (задала команда, соблюдай их):\n' + rules + '\n\n' : ''}Общая память проекта (решения из всех чатов):
 ${
   p.memory
     .slice(0, 20)

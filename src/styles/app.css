@@ -11662,3 +11662,134 @@ html .hero h1 .wd {
     filter: blur(0);
   }
 }
+
+/* слэш-команды: подсказки над полем ввода и панель цикла /loop */
+html .comp-box {
+  position: relative;
+}
+html .slash-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  background: var(--surface, #1c1c22);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 12px;
+  padding: 4px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
+  max-height: 300px;
+  overflow: auto;
+}
+html.light .slash-pop {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.14);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.14);
+}
+html .slash-it {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+html .slash-it.on {
+  background: rgba(124, 92, 255, 0.18);
+}
+html.light .slash-it.on {
+  background: rgba(98, 64, 230, 0.1);
+}
+html .sl-n {
+  font-family: var(--mono, monospace);
+  font-weight: 600;
+  color: var(--t1, #fff);
+  flex: none;
+}
+html.light .sl-n {
+  color: #1b1b22;
+}
+html .sl-h {
+  color: var(--t3, #9a9aa8);
+  font-size: 12px;
+  flex: none;
+}
+html.light .sl-h {
+  color: #5a5a68;
+}
+html .sl-d {
+  color: var(--t2, #b8b8c4);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html.light .sl-d {
+  color: #3d3d4a;
+}
+html .sl-k {
+  font-size: 11px;
+  color: var(--t3, #9a9aa8);
+  flex: none;
+}
+html.light .sl-k {
+  color: #5a5a68;
+}
+html .loopbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(124, 92, 255, 0.35);
+  background: rgba(124, 92, 255, 0.1);
+  font-size: 12.5px;
+}
+html.light .loopbar {
+  background: rgba(98, 64, 230, 0.07);
+  border-color: rgba(98, 64, 230, 0.3);
+}
+html .lp-i {
+  display: inline-flex;
+  color: #a58bff;
+}
+html.light .lp-i {
+  color: #5a3fd6;
+}
+html .lp-i.spin svg {
+  animation: lpspin 1.2s linear infinite;
+}
+@keyframes lpspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+html .lp-t {
+  flex: none;
+  color: var(--t1, #fff);
+}
+html.light .lp-t {
+  color: #1b1b22;
+}
+html .lp-task {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--t2, #b8b8c4);
+}
+html.light .lp-task {
+  color: #3d3d4a;
+}
+html .sysline span {
+  white-space: pre-line;
+}
+@media (prefers-reduced-motion: reduce) {
+  html .lp-i.spin svg {
+    animation: none;
+  }
+}

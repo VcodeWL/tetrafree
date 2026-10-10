@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { Icon, BrandIcon } from '../components/ui/Icon'
 import { Menu, MenuHead, MenuItem, MenuSep, useMenu } from '../components/ui/Menu'
 import { sendMessage, stopTurn, resolveModel } from '../agent/engine'
-import { useQueue, enqueue, dequeue, shiftQueue, moveQueued, prioritize } from '../agent/queue'
+import { useQueue, dequeue, shiftQueue, moveQueued, prioritize } from '../agent/queue'
+import { submit } from '../agent/commands'
+import { suggest } from '../agent/slash'
+import { useLoops, loopStop, loopLabel } from '../agent/loop'
+import { fmtGap } from '../agent/slash'
 import type { Attachment } from '../types'
 import { fmtBytes, uid } from '../lib/util'
 
@@ -98,6 +102,26 @@ export function Composer({
   const enterToSend = useStore((s) => s.settings.enterToSend)
   const [atts, setAtts] = useState<Attachment[]>([])
   const queue = useQueue((s) => s.q[chatId] || [])
+  const files = useStore((s) => s.projects.find((p) => p.id === s.projectId)?.files)
+  const loop = useLoops((s) => s.loops[chatId])
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!loop?.nextAt) return
+    const t = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [loop?.nextAt])
+  const sugg = useMemo(() => suggest(files || {}, draft), [files, draft])
+  const [sel, setSel] = useState(0)
+  const [hideSug, setHideSug] = useState(false)
+  useEffect(() => {
+    setSel(0)
+    setHideSug(false)
+  }, [draft])
+  const sugOpen = sugg.length > 0 && !hideSug
+  const pick = (name: string) => {
+    setDraft(chatId, `/${name} `)
+    ta.current?.focus()
+  }
   const [foc, setFoc] = useState(false)
   const [drag, setDrag] = useState(false)
   const ta = useRef<HTMLTextAreaElement>(null)
@@ -150,13 +174,7 @@ export function Composer({
   }
   const send = () => {
     if (!draft.trim() && !atts.length) return
-    if (running) {
-      enqueue(chatId, draft.trim(), atts)
-      setDraft(chatId, '')
-      setAtts([])
-      return
-    }
-    sendMessage(chatId, draft, atts)
+    submit(chatId, draft, atts, running)
     setAtts([])
   }
   return (
@@ -208,7 +226,7 @@ export function Composer({
                     const nx = q
                     dequeue(chatId, q.id)
                     stopTurn(chatId)
-                    setTimeout(() => sendMessage(chatId, nx.text, nx.atts), 400)
+                    setTimeout(() => sendMessage(chatId, nx.text, nx.atts, nx.extra || ''), 400)
                   }}
                 >
                   Сейчас
@@ -220,7 +238,7 @@ export function Composer({
                   className="linkbtn"
                   onClick={() => {
                     const nx = shiftQueue(chatId)
-                    if (nx) sendMessage(chatId, nx.text, nx.atts)
+                    if (nx) sendMessage(chatId, nx.text, nx.atts, nx.extra || '')
                   }}
                 >
                   Отправить
@@ -238,6 +256,30 @@ export function Composer({
           ))}
         </div>
       )}
+      {loop && (
+        <div className="loopbar" role="status">
+          <span className={'lp-i' + (loop.phase === 'run' ? ' spin' : '')}>
+            <Icon name="refresh" size={13} />
+          </span>
+          <span className="lp-t">
+            {loopLabel(loop)}
+            {loop.phase === 'wait' && loop.nextAt
+              ? ` · следующий через ${fmtGap(Math.max(1000, loop.nextAt - Date.now()))}`
+              : ' · работает'}
+          </span>
+          <span className="lp-task" title={loop.task}>
+            {loop.task}
+          </span>
+          <button
+            type="button"
+            className="btn sm gho"
+            onClick={() => loopStop(chatId, 'остановлено вручную')}
+          >
+            <Icon name="stop" size={11} />
+            Стоп цикла
+          </button>
+        </div>
+      )}
       <div
         className={'comp-box' + (foc ? ' foc' : '') + (drag ? ' drag' : '')}
         onDragOver={(e) => {
@@ -251,6 +293,30 @@ export function Composer({
           add(e.dataTransfer.files)
         }}
       >
+        {sugOpen && (
+          <div className="slash-pop" role="listbox" aria-label="Команды">
+            {sugg.map((c, i) => (
+              <div
+                key={c.name}
+                role="option"
+                aria-selected={i === sel}
+                className={'slash-it' + (i === sel ? ' on' : '')}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  pick(c.name)
+                }}
+                onMouseEnter={() => setSel(i)}
+              >
+                <span className="sl-n">/{c.name}</span>
+                {c.hint && <span className="sl-h">{c.hint}</span>}
+                <span className="sl-d">{c.desc}</span>
+                <span className="sl-k">
+                  {c.kind === 'builtin' ? '' : c.kind === 'skill' ? 'навык' : 'своя'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {atts.length > 0 && (
           <div className="atts">
             {atts.map((a) => (
@@ -294,6 +360,27 @@ export function Composer({
             }
           }}
           onKeyDown={(e) => {
+            if (sugOpen && !e.nativeEvent.isComposing) {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault()
+                setSel((i) => (i + (e.key === 'ArrowDown' ? 1 : sugg.length - 1)) % sugg.length)
+                return
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                setHideSug(true)
+                return
+              }
+              const c = sugg[sel]
+              if (
+                c &&
+                (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && draft.trim() !== '/' + c.name))
+              ) {
+                e.preventDefault()
+                pick(c.name)
+                return
+              }
+            }
             if (
               e.key === 'Enter' &&
               !e.nativeEvent.isComposing &&

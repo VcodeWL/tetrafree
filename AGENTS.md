@@ -51,6 +51,9 @@ npm run build
 
 Модель отвечает текстом с тегами: `<write path>`, `<edit path><find/><replace/></edit>`, `<delete path/>`, `<rename from to/>`, `<read path/>`, `<run>cmd</run>`. Парсер — `protocol.ts`, применение — `engine.ts::syncSegs` → `Turn`. Уровни автономности: «Уведомить» (применяет сразу), «Спросить» (удаление/переименование карточками + опасные команды не запускаются, `danger.ts`), «Эскалация» (всё карточками, команды запрещены). Применение устаревшей правки спрашивает подтверждение (`applyProposed`). Агент видит `.tetra/rules.md`, а также `AGENTS.md` / `CLAUDE.md` проекта пользователя.
 
+### Слэш-команды, навыки, /loop
+Подробно для пользователей — `docs/SLASH.md`. Код: `agent/slash.ts` (чистый разбор: шапка файлов, навыки `.tetra|.claude|.agents/skills/*/SKILL.md`, команды `.tetra|.claude/commands`, `$ARGUMENTS`, `/loop`-аргументы, подсказки), `agent/commands.ts` (`resolveSlash`/`submit` — вызывается из `Composer.send`; встроенные команды исполняются в приложении, остальное разворачивается в `extra` к сообщению), `agent/loop.ts` (состояние цикла в памяти, `decide`, таймер; движок сообщает `loopPassEnded` из `runTurn`). Новая встроенная команда = запись в `BUILTINS` (+ `case` в `commands.ts`, если не просто шаблон `prompt`). Имена встроенных нельзя переопределить файлами. `/clear` — это sys-сообщение с `reset: true`, `history()` режет по нему.
+
 ## Релиз (точный порядок)
 
 Версии: `x.y.Z` исправления, `x.Y.0` новые функции, `X.0.0` крупная переработка. Виды записи в changelog **только** `new | imp | fix`; вид релиза `major | logic | visual | patch` (новые функции = `logic`).

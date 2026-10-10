@@ -1,7 +1,7 @@
 /* Движок агента. Один ход (Turn) = одно сообщение агента, внутри которого живые части:
    текст, шаги, карточки файлов (создаёт / правит / удаляет), команды. Всё применяется к проекту
    по мере того, как модель пишет, и в конце собирается в одну версию. */
-import { shiftQueue, enqueue } from './queue'
+import { shiftQueue, enqueue, useQueue } from './queue'
 import { dangerOf } from './danger'
 import { Turn, tally, commitFiles } from './turn'
 import { history, systemPrompt } from './prompt'
@@ -18,11 +18,13 @@ import { backendOnline, bExec } from '../lib/backend'
 import { osNotify } from '../lib/osnotify'
 import { wantsGit, gitContext } from '../lib/gitctx'
 import { report, costOf, fmtUsd, type Usage } from '../lib/usage'
+import { loopStop, loopPassEnded, setLoopRunner } from './loop'
 
 const S = () => useStore.getState()
 const controllers = new Map<ID, AbortController>()
 export const isRunning = (chatId: ID) => controllers.has(chatId)
 export function stopTurn(chatId: ID) {
+  loopStop(chatId, 'остановлено вручную')
   controllers.get(chatId)?.abort()
 }
 
@@ -225,11 +227,19 @@ export function revertTurn(chatId: ID, msgId: ID, force = false) {
 
 /* ------------------------------------------------------------------ отправка */
 
-export function sendMessage(chatId: ID, text: string, attachments: Attachment[] = [], extra = '', depth = 0) {
+export function sendMessage(
+  chatId: ID,
+  text: string,
+  attachments: Attachment[] = [],
+  extra = '',
+  depth = 0,
+  opts: { silent?: string; loop?: boolean } = {},
+): boolean {
   const st = S()
   const pid = st.projectId!
   const t = text.trim()
-  if (!t && !attachments.length) return
+  /* silent — проход цикла /loop: в чате вместо «сообщения человека» короткая служебная строка */
+  if (!t && !attachments.length && !opts.silent) return false
   if (!resolveModel().live) {
     toast({
       title: 'Модель не подключена',
@@ -238,18 +248,20 @@ export function sendMessage(chatId: ID, text: string, attachments: Attachment[] 
       tone: 'warn',
       action: { label: 'Открыть', run: () => S().openModal({ type: 'settings', section: 'providers' }) },
     })
-    return
+    return false
   }
   st.pushMsg(
     chatId,
-    {
-      id: uid('m'),
-      kind: 'human',
-      author: 'me',
-      text: t,
-      attachments: attachments.length ? attachments : undefined,
-      at: Date.now(),
-    },
+    opts.silent
+      ? { id: uid('m'), kind: 'sys', text: opts.silent, at: Date.now() }
+      : {
+          id: uid('m'),
+          kind: 'human',
+          author: 'me',
+          text: t,
+          attachments: attachments.length ? attachments : undefined,
+          at: Date.now(),
+        },
     pid,
   )
   st.setDraft(chatId, '')
@@ -266,7 +278,7 @@ export function sendMessage(chatId: ID, text: string, attachments: Attachment[] 
       },
       pid,
     )
-    return
+    return false
   }
   const lim = st.settings.budget
   if (lim && lim > 0 && resolveModel().live && monthSpent() >= lim) {
@@ -286,19 +298,20 @@ export function sendMessage(chatId: ID, text: string, attachments: Attachment[] 
       icon: 'warn',
       tone: 'warn',
     })
-    return
+    return false
   }
   const mention = t.match(/@([\w-]+)/)?.[1]
   const who = chat!.agents.find((a) => a.name === mention) || agent
   void runTurn(
     pid,
     chatId,
-    t || `Посмотри вложения: ${attachments.map((a) => a.name).join(', ')}`,
+    opts.silent ? extra : t || `Посмотри вложения: ${attachments.map((a) => a.name).join(', ')}`,
     who.name,
     who.tier,
     attachments,
-    { ctx: extra, depth },
+    { ctx: opts.silent ? '' : extra, depth, loop: opts.loop },
   )
+  return true
 }
 
 async function runTurn(
@@ -308,7 +321,7 @@ async function runTurn(
   agent: string,
   tier: Tier,
   attachments: Attachment[],
-  opts: { skipAsk?: boolean; ctx?: string; depth?: number } = {},
+  opts: { skipAsk?: boolean; ctx?: string; depth?: number; loop?: boolean } = {},
 ) {
   controllers.get(chatId)?.abort()
   const ctl = new AbortController()
@@ -356,6 +369,7 @@ async function runTurn(
   )
   const T = new Turn(pid, chatId, msgId, agent, tier, laneId, ctl)
   let summary = ''
+  let failed = false
   try {
     summary = await liveLoop(T, prompt, attachments, provider!, model!.id, label, opts.ctx)
     if (backendOnline() && tier !== 'Эскалация' && S().settings.autoVerify !== false && !T.aborted)
@@ -389,6 +403,7 @@ async function runTurn(
         stopped: true,
       } as Partial<Message>)
     } else {
+      failed = true
       const err = `Не удалось получить ответ от **${label}**: ${(e as Error).message}\n\nПроверь ключ и Base URL в Настройках → Провайдеры.${backendOnline() ? '' : ' Если провайдер не разрешает запросы из браузера (CORS), запусти локальный бэкенд (`npm run server`) — запросы пойдут через него.'}`
       T.upsert({ k: 'text', id: 'err', text: err })
       T.finish('')
@@ -407,7 +422,15 @@ async function runTurn(
     if (!ctl.signal.aborted) {
       const nx = shiftQueue(chatId)
       if (nx && getChat(pid, chatId) && S().projectId === pid)
-        setTimeout(() => sendMessage(chatId, nx.text, nx.atts, '', autoFix.delete(chatId) ? 1 : 0), 350)
+        setTimeout(
+          () => sendMessage(chatId, nx.text, nx.atts, nx.extra || '', autoFix.delete(chatId) ? 1 : 0),
+          350,
+        )
+    }
+    /* проход /loop закончился: цикл решает, идти ли дальше (во время паузы между проходами ход могут занять очередь и человек) */
+    if (opts.loop) {
+      if (ctl.signal.aborted) loopStop(chatId, 'ход прерван')
+      else loopPassEnded(chatId, T.parts.map((p) => (p.k === 'text' ? p.text : '')).join('\n'), failed)
     }
   }
 }
@@ -910,3 +933,10 @@ function notifyEscalation(pid: ID, chatId: ID, agent: string, label: string) {
       },
     })
 }
+
+setLoopRunner({
+  send: (chatId, o) => sendMessage(chatId, o.text, [], o.extra, 0, { silent: o.silent, loop: true }),
+  busy: (chatId) => isRunning(chatId) || (useQueue.getState().q[chatId] || []).length > 0,
+  projectOpen: (pid) => S().projectId === pid,
+  say: (chatId, pid, text) => S().pushMsg(chatId, { id: uid('m'), kind: 'sys', text, at: Date.now() }, pid),
+})
