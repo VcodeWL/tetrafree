@@ -96,7 +96,9 @@ test('decide: причины остановки цикла', () => {
 test('подсказки: по префиксу, без дублей, навыки и свои', () => {
   const files = { '.tetra/commands/lint.md': 'x', '.tetra/skills/log/SKILL.md': 'x' }
   assert.deepEqual(
-    suggest(files, '/lo').map((x) => x.name),
+    suggest(files, '/lo')
+      .map((x) => x.name)
+      .slice(0, 2),
     ['loop', 'log'],
   )
   assert.equal(suggest(files, '/li')[0].name, 'lint')

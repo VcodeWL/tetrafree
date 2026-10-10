@@ -18,6 +18,7 @@ import { checkFolder, bad, winDrives } from './folders.mjs'
 import { makeIgnore } from './ignore.mjs'
 import { ptyRoutes, hasPty } from './pty.mjs'
 import { createVault, secretRoutes } from './secrets.mjs'
+import { webRoutes } from './web.mjs'
 import { accountRoutes, authed, previewToken, previewValid } from './auth.mjs'
 
 const ROOT = path.resolve(process.env.TF_ROOT || path.join(os.homedir(), 'TetraFree', 'projects'))
@@ -347,6 +348,7 @@ async function handle(req, res, isLocal) {
 
   if (await ptyRoutes(req, res, u, { json, readBody, projectDir })) return
   if (await secretRoutes(req, res, u, { json, readBody }, vault)) return
+  if (await webRoutes(req, res, u, { json, readBody })) return
 
   /* обзор папок для выбора места проекта: список подпапок + сведения о самой папке */
   if (u.pathname === '/api/fs/browse') {

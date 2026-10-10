@@ -3,8 +3,11 @@ import type { ID, Attachment } from '../types'
 import { useStore, getChat, toast } from '../store'
 import { uid } from '../lib/util'
 import { sendMessage, stopTurn, isRunning, resolveModel } from './engine'
+import { backendOnline } from '../lib/backend'
 import { enqueue, clearQueue, useQueue } from './queue'
 import { loopStart, loopStop, loopActive, useLoops } from './loop'
+import { parseMatch, matchHooks } from './match'
+import { parseAuto, autoHooks, AUTOPILOT_FILE, FOCUS } from './autopilot'
 import {
   BUILTINS,
   parseSlash,
@@ -47,10 +50,10 @@ function skillExtra(s: Skill, args: string) {
   )
 }
 
-export type Outcome = { kind: 'none' } | { kind: 'done' } | { kind: 'send'; extra: string }
+export type Outcome = { kind: 'none' } | { kind: 'done'; keep?: boolean } | { kind: 'send'; extra: string }
 
 /** Разбирает «/…» и либо исполняет команду сразу (done), либо готовит развёрнутый запрос агенту (send). */
-export function resolveSlash(chatId: ID, text: string): Outcome {
+export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []): Outcome {
   const cmd = parseSlash(text)
   if (!cmd) return { kind: 'none' }
   const st = S()
@@ -144,11 +147,89 @@ export function resolveSlash(chatId: ID, text: string): Outcome {
           return done
         }
         if (!pid) return done
-        if (loopStart(chatId, pid, spec, text.trim()) && !S().settings.budget)
+        void loopStart(chatId, pid, spec, text.trim()).then((ok) => {
+          if (ok && !S().settings.budget)
+            say(
+              chatId,
+              `↻ Цикл запущен${spec.max ? `: ${spec.max} проходов` : ' без лимита проходов'}, пауза ${fmtGap(spec.gap)}. Лимит расходов не задан — для платной модели задай его в «Расходы». Остановить: «Стоп» или /stop`,
+            )
+        })
+        return done
+      }
+      case 'match':
+      case 'autopilot': {
+        if (!pid) return done
+        const keep: Outcome = { kind: 'done', keep: true }
+        if (loopActive(chatId)) {
+          toast({ title: 'Цикл уже идёт', desc: '/stop — остановить', icon: 'warn' })
+          return keep
+        }
+        if (isRunning(chatId) || (useQueue.getState().q[chatId] || []).length) {
+          toast({ title: 'Агент ещё работает', desc: `Запусти /${name}, когда он закончит`, icon: 'warn' })
+          return keep
+        }
+        if (!backendOnline()) {
           say(
             chatId,
-            `↻ Цикл запущен${spec.max ? `: ${spec.max} проходов` : ' без лимита проходов'}, пауза ${fmtGap(spec.gap)}. Лимит расходов не задан — для платной модели задай его в «Расходы». Остановить: «Стоп» или /stop`,
+            `/${name} нужен локальный сервер TetraFree (в десктопной сборке он запускается сам, в браузере — npm run server)`,
           )
+          return done
+        }
+        const tier = getChat(pid, chatId)?.agents[0]?.tier
+        const proj = () => S().projects.find((p) => p.id === pid)
+        if (name === 'match') {
+          const ref = atts.find((a) => a.url && a.mime.startsWith('image/'))?.url
+          if (!ref) {
+            say(
+              chatId,
+              'Приложи скриншот-эталон (скрепка или вставка из буфера) и напиши `/match` ещё раз. Можно: `/match 97% x20 index.html`',
+            )
+            return keep
+          }
+          const spec = parseMatch(args)
+          if (spec.error) {
+            say(chatId, spec.error)
+            return keep
+          }
+          const task = `${spec.url || spec.path || 'страница проекта'} → сходство ≥ ${Math.round(spec.threshold * 1000) / 10}%`
+          void loopStart(
+            chatId,
+            pid,
+            { task, max: spec.max, gap: 2000 },
+            text.trim() || '/match',
+            matchHooks({ ref, spec, project: () => proj() }),
+            'match',
+          ).then((ok) => {
+            if (ok && tier === 'Эскалация')
+              say(
+                chatId,
+                'Агент на уровне «Эскалация»: каждая правка ждёт твоего решения, и подгонка будет стоять. Для /match лучше «Уведомить»',
+              )
+          })
+          return done
+        }
+        const spec = parseAuto(args)
+        void loopStart(
+          chatId,
+          pid,
+          {
+            task:
+              spec.focus.length === FOCUS.length
+                ? 'сам выбирает улучшения'
+                : spec.focus.map((f) => f.title).join(', '),
+            max: spec.max,
+            gap: spec.gap,
+          },
+          text.trim() || '/autopilot',
+          autoHooks(spec, () => proj()?.files[AUTOPILOT_FILE] || ''),
+          'auto',
+        ).then((ok) => {
+          if (!ok) return
+          say(
+            chatId,
+            `🧭 Автопилот включён: агент сам выбирает улучшения (${spec.focus.map((f) => f.title.toLowerCase()).join(', ')}) и ведёт журнал в \`${AUTOPILOT_FILE}\`. Каждая правка — отдельная версия, её можно откатить. ${tier === 'Эскалация' ? 'Агент на уровне «Эскалация»: правки будут ждать твоего решения — для автопилота лучше «Уведомить». ' : ''}${S().settings.budget ? '' : 'Лимит расходов не задан — для платной модели задай его в «Расходы». '}Остановить: «Стоп» или /stop`,
+          )
+        })
         return done
       }
     }
@@ -167,18 +248,19 @@ export function resolveSlash(chatId: ID, text: string): Outcome {
 }
 
 /** Отправка из композера: команда → её исполнение, иначе обычное сообщение (в очередь, если агент занят) */
-export function submit(chatId: ID, text: string, atts: Attachment[], running: boolean): boolean {
-  const r = resolveSlash(chatId, text)
+export function submit(chatId: ID, text: string, atts: Attachment[], running: boolean): 'keep' | 'clear' {
+  const r = resolveSlash(chatId, text, atts)
   if (r.kind === 'done') {
+    if (r.keep) return 'keep'
     S().setDraft(chatId, '')
-    return true
+    return 'clear'
   }
   const extra = r.kind === 'send' ? r.extra : ''
   if (running) {
     enqueue(chatId, text.trim(), atts, extra)
     S().setDraft(chatId, '')
   } else sendMessage(chatId, text, atts, extra)
-  return false
+  return 'clear'
 }
 
 export { useLoops }

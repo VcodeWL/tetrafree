@@ -6,15 +6,19 @@
      <rename from="a.ts" to="b.ts" />
      <read path="src/a.ts" />               (прочитать файл целиком → следующий шаг)
      <run>npm test</run>                    (выполнить команду → вывод придёт следующим шагом)
+     <fetch url="https://…" />             (прочитать страницу в интернете)
+     <search>запрос</search>                (поиск в интернете)
+     <shot path="index.html" />             (скриншот страницы проекта — придёт картинкой)
    Запасной вариант: блок ```lang путь/к/файлу … ``` считается <write>. */
 
-export type OpKind = 'write' | 'edit' | 'delete' | 'rename' | 'run' | 'read'
+export type OpKind = 'write' | 'edit' | 'delete' | 'rename' | 'run' | 'read' | 'fetch' | 'search' | 'shot'
 export type Seg =
   | { t: 'text'; s: string }
   | { t: 'op'; kind: OpKind; attrs: Record<string, string>; body: string; closed: boolean }
 
-const KINDS: OpKind[] = ['write', 'edit', 'delete', 'rename', 'run', 'read']
-const OPEN = /<(write|edit|delete|rename|run|read)\b((?:\s+[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/)?>/g
+const KINDS: OpKind[] = ['write', 'edit', 'delete', 'rename', 'run', 'read', 'fetch', 'search', 'shot']
+const OPEN =
+  /<(write|edit|delete|rename|run|read|fetch|search|shot)\b((?:\s+[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/)?>/g
 const FENCE = /```([\w+#.-]*)[ \t]+((?:\.?[\w@-]+\/)*\.?[\w@-]+\.[\w]+)[ \t]*\n/g
 
 function attrsOf(s: string) {
@@ -69,6 +73,8 @@ export function parseStream(src: string, streaming: boolean): Seg[] {
       m[3] ||
       kind === 'delete' ||
       kind === 'rename' ||
+      kind === 'fetch' ||
+      kind === 'shot' ||
       (kind === 'read' &&
         !/^\s*[^<\s]/.test(src.slice(start, start + 2)) &&
         !src.slice(start).includes('</read>'))
@@ -180,6 +186,12 @@ export function summarizeForHistory(src: string) {
       if (s.kind === 'edit') return `<edit path="${s.attrs.path}">…${parsePairs(s.body).length} замен…</edit>`
       if (s.kind === 'run') return `<run>${s.body.trim()}</run>`
       if (s.kind === 'rename') return `<rename from="${s.attrs.from}" to="${s.attrs.to}" />`
+      if (s.kind === 'search') return `<search>${s.body.trim()}</search>`
+      if (s.kind === 'fetch') return `<fetch url="${s.attrs.url || ''}" />`
+      if (s.kind === 'shot')
+        return `<shot ${Object.entries(s.attrs)
+          .map(([k, v]) => `${k}="${v}"`)
+          .join(' ')} />`
       return `<${s.kind} path="${s.attrs.path}" />`
     })
     .join('')

@@ -321,3 +321,11 @@ export const bCheckEditor = (exe: string) =>
 /** Отдельное окно терминала ОС в папке проекта */
 export const bOpenTerminal = (p: ProjRef) =>
   post<{ ok: boolean; reason?: string }>('/api/fs/open-terminal', pj(p))
+
+/* интернет и скриншоты для агента (сервер: server/web.mjs) */
+export const bWebFetch = (url: string) =>
+  post<{ url: string; status: number; type: string; text: string }>('/api/web/fetch', { url })
+export const bWebSearch = (q: string) =>
+  post<{ results: { title: string; url: string; snippet: string }[] }>('/api/web/search', { q })
+export const bShot = (url: string, width: number, height: number, full = false) =>
+  post<{ image: string }>('/api/shot', { url, width, height, full })

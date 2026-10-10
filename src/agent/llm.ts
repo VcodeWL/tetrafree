@@ -7,6 +7,22 @@ import { backendFetch } from '../lib/backend'
 export interface ChatMsg {
   role: 'user' | 'assistant'
   content: string
+  /** картинки (data:image/…;base64,…) — модель с «зрением» увидит их вместе с текстом */
+  images?: string[]
+}
+
+const DATA = /^data:(image\/[\w.+-]+);base64,(.+)$/s
+/** Сообщение в формате провайдера: OpenAI-совместимый (image_url) или Anthropic (image/source) */
+export function wireMsg(m: ChatMsg, anthropic: boolean) {
+  const imgs = (m.images || []).filter((u) => DATA.test(u))
+  if (!imgs.length) return { role: m.role, content: m.content }
+  const parts = imgs.map((u) => {
+    const d = u.match(DATA)!
+    return anthropic
+      ? { type: 'image', source: { type: 'base64', media_type: d[1], data: d[2] } }
+      : { type: 'image_url', image_url: { url: u } }
+  })
+  return { role: m.role, content: [...parts, { type: 'text', text: m.content }] }
 }
 export interface StreamOpts {
   provider: Provider
@@ -36,8 +52,18 @@ export async function streamChat(o: StreamOpts) {
       }
     : { 'content-type': 'application/json', ...(p.apiKey ? { authorization: 'Bearer ' + p.apiKey } : {}) }
   const body = anthropic
-    ? { model, system, messages, max_tokens: o.maxTokens || 16000, stream: true }
-    : { model, stream: true, messages: [{ role: 'system', content: system }, ...messages] }
+    ? {
+        model,
+        system,
+        messages: messages.map((m) => wireMsg(m, true)),
+        max_tokens: o.maxTokens || 16000,
+        stream: true,
+      }
+    : {
+        model,
+        stream: true,
+        messages: [{ role: 'system', content: system }, ...messages.map((m) => wireMsg(m, false))],
+      }
   const res = await backendFetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) })
   await ensureOk(res)
   onOpen?.()

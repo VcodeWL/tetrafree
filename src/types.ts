@@ -115,7 +115,7 @@ type PartBody =
       code?: number
       real?: boolean
     }
-  | { k: 'read'; id: ID; path: string; ok: boolean }
+  | { k: 'read'; id: ID; path: string; ok: boolean; label?: string }
 export interface TurnChanges {
   state: 'applied' | 'proposed' | 'reverted' | 'rejected' | 'partial'
   version?: number

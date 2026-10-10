@@ -19,6 +19,7 @@ import { osNotify } from '../lib/osnotify'
 import { wantsGit, gitContext } from '../lib/gitctx'
 import { report, costOf, fmtUsd, type Usage } from '../lib/usage'
 import { loopStop, loopPassEnded, setLoopRunner } from './loop'
+import { webFetchTool, webSearchTool, takeShotTool } from './webtools'
 
 const S = () => useStore.getState()
 const controllers = new Map<ID, AbortController>()
@@ -233,7 +234,7 @@ export function sendMessage(
   attachments: Attachment[] = [],
   extra = '',
   depth = 0,
-  opts: { silent?: string; loop?: boolean } = {},
+  opts: { silent?: string; loop?: boolean; imgs?: string[] } = {},
 ): boolean {
   const st = S()
   const pid = st.projectId!
@@ -309,7 +310,7 @@ export function sendMessage(
     who.name,
     who.tier,
     attachments,
-    { ctx: opts.silent ? '' : extra, depth, loop: opts.loop },
+    { ctx: opts.silent ? '' : extra, depth, loop: opts.loop, imgs: opts.imgs },
   )
   return true
 }
@@ -321,7 +322,7 @@ async function runTurn(
   agent: string,
   tier: Tier,
   attachments: Attachment[],
-  opts: { skipAsk?: boolean; ctx?: string; depth?: number; loop?: boolean } = {},
+  opts: { skipAsk?: boolean; ctx?: string; depth?: number; loop?: boolean; imgs?: string[] } = {},
 ) {
   controllers.get(chatId)?.abort()
   const ctl = new AbortController()
@@ -371,7 +372,7 @@ async function runTurn(
   let summary = ''
   let failed = false
   try {
-    summary = await liveLoop(T, prompt, attachments, provider!, model!.id, label, opts.ctx)
+    summary = await liveLoop(T, prompt, attachments, provider!, model!.id, label, opts.ctx, opts.imgs)
     if (backendOnline() && tier !== 'Эскалация' && S().settings.autoVerify !== false && !T.aborted)
       await verifyAfter(T, chatId, pid, opts.depth || 0)
     T.patch({ streaming: false, thinking: undefined, endedAt: Date.now() })
@@ -479,10 +480,11 @@ async function liveLoop(
   modelId: string,
   label: string,
   ctx = '',
+  imgs: string[] = [],
 ): Promise<string> {
   const acct = { inChars: 0, steps: 0 }
   try {
-    return await liveLoopInner(T, prompt, attachments, provider, modelId, label, ctx, acct)
+    return await liveLoopInner(T, prompt, attachments, provider, modelId, label, ctx, acct, imgs)
   } finally {
     if (acct.steps)
       T.patch({
@@ -507,6 +509,7 @@ async function liveLoopInner(
   label: string,
   ctx: string,
   acct: { inChars: number; steps: number },
+  imgs: string[] = [],
 ): Promise<string> {
   const { pid, chatId, agent, msgId } = T
   const project = () => S().projects.find((p) => p.id === pid)!
@@ -519,6 +522,15 @@ async function liveLoopInner(
       ...messages[messages.length - 1],
       content: messages[messages.length - 1].content + '\n\n' + ctx,
     }
+  /* картинки: вложения пользователя и то, что приложил цикл (скриншоты, эталон) — модель с «зрением» их увидит */
+  const pics = [
+    ...attachments.filter((a) => a.url && a.mime.startsWith('image/')).map((a) => a.url as string),
+    ...imgs,
+  ].slice(0, 6)
+  if (pics.length) {
+    messages[messages.length - 1] = { ...messages[messages.length - 1], images: pics }
+    acct.inChars += pics.length * 3000
+  }
   let first = ''
   for (let step = 0; step < MAX_STEPS; step++) {
     const lim = S().settings.budget
@@ -586,6 +598,7 @@ async function liveLoopInner(
     const segs = parseStream(acc, false)
     if (!first) first = segs.find((s) => s.t === 'text')?.s || ''
     const feedback: string[] = []
+    const fbImgs: string[] = []
     /* ошибки применения правок — отдаём модели */
     segs.forEach((s, i) => {
       if (s.t !== 'op') return
@@ -599,7 +612,7 @@ async function liveLoopInner(
       .map((s, i) => ({ s, i }))
       .filter(
         (x): x is { s: Extract<Seg, { t: 'op' }>; i: number } =>
-          x.s.t === 'op' && x.s.closed && (x.s.kind === 'run' || x.s.kind === 'read'),
+          x.s.t === 'op' && x.s.closed && ['run', 'read', 'fetch', 'search', 'shot'].includes(x.s.kind),
       )
     for (const { s, i } of actions) {
       const id = opIds.get(i) || `${step}-o${i}`
@@ -612,6 +625,19 @@ async function liveLoopInner(
             ? `read ${path}: файла нет`
             : `Содержимое ${path}:\n${body.length > 60000 ? body.slice(0, 60000) + '\n…(обрезано)' : body}`,
         )
+      } else if (s.kind === 'fetch' || s.kind === 'search' || s.kind === 'shot') {
+        T.lane({ act: s.kind === 'shot' ? 'смотрит страницу' : 'ищет в интернете', mode: 'read' })
+        const arg = (s.attrs.url || s.body).trim()
+        const r =
+          s.kind === 'fetch'
+            ? await webFetchTool(arg)
+            : s.kind === 'search'
+              ? await webSearchTool(s.body.trim())
+              : await takeShotTool(project(), s.attrs)
+        if (T.aborted) break
+        T.upsert({ k: 'read', id, path: r.label, ok: r.ok, label: 'web' })
+        feedback.push(r.text)
+        if (r.images) fbImgs.push(...r.images)
       } else {
         const cmd = s.body.trim()
         T.upsert({ k: 'cmd', id, cmd, state: 'running', out: '', real: backendOnline() })
@@ -629,6 +655,7 @@ async function liveLoopInner(
         'Результаты:\n\n' +
         feedback.join('\n\n---\n\n') +
         (step === MAX_STEPS - 2 ? '\n\nЭто последний шаг: заверши работу и коротко подведи итог.' : ''),
+      ...(fbImgs.length ? { images: fbImgs } : {}),
     })
     if (T.aborted) break
   }
@@ -904,6 +931,9 @@ function syncSegs(
         else if (!T.part(id)) T.step(id, 'Готовит команду…')
         break
       case 'read':
+      case 'fetch':
+      case 'search':
+      case 'shot':
         break
     }
   })
@@ -935,7 +965,8 @@ function notifyEscalation(pid: ID, chatId: ID, agent: string, label: string) {
 }
 
 setLoopRunner({
-  send: (chatId, o) => sendMessage(chatId, o.text, [], o.extra, 0, { silent: o.silent, loop: true }),
+  send: (chatId, o) =>
+    sendMessage(chatId, o.text, [], o.extra, 0, { silent: o.silent, loop: true, imgs: o.imgs }),
   busy: (chatId) => isRunning(chatId) || (useQueue.getState().q[chatId] || []).length > 0,
   projectOpen: (pid) => S().projectId === pid,
   say: (chatId, pid, text) => S().pushMsg(chatId, { id: uid('m'), kind: 'sys', text, at: Date.now() }, pid),

@@ -203,7 +203,8 @@ function PartView({ p, chatId, msg, caret }: { p: Part; chatId: string; msg: A; 
       <div className={'at-step' + (p.ok ? ' done' : ' bad')}>
         <Icon name={p.ok ? 'eye' : 'warn'} size={12} />
         <span>
-          {p.ok ? 'Прочитал' : 'Не нашёл'} <code>{p.path}</code>
+          {p.label ? (p.ok ? 'Посмотрел ' : 'Не вышло: ') : p.ok ? 'Прочитал ' : 'Не нашёл '}
+          <code>{p.path}</code>
         </span>
       </div>
     )

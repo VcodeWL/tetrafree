@@ -174,8 +174,7 @@ export function Composer({
   }
   const send = () => {
     if (!draft.trim() && !atts.length) return
-    submit(chatId, draft, atts, running)
-    setAtts([])
+    if (submit(chatId, draft, atts, running) === 'clear') setAtts([])
   }
   return (
     <div className="composer">
@@ -263,6 +262,7 @@ export function Composer({
           </span>
           <span className="lp-t">
             {loopLabel(loop)}
+            {loop.note ? ` · ${loop.note}` : ''}
             {loop.phase === 'wait' && loop.nextAt
               ? ` · следующий через ${fmtGap(Math.max(1000, loop.nextAt - Date.now()))}`
               : ' · работает'}
@@ -276,7 +276,7 @@ export function Composer({
             onClick={() => loopStop(chatId, 'остановлено вручную')}
           >
             <Icon name="stop" size={11} />
-            Стоп цикла
+            Стоп
           </button>
         </div>
       )}
