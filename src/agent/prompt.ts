@@ -49,7 +49,7 @@ export function history(all: Message[], exclude: ID): ChatMsg[] {
   return merged
 }
 
-export function systemPrompt(p: Project, agent: string, att: Attachment[]) {
+export function systemPrompt(p: Project, agent: string, att: Attachment[], mcp = '') {
   let budget = 40000
   const names = Object.keys(p.files)
   const files = names
@@ -86,7 +86,7 @@ export function systemPrompt(p: Project, agent: string, att: Attachment[]) {
 5. Не придумывай содержимого файлов, которых не видел: если файл показан не целиком — сначала <read>.
 6. Если просьба неясна или опасна — сначала спроси словами, не делай правок.
 ${att.length ? 'Вложения пользователя: ' + att.map((a) => a.name).join(', ') + '\n' : ''}
-${skills ? 'НАВЫКИ ПРОЕКТА (готовые инструкции; если задача подходит под описание — сначала прочитай SKILL.md и следуй ему):\n' + skills + '\n\n' : ''}${rules ? 'ПРАВИЛА И ИНСТРУКЦИИ ПРОЕКТА (задала команда, соблюдай их):\n' + rules + '\n\n' : ''}Общая память проекта (решения из всех чатов):
+${mcp ? mcp + '\n' : ''}${skills ? 'НАВЫКИ ПРОЕКТА (готовые инструкции; если задача подходит под описание — сначала прочитай SKILL.md и следуй ему):\n' + skills + '\n\n' : ''}${rules ? 'ПРАВИЛА И ИНСТРУКЦИИ ПРОЕКТА (задала команда, соблюдай их):\n' + rules + '\n\n' : ''}Общая память проекта (решения из всех чатов):
 ${
   p.memory
     .slice(0, 20)

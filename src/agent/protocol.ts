@@ -9,16 +9,18 @@
      <fetch url="https://…" />             (прочитать страницу в интернете)
      <search>запрос</search>                (поиск в интернете)
      <shot path="index.html" />             (скриншот страницы проекта — придёт картинкой)
+     <mcp server="x" tool="y">{json}</mcp>    (инструмент подключённого MCP-сервера)
    Запасной вариант: блок ```lang путь/к/файлу … ``` считается <write>. */
 
-export type OpKind = 'write' | 'edit' | 'delete' | 'rename' | 'run' | 'read' | 'fetch' | 'search' | 'shot'
+export type OpKind =
+  'write' | 'edit' | 'delete' | 'rename' | 'run' | 'read' | 'fetch' | 'search' | 'shot' | 'mcp'
 export type Seg =
   | { t: 'text'; s: string }
   | { t: 'op'; kind: OpKind; attrs: Record<string, string>; body: string; closed: boolean }
 
-const KINDS: OpKind[] = ['write', 'edit', 'delete', 'rename', 'run', 'read', 'fetch', 'search', 'shot']
+const KINDS: OpKind[] = ['write', 'edit', 'delete', 'rename', 'run', 'read', 'fetch', 'search', 'shot', 'mcp']
 const OPEN =
-  /<(write|edit|delete|rename|run|read|fetch|search|shot)\b((?:\s+[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/)?>/g
+  /<(write|edit|delete|rename|run|read|fetch|search|shot|mcp)\b((?:\s+[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/)?>/g
 const FENCE = /```([\w+#.-]*)[ \t]+((?:\.?[\w@-]+\/)*\.?[\w@-]+\.[\w]+)[ \t]*\n/g
 
 function attrsOf(s: string) {
@@ -186,6 +188,8 @@ export function summarizeForHistory(src: string) {
       if (s.kind === 'edit') return `<edit path="${s.attrs.path}">…${parsePairs(s.body).length} замен…</edit>`
       if (s.kind === 'run') return `<run>${s.body.trim()}</run>`
       if (s.kind === 'rename') return `<rename from="${s.attrs.from}" to="${s.attrs.to}" />`
+      if (s.kind === 'mcp')
+        return `<mcp server="${s.attrs.server || ''}" tool="${s.attrs.tool || ''}">${s.body.trim().slice(0, 300)}</mcp>`
       if (s.kind === 'search') return `<search>${s.body.trim()}</search>`
       if (s.kind === 'fetch') return `<fetch url="${s.attrs.url || ''}" />`
       if (s.kind === 'shot')

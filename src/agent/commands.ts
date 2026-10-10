@@ -4,6 +4,7 @@ import { useStore, getChat, toast } from '../store'
 import { uid } from '../lib/util'
 import { sendMessage, stopTurn, isRunning, resolveModel } from './engine'
 import { backendOnline } from '../lib/backend'
+import { loadMcp, hasMcpConfig } from '../lib/mcp'
 import { enqueue, clearQueue, useQueue } from './queue'
 import { loopStart, loopStop, loopActive, useLoops } from './loop'
 import { parseMatch, matchHooks } from './match'
@@ -106,6 +107,33 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
             : 'Модель не подключена — добавь провайдера и ключ',
         )
         S().openModal({ type: 'settings', section: 'providers' })
+        return done
+      }
+      case 'mcp': {
+        const pr = S().projects.find((x) => x.id === pid)
+        if (!pr) return done
+        if (!hasMcpConfig(pr.files))
+          say(chatId, 'В проекте нет MCP-серверов. Добавь их в «Расширения» или положи `.tetra/mcp.json`')
+        else if (!backendOnline())
+          say(
+            chatId,
+            'MCP нужен локальный сервер TetraFree (в десктопной сборке он запускается сам, в браузере — npm run server)',
+          )
+        else
+          void loadMcp(pr).then((av) => {
+            const n = Object.keys(av.tools)
+            say(
+              chatId,
+              n.length
+                ? 'Инструменты MCP, доступные агенту\n' +
+                    n.map((k) => `**${k}**: ${av.tools[k].map((t) => t.name).join(', ') || '—'}`).join('\n')
+                : 'Ни один MCP-сервер сейчас не доступен' +
+                    Object.entries(av.notes)
+                      .map(([k, v]) => `\n${k}: ${v}`)
+                      .join(''),
+            )
+          })
+        S().openModal({ type: 'settings', section: 'extensions' })
         return done
       }
       case 'skills': {

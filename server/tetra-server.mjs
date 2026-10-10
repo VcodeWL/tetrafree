@@ -19,10 +19,13 @@ import { makeIgnore } from './ignore.mjs'
 import { ptyRoutes, hasPty } from './pty.mjs'
 import { createVault, secretRoutes } from './secrets.mjs'
 import { webRoutes } from './web.mjs'
+import { mcpRoutes, createPool } from './mcp.mjs'
 import { accountRoutes, authed, previewToken, previewValid } from './auth.mjs'
 
 const ROOT = path.resolve(process.env.TF_ROOT || path.join(os.homedir(), 'TetraFree', 'projects'))
 const vault = createVault({ dir: path.dirname(ROOT) })
+const mcpPool = createPool()
+process.on('exit', () => mcpPool.closeAll())
 import { checkRemoteUrl, redactUrl } from './gitremote.mjs'
 import { parseStatus, parseLog, kindOf, parseBlame, splitHunks, pickHunks } from './gitparse.mjs'
 import { EDITORS, detectEditors, findEditor, editorArgs, customEditor, terminalLaunch } from './editors.mjs'
@@ -349,6 +352,16 @@ async function handle(req, res, isLocal) {
   if (await ptyRoutes(req, res, u, { json, readBody, projectDir })) return
   if (await secretRoutes(req, res, u, { json, readBody }, vault)) return
   if (await webRoutes(req, res, u, { json, readBody })) return
+  if (
+    await mcpRoutes(
+      req,
+      res,
+      u,
+      { json, readBody, projectDir },
+      { approvalsFile: path.join(path.dirname(ROOT), 'mcp-approved.json'), pool: mcpPool },
+    )
+  )
+    return
 
   /* обзор папок для выбора места проекта: список подпапок + сведения о самой папке */
   if (u.pathname === '/api/fs/browse') {

@@ -1,6 +1,7 @@
 import { ServerHelp } from '../components/ServerHelp'
 import { markSeen } from '../lib/whatsnew'
 import { UsagePanel } from './UsagePanel'
+import { Extensions } from './Extensions'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, useProject, toast } from '../store'
 import { Icon, BrandIcon, type IconName } from '../components/ui/Icon'
@@ -43,6 +44,7 @@ const SECTIONS: { k: string; t: string; icon: IconName; project?: boolean }[] = 
   { k: 'providers', t: 'Провайдеры', icon: 'key' },
   { k: 'usage', t: 'Расходы', icon: 'bolt' },
   { k: 'deploy', t: 'Деплой', icon: 'rocket', project: true },
+  { k: 'extensions', t: 'Расширения', icon: 'layers', project: true },
   { k: 'backend', t: 'Бэкенд и диск', icon: 'disk' },
   { k: 'appearance', t: 'Оформление', icon: 'paint' },
   { k: 'shortcuts', t: 'Горячие клавиши', icon: 'keyboard' },
@@ -93,6 +95,8 @@ export function SettingsModal({ section = 'account' }: { section?: string }) {
             <UsagePanel />
           ) : cur.k === 'deploy' ? (
             <Deploy />
+          ) : cur.k === 'extensions' ? (
+            <Extensions />
           ) : cur.k === 'backend' ? (
             <BackendSection />
           ) : cur.k === 'appearance' ? (

@@ -329,3 +329,7 @@ export const bWebSearch = (q: string) =>
   post<{ results: { title: string; url: string; snippet: string }[] }>('/api/web/search', { q })
 export const bShot = (url: string, width: number, height: number, full = false) =>
   post<{ image: string }>('/api/shot', { url, width, height, full })
+
+/* MCP: серверы описаны в .tetra/mcp.json, процессами управляет локальный сервер (server/mcp.mjs) */
+export const bMcp = <T>(p: ProjRef, route: string, extra: Record<string, unknown> = {}) =>
+  post<T>('/api/mcp/' + route, { ...pj(p), ...extra })

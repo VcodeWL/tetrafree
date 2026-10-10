@@ -144,6 +144,7 @@ export const BUILTINS: Builtin[] = [
   { name: 'clear', hint: '', desc: 'Начать с чистого контекста: агент забудет прошлую переписку этого чата' },
   { name: 'memory', hint: 'текст', desc: 'Запомнить решение в общей памяти проекта' },
   { name: 'model', hint: '', desc: 'Какая модель отвечает сейчас, и выбор другой' },
+  { name: 'mcp', hint: '', desc: 'Подключённые MCP-серверы и их инструменты' },
   { name: 'skills', hint: '', desc: 'Навыки проекта' },
   { name: 'skill', hint: 'имя [аргументы]', desc: 'Применить навык к задаче' },
   {
@@ -297,4 +298,40 @@ export function skillsIndex(files: Record<string, string>): string {
   return s
     .map((k) => `- ${k.name}: ${k.description || '(без описания)'} — <read path="${k.path}" />`)
     .join('\n')
+}
+
+/* ------------------------------------------------------------------ заготовки для новых команд и навыков */
+
+export const validExtName = (n: string) => NAME.test(n) && !BUILTIN_NAMES.has(n)
+
+export function commandTemplate(name: string): { path: string; text: string } {
+  return {
+    path: `.tetra/commands/${name.replace(/:/g, '/')}.md`,
+    text: `---
+description: Что делает команда /${name} (одна строка — её видно в подсказках)
+argument-hint: <что передать>
+---
+Опиши здесь, что должен сделать агент. Аргументы после имени команды: $ARGUMENTS
+
+Критерии «готово»:
+- …
+`,
+  }
+}
+
+export function skillTemplate(name: string): { path: string; text: string } {
+  return {
+    path: `.tetra/skills/${name}/SKILL.md`,
+    text: `---
+name: ${name}
+description: Когда применять этот навык (агент читает это описание в каждом ходе и решает, нужен ли навык). Например: «Работа с PDF — извлечь текст, склеить, разрезать»
+---
+# ${name}
+
+1. Первый шаг…
+2. Второй шаг…
+
+Ловушки: …
+`,
+  }
 }

@@ -20,6 +20,8 @@ import { wantsGit, gitContext } from '../lib/gitctx'
 import { report, costOf, fmtUsd, type Usage } from '../lib/usage'
 import { loopStop, loopPassEnded, setLoopRunner } from './loop'
 import { webFetchTool, webSearchTool, takeShotTool } from './webtools'
+import { loadMcp, mcpSection, type McpAvail } from '../lib/mcp'
+import { mcpAction } from './mcptool'
 
 const S = () => useStore.getState()
 const controllers = new Map<ID, AbortController>()
@@ -531,6 +533,10 @@ async function liveLoopInner(
     messages[messages.length - 1] = { ...messages[messages.length - 1], images: pics }
     acct.inChars += pics.length * 3000
   }
+  /* инструменты MCP: один раз на ход (серверы живут между ходами) */
+  T.patch({ thinking: 'Подключаю инструменты' })
+  const mcpAv: McpAvail = await loadMcp(project()).catch(() => ({ tools: {}, notes: {} }))
+  const mcpText = mcpSection(mcpAv)
   let first = ''
   for (let step = 0; step < MAX_STEPS; step++) {
     const lim = S().settings.budget
@@ -563,7 +569,7 @@ async function liveLoopInner(
     T.lane({ act: step ? 'продолжает работу' : 'ждёт модель', pct: Math.min(90, 14 + step * 14) })
     let acc = ''
     acct.steps++
-    const sysPrompt = systemPrompt(project(), agent, attachments)
+    const sysPrompt = systemPrompt(project(), agent, attachments, mcpText)
     acct.inChars += sysPrompt.length + messages.reduce((a, m) => a + m.content.length, 0)
     const opIds = new Map<number, ID>()
     const applied = new Set<number>()
@@ -612,7 +618,9 @@ async function liveLoopInner(
       .map((s, i) => ({ s, i }))
       .filter(
         (x): x is { s: Extract<Seg, { t: 'op' }>; i: number } =>
-          x.s.t === 'op' && x.s.closed && ['run', 'read', 'fetch', 'search', 'shot'].includes(x.s.kind),
+          x.s.t === 'op' &&
+          x.s.closed &&
+          ['run', 'read', 'fetch', 'search', 'shot', 'mcp'].includes(x.s.kind),
       )
     for (const { s, i } of actions) {
       const id = opIds.get(i) || `${step}-o${i}`
@@ -625,6 +633,15 @@ async function liveLoopInner(
             ? `read ${path}: файла нет`
             : `Содержимое ${path}:\n${body.length > 60000 ? body.slice(0, 60000) + '\n…(обрезано)' : body}`,
         )
+      } else if (s.kind === 'mcp') {
+        const server = (s.attrs.server || '').trim(),
+          tool = (s.attrs.tool || '').trim()
+        T.lane({ act: `вызывает ${server}.${tool}`.slice(0, 40), mode: 'write' })
+        const r = await mcpAction(project(), T.tier, mcpAv, server, tool, s.body)
+        if (T.aborted) break
+        T.upsert({ k: 'read', id, path: `${server}.${tool}`, ok: r.ok, label: 'mcp' })
+        feedback.push(r.text)
+        if (r.images?.length) fbImgs.push(...r.images)
       } else if (s.kind === 'fetch' || s.kind === 'search' || s.kind === 'shot') {
         T.lane({ act: s.kind === 'shot' ? 'смотрит страницу' : 'ищет в интернете', mode: 'read' })
         const arg = (s.attrs.url || s.body).trim()
@@ -934,6 +951,7 @@ function syncSegs(
       case 'fetch':
       case 'search':
       case 'shot':
+      case 'mcp':
         break
     }
   })
