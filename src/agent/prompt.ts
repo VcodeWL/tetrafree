@@ -2,6 +2,7 @@
 import type { Attachment, ID, Message, Project } from '../types'
 import { AGENTS } from '../data/seed'
 import type { ChatMsg } from './llm'
+import { projectRules } from './rules'
 
 /* ------------------------------------------------------------------ контекст для модели */
 
@@ -56,6 +57,7 @@ export function systemPrompt(p: Project, agent: string, att: Attachment[]) {
       return `### ${k}\n${v.slice(0, cap)}${cap < v.length ? `\n…(показано ${cap} из ${v.length} симв.; полный файл — <read path="${k}" />)` : ''}`
     })
     .join('\n\n')
+  const rules = projectRules(p.files)
   return `Ты — агент «${agent}» (${AGENTS[agent]?.role || 'помощник разработчика'}) в TetraFree, среде совместной разработки людей и ИИ-агентов.
 Проект: ${p.name} — ${p.desc}
 Отвечай по-русски, коротко и по делу.
@@ -76,7 +78,7 @@ export function systemPrompt(p: Project, agent: string, att: Attachment[]) {
 5. Не придумывай содержимого файлов, которых не видел: если файл показан не целиком — сначала <read>.
 6. Если просьба неясна или опасна — сначала спроси словами, не делай правок.
 ${att.length ? 'Вложения пользователя: ' + att.map((a) => a.name).join(', ') + '\n' : ''}
-${p.files['.tetra/rules.md'] ? 'ПРАВИЛА ПРОЕКТА (задала команда, соблюдай их):\n' + p.files['.tetra/rules.md'].slice(0, 4000) + '\n\n' : ''}Общая память проекта (решения из всех чатов):
+${rules ? 'ПРАВИЛА И ИНСТРУКЦИИ ПРОЕКТА (задала команда, соблюдай их):\n' + rules + '\n\n' : ''}Общая память проекта (решения из всех чатов):
 ${
   p.memory
     .slice(0, 20)

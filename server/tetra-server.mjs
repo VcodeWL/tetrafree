@@ -613,7 +613,14 @@ async function handle(req, res, isLocal) {
 
   /* инкрементальные правки */
   if (u.pathname === '/api/fs/batch' && req.method === 'POST') {
-    const { id, name, folder, write = {}, remove = [], mkdirs = [], rmdirs = [] } = await readBody(req)
+    const body = await readBody(req)
+    const { id, name, folder } = body
+    /* поля приходят от клиента: всё, что не словарь/массив, считаем пустым (иначе «remove: 5» давало 500) */
+    const write = body.write && typeof body.write === 'object' && !Array.isArray(body.write) ? body.write : {}
+    const list = (x) => (Array.isArray(x) ? x : [])
+    const remove = list(body.remove),
+      mkdirs = list(body.mkdirs),
+      rmdirs = list(body.rmdirs)
     const dir = await projectDir(id, name, folder)
     /* один плохой файл (слишком длинное имя, занято другим процессом…) не должен ронять всю пачку */
     const failed = []
@@ -630,6 +637,9 @@ async function handle(req, res, isLocal) {
     for (const rel of remove) {
       try {
         const abs = inside(dir, rel)
+        /* пустой путь или «.» — это сама папка проекта: удалять её целиком по ошибке клиента нельзя */
+        if (abs === dir)
+          throw Object.assign(new Error('Нельзя удалить папку проекта целиком'), { code: 'EPROJ' })
         await realInside(dir, path.dirname(abs))
         await fsp.rm(abs, { force: true, recursive: true })
         await pruneEmpty(path.dirname(abs), dir)
@@ -1150,13 +1160,20 @@ async function handle(req, res, isLocal) {
       res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
       return res.end('Сессия превью недействительна — открой превью из приложения')
     }
-    const pname = safeName(decodeURIComponent(pm[1]))
+    let pname, rel
+    try {
+      pname = safeName(decodeURIComponent(pm[1]))
+      rel = decodeURIComponent(pm[2] || '')
+    } catch {
+      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+      return res.end('bad path')
+    }
     const dir = REG.get(pname) || path.join(ROOT, pname)
-    let rel = decodeURIComponent(pm[2] || '')
     if (!rel) rel = fs.existsSync(path.join(dir, 'site', 'index.html')) ? 'site/index.html' : 'index.html'
     let abs
     try {
       abs = inside(dir, rel)
+      await realInside(dir, abs) /* ссылка внутри проекта не должна отдавать файлы вне его */
     } catch {
       res.writeHead(400)
       return res.end('bad path')
@@ -1249,6 +1266,15 @@ function serveStatic(req, res) {
 export function start(port = +(process.env.PORT || 3001), host = process.env.HOST || '127.0.0.1') {
   const mw = tetraMiddleware()
   const srv = http.createServer((req, res) => mw(req, res, () => serveStatic(req, res)))
+  /* порт занят или нельзя слушать: раньше процесс молча висел без сервера, а приложение ждало ответа */
+  srv.on('error', (e) => {
+    console.error(
+      e.code === 'EADDRINUSE'
+        ? `[server] порт ${port} уже занят другой программой — сервер не запущен`
+        : '[server] не удалось начать слушать: ' + e.message,
+    )
+    if (isMain()) process.exit(1)
+  })
   srv.listen(port, host, () =>
     console.log(
       `TetraFree backend → http://${host}:${port}  ·  проекты: ${ROOT}  ·  git: ${hasGit() ? 'да' : 'нет'}`,

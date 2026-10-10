@@ -380,3 +380,22 @@ test('битый JSON и null вместо тела — 400/понятная о�
   })
   assert.notEqual(r3.status, 500)
 })
+
+test('fs/batch: пустой путь не удаляет папку проекта, кривые поля не дают 500', async () => {
+  const U = { name: 'Борис', email: 'batch-user@test.dev', password: 'B0ris!Pass-91' }
+  assert.equal((await call('POST', '/api/auth/register', U)).status, 201)
+  const v = await call('POST', '/api/auth/verify', { email: U.email, code: await lastCode(U.email) })
+  const t = v.body.token
+  const w = await call('POST', '/api/fs/batch', { id: 'bt1', name: 'batchproj', write: { 'a.txt': 'x' } }, t)
+  assert.equal(w.status, 200)
+  const file = path.join(w.body.dir, 'a.txt')
+  assert.ok(fs.existsSync(file))
+  const r = await call('POST', '/api/fs/batch', { id: 'bt1', name: 'batchproj', remove: ['', '.'] }, t)
+  assert.equal(r.status, 200)
+  assert.equal(r.body.failed.length, 2)
+  assert.ok(fs.existsSync(file), 'папка проекта осталась')
+  for (const bad of [{ remove: 5 }, { write: 'x' }, { mkdirs: {} }, { rmdirs: 'a' }]) {
+    const x = await call('POST', '/api/fs/batch', { id: 'bt1', name: 'batchproj', ...bad }, t)
+    assert.equal(x.status, 200, JSON.stringify(bad))
+  }
+})
