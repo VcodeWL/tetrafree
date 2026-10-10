@@ -15,10 +15,14 @@ import {
   type McpTool,
 } from '../lib/mcp'
 import { addServer, removeServer, buildCfg, configPath, validName } from '../lib/mcpconfig'
+import { Catalog } from './Catalog'
+import { wanted } from '../lib/market'
 import { listSkills, listCustom, commandTemplate, skillTemplate, validExtName } from '../agent/slash'
 
 export function Extensions() {
-  const [tab, setTab] = useState<'mcp' | 'skills'>('mcp')
+  const [tab, setTab] = useState<'mcp' | 'skills' | 'market'>(() =>
+    wanted.tab === 'market' ? 'market' : 'mcp',
+  )
   return (
     <>
       <h2>Расширения</h2>
@@ -28,14 +32,21 @@ export function Extensions() {
       </p>
       <Segmented
         value={tab}
-        onChange={(v) => setTab(v as 'mcp' | 'skills')}
+        onChange={(v) => setTab(v as 'mcp' | 'skills' | 'market')}
         options={[
           { k: 'mcp', t: 'MCP-серверы' },
           { k: 'skills', t: 'Навыки и команды' },
+          { k: 'market', t: 'Каталог' },
         ]}
         label="Раздел"
       />
-      {tab === 'mcp' ? <McpTab /> : <SkillsTab />}
+      {tab === 'mcp' ? (
+        <McpTab />
+      ) : tab === 'skills' ? (
+        <SkillsTab />
+      ) : (
+        <Catalog goMcp={() => setTab('mcp')} />
+      )}
     </>
   )
 }

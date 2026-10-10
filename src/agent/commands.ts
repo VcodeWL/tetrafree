@@ -5,6 +5,7 @@ import { uid } from '../lib/util'
 import { sendMessage, stopTurn, isRunning, resolveModel } from './engine'
 import { backendOnline } from '../lib/backend'
 import { loadMcp, hasMcpConfig } from '../lib/mcp'
+import { wanted } from '../lib/market'
 import { enqueue, clearQueue, useQueue } from './queue'
 import { loopStart, loopStop, loopActive, useLoops } from './loop'
 import { parseMatch, matchHooks } from './match'
@@ -133,6 +134,12 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
                       .join(''),
             )
           })
+        S().openModal({ type: 'settings', section: 'extensions' })
+        return done
+      }
+      case 'market': {
+        wanted.tab = 'market'
+        wanted.q = args.trim()
         S().openModal({ type: 'settings', section: 'extensions' })
         return done
       }

@@ -57,6 +57,9 @@ npm run build
 ### MCP
 `server/mcp.mjs`: parseConfig, раскрытие `${VAR}` при запуске, хэш-одобрение (`mcp-approved.json` рядом с данными, 403 без него), McpClient (stdio JSON-RPC; Streamable HTTP JSON/SSE), пул (idle 5 мин, максимум 8), маршруты `/api/mcp/*`. Клиент: `lib/mcp.ts`, `lib/mcpconfig.ts`, `agent/mcptool.ts` (тег `<mcp server tool>{json}</mcp>`, политика по уровням), `modals/Extensions.tsx`. Не проверено: реальный npx через cmd.exe на Windows, HTTP против настоящих удалённых серверов.
 
+### Каталог расширений
+`data/market.ts` — встроенные элементы (файлы навыков/команд, конфиги MCP, наборы), `lib/market.ts` — чистая логика (planInstall/planRemove, учёт в `.tetra/market.json`, `safePath` только под `.tetra/skills|commands`, registryPack, rankSkillDirs, pickSkillFiles) и сеть через `backendFetch` (реестр MCP, skills.sh, GitHub tree + raw). UI — `modals/Catalog.tsx` (вкладка в «Расширениях»), `/market` открывает его через `wanted`. Не проверено: установка из GitHub при лимите API без токена (есть запасной путь по угадыванию папок), запуск установленных из реестра серверов на Windows.
+
 ## Релиз (точный порядок)
 
 Версии: `x.y.Z` исправления, `x.Y.0` новые функции, `X.0.0` крупная переработка. Виды записи в changelog **только** `new | imp | fix`; вид релиза `major | logic | visual | patch` (новые функции = `logic`).
