@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import type { Project } from '../types'
 import { download, uid, localDay } from './util'
+import { packVersions, unpackVersions, type PackedVersion } from '../store/snapshots'
 
 /* Резервная копия: все проекты и настройки одним JSON. Ключи провайдеров и адрес бэкенда не попадают в файл. */
 interface Backup {
@@ -22,7 +23,12 @@ export function buildBackup(): Backup {
     v: 1,
     at: Date.now(),
     version: __APP_VERSION__,
-    projects: s.projects.map((p) => ({ ...p, cloud: undefined })),
+    /* версии — разницей с предыдущей: иначе копия вырастает в разы и может не пройти лимит импорта */
+    projects: s.projects.map((p) => ({
+      ...p,
+      cloud: undefined,
+      versions: packVersions(p.versions) as unknown as Project['versions'],
+    })),
     settings,
   }
   return data
@@ -71,7 +77,15 @@ export async function importBackup(file: File): Promise<number> {
       names.add(name)
       const id = ids.has(p.id) ? 'p' + uid() : p.id
       ids.add(id)
-      return { ...p, id, name, path: '', cloud: undefined, lanes: [] } as Project
+      return {
+        ...p,
+        id,
+        name,
+        path: '',
+        cloud: undefined,
+        lanes: [],
+        versions: unpackVersions(p.versions as unknown as PackedVersion[]),
+      } as Project
     })
     return { projects: [...s.projects, ...add] }
   })

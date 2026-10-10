@@ -11619,3 +11619,27 @@ html .pipe .pm-warn {
 html.light .pipe .pm-warn {
   color: #9a5b00;
 }
+
+html .srow .meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line, rgba(255, 255, 255, 0.1));
+  margin-top: 10px;
+  overflow: hidden;
+  max-width: 420px;
+}
+html .srow .meter i {
+  display: block;
+  height: 100%;
+  background: var(--ok, #5fbf8a);
+  border-radius: 3px;
+}
+html .srow .meter.warn i {
+  background: var(--warn, #e6b450);
+}
+html .srow .meter.full i {
+  background: var(--err, #e5646a);
+}
+html.light .srow .meter {
+  background: rgba(0, 0, 0, 0.1);
+}

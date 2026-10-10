@@ -18,6 +18,7 @@ import type { Person, Settings as SettingsT } from '../types'
 import { AccountSecurity, MembersPanel } from './AccountPanels'
 import { api, logout, useAccount } from '../lib/account'
 import { exportBackup, importBackup } from '../lib/backup'
+import { storageUsed, storageLevel, fmtMb, STORAGE_LIMIT } from '../lib/storageUse'
 import { build as buildSettings, parse as parseSettings } from '../lib/settingsIO'
 import { UI_FONTS, CODE_FONTS } from '../lib/fonts'
 import { enableOsNotify } from '../lib/osnotify'
@@ -1068,6 +1069,34 @@ export function Shortcuts() {
   )
 }
 
+function StorageRow() {
+  const used = useMemo(() => storageUsed(), [])
+  const lvl = storageLevel(used)
+  return (
+    <div className="srow">
+      <div className="sl">
+        <div className="t">Локальное хранилище</div>
+        <div className="d">
+          Проекты, чаты и настройки лежат в хранилище приложения. Занято {fmtMb(used)} из примерно{' '}
+          {fmtMb(STORAGE_LIMIT)}.
+          {lvl !== 'ok' &&
+            ' Места остаётся мало: сделайте резервную копию и удалите старые проекты, иначе новые изменения перестанут сохраняться.'}
+        </div>
+        <div
+          className={'meter ' + lvl}
+          role="progressbar"
+          aria-label="Занято локальное хранилище"
+          aria-valuenow={Math.min(100, Math.round((used / STORAGE_LIMIT) * 100))}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <i style={{ width: Math.min(100, (used / STORAGE_LIMIT) * 100) + '%' }} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function BackendSection() {
   const backupIn = useRef<HTMLInputElement>(null)
   const b = useBackend()
@@ -1294,6 +1323,7 @@ function BackendSection() {
           onChange={(v) => useStore.getState().setSetting('autoVerify', v)}
         />
       </div>
+      <StorageRow />
       <div className="srow">
         <div className="sl">
           <div className="t">Резервная копия</div>
