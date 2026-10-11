@@ -2,6 +2,7 @@ import { stripSecrets } from '../lib/vaultState'
 import { createJSONStorage } from 'zustand/middleware'
 import type { Attachment, Message, Person, Project, Provider } from '../types'
 import { pickFile } from './helpers'
+import { idbAvailable, idbGet, idbSet, idbDel } from './idb'
 import { initialPersisted } from './defaults'
 import { packVersions, unpackVersions, type PackedVersion } from './snapshots'
 import type { Full, Persisted, S, UI } from './types'
@@ -43,37 +44,99 @@ const safeStorage = (onQuota: () => void): Storage => ({
   },
 })
 
-/* Запись откладывается: во время стрима стор меняется ~15 раз в секунду, а сериализовать весь проект столько раз незачем */
-export function debouncedStorage(onQuota: () => void): import('zustand/middleware').PersistStorage<unknown> {
+/* Состояние лежит в IndexedDB (потолок — диск, а не 5 МБ localStorage). Что здесь важно:
+   — первое чтение: если в IndexedDB пусто, а в localStorage есть старые данные — они переносятся, и localStorage
+     очищается только ПОСЛЕ успешной записи и повторного чтения;
+   — запись откладывается: во время стрима стор меняется ~15 раз в секунду, а копировать весь проект столько раз незачем;
+   — IndexedDB недоступен → прежний путь через localStorage. */
+export type StoredValue = { state: unknown; version?: number }
+
+/* В базе лежит JSON-строка: значения стора могут содержать то, что structured clone не принимает, а JSON — отбрасывает, как и раньше */
+const parse = (raw: string | undefined): StoredValue | null => {
+  if (typeof raw !== 'string') return null
+  try {
+    return JSON.parse(raw) as StoredValue
+  } catch {
+    return null
+  }
+}
+
+export function idbStorage(onQuota: () => void): import('zustand/middleware').PersistStorage<unknown> {
   let _j: ReturnType<typeof createJSONStorage> | undefined
-  const J = () => (_j ??= createJSONStorage(() => safeStorage(onQuota)))!
-  let pending: { k: string; v: never } | null = null
+  const LS = () => (_j ??= createJSONStorage(() => safeStorage(onQuota)))!
+  let useIdb: boolean | null = null
+  let pending: { k: string; v: StoredValue } | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
+  let migrated = false
+  let flushing: Promise<void> = Promise.resolve()
+
+  const ready = async () => (useIdb ??= await idbAvailable())
+
+  const write = async (k: string, v: StoredValue) => {
+    if (await ready()) {
+      try {
+        await idbSet(k, JSON.stringify(v))
+        if (!migrated) {
+          /* старые данные из localStorage удаляем только когда новая копия точно прочиталась */
+          const back = parse(await idbGet<string>(k))
+          if (back && back.state) {
+            try {
+              localStorage.removeItem(k)
+            } catch {
+              /* noop */
+            }
+            migrated = true
+          }
+        }
+        quotaWarned = false
+        return
+      } catch {
+        /* диск переполнен или база закрыта — пробуем localStorage ниже */
+      }
+    }
+    void LS().setItem(k, v as never)
+  }
+
   const flush = () => {
     if (timer) clearTimeout(timer)
     timer = null
-    if (pending) {
-      const p = pending
-      pending = null
-      void J().setItem(p.k, p.v)
-    }
+    if (!pending) return flushing
+    const p = pending
+    pending = null
+    flushing = flushing.then(() => write(p.k, p.v)).catch(() => undefined)
+    return flushing
   }
   if (typeof window !== 'undefined') {
-    window.addEventListener('beforeunload', flush)
-    window.addEventListener('pagehide', flush)
+    window.addEventListener('beforeunload', () => void flush())
+    window.addEventListener('pagehide', () => void flush())
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') flush()
+      if (document.visibilityState === 'hidden') void flush()
     })
   }
   return {
-    getItem: (k) => (pending && pending.k === k ? (pending.v as never) : J().getItem(k)),
-    setItem: (k, v) => {
-      pending = { k, v: v as never }
-      if (!timer) timer = setTimeout(flush, 500)
+    getItem: async (k) => {
+      if (pending && pending.k === k) return pending.v as never
+      if (await ready()) {
+        try {
+          const v = parse(await idbGet<string>(k))
+          if (v && typeof v === 'object' && 'state' in v) {
+            migrated = true
+            return v as never
+          }
+        } catch {
+          /* читаем из localStorage */
+        }
+      }
+      return LS().getItem(k) as never
     },
-    removeItem: (k) => {
+    setItem: (k, v) => {
+      pending = { k, v: v as StoredValue }
+      if (!timer) timer = setTimeout(() => void flush(), 500)
+    },
+    removeItem: async (k) => {
       pending = null
-      return J().removeItem(k)
+      if (await ready()) await idbDel(k).catch(() => undefined)
+      return LS().removeItem(k)
     },
   }
 }

@@ -20,7 +20,7 @@ import type { Person, Settings as SettingsT } from '../types'
 import { AccountSecurity, MembersPanel } from './AccountPanels'
 import { api, logout, useAccount } from '../lib/account'
 import { exportBackup, importBackup } from '../lib/backup'
-import { storageUsed, storageLevel, fmtMb, STORAGE_LIMIT } from '../lib/storageUse'
+import { storageInfo, storageLevel, fmtMb } from '../lib/storageUse'
 import { build as buildSettings, parse as parseSettings } from '../lib/settingsIO'
 import { UI_FONTS, CODE_FONTS } from '../lib/fonts'
 import { enableOsNotify } from '../lib/osnotify'
@@ -1078,15 +1078,19 @@ export function Shortcuts() {
 }
 
 function StorageRow() {
-  const used = useMemo(() => storageUsed(), [])
-  const lvl = storageLevel(used)
+  const [info, setInfo] = useState({ used: 0, limit: 5_000_000, big: false })
+  useEffect(() => {
+    void storageInfo().then(setInfo)
+  }, [])
+  const { used, limit } = info
+  const lvl = storageLevel(used, limit)
   return (
     <div className="srow">
       <div className="sl">
         <div className="t">Локальное хранилище</div>
         <div className="d">
           Проекты, чаты и настройки лежат в хранилище приложения. Занято {fmtMb(used)} из примерно{' '}
-          {fmtMb(STORAGE_LIMIT)}.
+          {limit >= 1e9 ? Math.round(limit / 1e9) + ' ГБ' : fmtMb(limit)}.
           {lvl !== 'ok' &&
             ' Места остаётся мало: сделайте резервную копию и удалите старые проекты, иначе новые изменения перестанут сохраняться.'}
         </div>
@@ -1094,11 +1098,11 @@ function StorageRow() {
           className={'meter ' + lvl}
           role="progressbar"
           aria-label="Занято локальное хранилище"
-          aria-valuenow={Math.min(100, Math.round((used / STORAGE_LIMIT) * 100))}
+          aria-valuenow={Math.min(100, Math.round((used / limit) * 100))}
           aria-valuemin={0}
           aria-valuemax={100}
         >
-          <i style={{ width: Math.min(100, (used / STORAGE_LIMIT) * 100) + '%' }} />
+          <i style={{ width: Math.min(100, (used / limit) * 100) + '%' }} />
         </div>
       </div>
     </div>

@@ -16,3 +16,14 @@ export function storageUsed(): number {
 export const storageLevel = (used: number, limit = STORAGE_LIMIT): 'ok' | 'warn' | 'full' =>
   used >= limit * 0.9 ? 'full' : used >= limit * 0.7 ? 'warn' : 'ok'
 export const fmtMb = (n: number) => (n / 1e6).toFixed(n < 1e6 ? 2 : 1).replace('.', ',') + ' МБ'
+
+/** Сколько занято в хранилище приложения (IndexedDB + localStorage) и сколько браузер разрешает. Если оценка недоступна — localStorage и старый лимит. */
+export async function storageInfo(): Promise<{ used: number; limit: number; big: boolean }> {
+  try {
+    const e = await navigator.storage?.estimate?.()
+    if (e && e.quota && e.usage != null) return { used: e.usage, limit: e.quota, big: true }
+  } catch {
+    /* нет оценки */
+  }
+  return { used: storageUsed(), limit: STORAGE_LIMIT, big: false }
+}

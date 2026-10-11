@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
 import type { Actor, Chat, Doc, ID } from '../types'
 import { initialPersisted, initialUI } from './defaults'
-import { PERSIST_VERSION, debouncedStorage, merge, migrate, partialize } from './persistence'
+import { PERSIST_VERSION, idbStorage, merge, migrate, partialize } from './persistence'
 import { chatsActions } from './slices/chats'
 import { docsActions } from './slices/docs'
 import { filesActions } from './slices/files'
@@ -39,7 +39,7 @@ export const useStore = create<S & Actions>()(
     {
       name: 'tetrafree',
       version: PERSIST_VERSION,
-      storage: debouncedStorage(() =>
+      storage: idbStorage(() =>
         useStore.getState().toast({
           title: 'Локальное хранилище заполнено',
           desc: 'Последние изменения не сохранятся после перезапуска. Удали старые проекты или экспортируй их в архив.',

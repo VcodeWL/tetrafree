@@ -21,16 +21,28 @@ if (import.meta.env.DEV) {
   })
 }
 
-startSync()
-startDocSync()
-initAccount()
-startCloud()
-startScheduler()
-startAutoBackup()
-startVault()
+/* Состояние читается из IndexedDB асинхронно: всё, что обращается к стору, стартует после загрузки (но не ждём дольше 10 с) */
+const hydrated = new Promise<void>((resolve) => {
+  if (useStore.persist.hasHydrated()) return resolve()
+  const t = setTimeout(resolve, 10000)
+  useStore.persist.onFinishHydration(() => {
+    clearTimeout(t)
+    resolve()
+  })
+})
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+void hydrated.then(() => {
+  startSync()
+  startDocSync()
+  initAccount()
+  startCloud()
+  startScheduler()
+  startAutoBackup()
+  startVault()
+
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  )
+})
