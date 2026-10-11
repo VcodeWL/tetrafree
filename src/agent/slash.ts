@@ -144,6 +144,7 @@ export const BUILTINS: Builtin[] = [
   { name: 'clear', hint: '', desc: 'Начать с чистого контекста: агент забудет прошлую переписку этого чата' },
   { name: 'memory', hint: 'текст', desc: 'Запомнить решение в общей памяти проекта' },
   { name: 'model', hint: '', desc: 'Какая модель отвечает сейчас, и выбор другой' },
+  { name: 'auto', hint: '', desc: 'Автоматизации проекта: «когда X — сделай Y»' },
   { name: 'mcp', hint: '', desc: 'Подключённые MCP-серверы и их инструменты' },
   {
     name: 'components',
@@ -270,6 +271,12 @@ export interface Suggest {
   kind: 'builtin' | 'custom' | 'skill'
 }
 
+/** Точное совпадение выше префикса, префикс выше вхождения: «/auto» не должно уступать «/autopilot». */
+function rank(name: string, q: string): number {
+  const n = name.toLowerCase()
+  return n === q ? 0 : n.startsWith(q) ? 1 : 2
+}
+
 export function suggest(files: Record<string, string>, draft: string): Suggest[] {
   const m = draft.match(/^\/([\p{L}\p{N}_.:-]*)$/u)
   if (!m) return []
@@ -293,7 +300,7 @@ export function suggest(files: Record<string, string>, draft: string): Suggest[]
   return all
     .filter((s) => (seen.has(s.name) ? false : (seen.add(s.name), true)))
     .filter((s) => s.name.toLowerCase().includes(q))
-    .sort((a, b) => +!a.name.toLowerCase().startsWith(q) - +!b.name.toLowerCase().startsWith(q))
+    .sort((a, b) => rank(a.name, q) - rank(b.name, q))
     .slice(0, 8)
 }
 

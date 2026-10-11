@@ -102,6 +102,8 @@ test('подсказки: по префиксу, без дублей, навык
     ['loop', 'log'],
   )
   assert.equal(suggest(files, '/li')[0].name, 'lint')
+  assert.equal(suggest({}, '/auto')[0].name, 'auto')
+  assert.equal(suggest({}, '/skill')[0].name, 'skill')
   assert.equal(suggest(files, 'нет').length, 0)
   assert.ok(suggest({}, '/').length >= 8)
   assert.equal(suggest({}, '/loop дело').length, 0)
