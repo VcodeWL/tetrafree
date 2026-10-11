@@ -70,6 +70,7 @@ static class TfConPty
     static IntPtr hpc, inW, outR, hProc;
     static Thread reader;
     static Stream stdout;
+    static ManualResetEvent ready = new ManualResetEvent(false);
 
     static COORD Size(int c, int r)
     {
@@ -193,6 +194,8 @@ static class TfConPty
 
     static void Send(byte[] b)
     {
+        /* ввод, пришедший раньше первого вывода оболочки, ConPTY на новых Windows теряет — ждём, пока оболочка заговорит (но не дольше 3 с) */
+        ready.WaitOne(3000);
         int off = 0;
         while (off < b.Length)
         {
@@ -216,6 +219,7 @@ static class TfConPty
         {
             stdout.Write(buf, 0, n);
             stdout.Flush();
+            ready.Set();
         }
     }
 

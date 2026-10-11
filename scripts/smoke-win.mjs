@@ -1,7 +1,7 @@
 /* Проверка того, что нельзя проверить на Linux: запускается в CI на windows-latest (и вручную: node scripts/smoke-win.mjs).
    1) помощник ConPTY компилируется штатным csc.exe и отдаёт вывод cmd.exe, принимает смену размера;
    2) хранилище ключей на DPAPI: круг «записал → прочитал», в файле нет открытого текста;
-   3) сервер стартует по пути с префиксом \\?\ без TF_SERVE (регресс 2.5.1) и отвечает на /api/health. */
+   3) сервер стартует без TF_SERVE и отвечает на /api/health (в приложении путь с префиксом \\?\ срезает server.rs) и отвечает на /api/health. */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -75,9 +75,10 @@ await step('DPAPI: хранилище ключей', async () => {
   assert(!('openai' in (await createVault({ dir, win: true }).list())), 'ключ не удалился')
 })
 
-await step('Сервер: старт по пути \\\\?\\ без TF_SERVE', async () => {
+await step('Сервер: старт по обычному пути без TF_SERVE', async () => {
   const port = 3900 + Math.floor(Math.random() * 90)
-  const script = '\\\\?\\' + path.join(root, 'server', 'tetra-server.mjs')
+  /* Node 22 сам не запускает скрипт по пути с префиксом \\?\ (EISDIR), поэтому префикс срезает server.rs, а здесь — обычный путь */
+  const script = path.join(root, 'server', 'tetra-server.mjs')
   const env = {
     ...process.env,
     PORT: String(port),

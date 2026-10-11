@@ -37,6 +37,10 @@ ConvertTo-Json -InputObject $o -Compress
 export function runPowerShell(script, data) {
   return new Promise((resolve, reject) => {
     const enc = Buffer.from(script, 'utf16le').toString('base64')
+    /* PSModulePath от PowerShell 7 (pwsh) ломает загрузку модулей Windows PowerShell 5.1: ConvertTo-SecureString «не найден».
+       Без переменной powershell.exe сам берёт свои стандартные пути. */
+    const env = { ...process.env, TF_IN: JSON.stringify(data) }
+    delete env.PSModulePath
     execFile(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc],
@@ -44,7 +48,7 @@ export function runPowerShell(script, data) {
         windowsHide: true,
         timeout: 30000,
         maxBuffer: 4 << 20,
-        env: { ...process.env, TF_IN: JSON.stringify(data) },
+        env,
       },
       (err, out) => {
         if (err) return reject(err)

@@ -24,6 +24,27 @@ export const NOTE_LABEL: Record<NoteKind, string> = { new: 'Новое', imp: '�
 
 export const RELEASES: Release[] = [
   {
+    v: '3.0.3',
+    name: 'Windows',
+    date: '2025-12-23',
+    kind: 'patch',
+    lead: 'Первые прогоны на настоящей Windows (CI) нашли три проблемы — исправлены.',
+    notes: [
+      {
+        k: 'fix',
+        t: 'Хранилище ключей (DPAPI): ломалось, если приложение запущено из PowerShell 7 — Windows PowerShell не находил ConvertTo-SecureString. Теперь переменная PSModulePath не передаётся',
+      },
+      {
+        k: 'fix',
+        t: 'Терминал на Windows 11 24H2: ввод, посланный сразу после запуска оболочки, мог теряться. Помощник ConPTY теперь ждёт первого вывода оболочки (не дольше 3 секунд)',
+      },
+      {
+        k: 'imp',
+        t: 'Проверка для Windows в CI запускает сервер по обычному пути: Node 22 не принимает путь с префиксом \\\\?\\, который срезает server.rs',
+      },
+    ],
+  },
+  {
     v: '3.0.2',
     name: 'Справка по командам',
     date: '2025-12-22',
