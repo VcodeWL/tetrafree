@@ -71,6 +71,8 @@ static class TfConPty
     static Thread reader;
     static Stream stdout;
     static ManualResetEvent ready = new ManualResetEvent(false);
+    static bool dbg = Environment.GetEnvironmentVariable("TF_PTY_DEBUG") == "1";
+    static void Log(string m) { if (dbg) { Console.Error.WriteLine("[conpty] " + m); Console.Error.Flush(); } }
 
     static COORD Size(int c, int r)
     {
@@ -134,6 +136,7 @@ static class TfConPty
         while (true)
         {
             int n = stdin.Read(buf, 0, buf.Length);
+            Log("stdin read " + n);
             if (n <= 0) break;
             for (int i = 0; i < n; i++) pending.Add(buf[i]);
             Drain(pending, marker);
@@ -206,7 +209,9 @@ static class TfConPty
                 Array.Copy(b, off, chunk, 0, chunk.Length);
             }
             int w;
-            if (!WriteFile(inW, chunk, chunk.Length, out w, IntPtr.Zero) || w <= 0) return;
+            bool okw = WriteFile(inW, chunk, chunk.Length, out w, IntPtr.Zero);
+            Log("WriteFile ok=" + okw + " n=" + chunk.Length + " written=" + w + " err=" + Marshal.GetLastWin32Error());
+            if (!okw || w <= 0) return;
             off += w;
         }
     }
@@ -219,6 +224,7 @@ static class TfConPty
         {
             stdout.Write(buf, 0, n);
             stdout.Flush();
+            Log("pty out " + n);
             ready.Set();
         }
     }
@@ -228,6 +234,7 @@ static class TfConPty
         WaitForSingleObject(hProc, 0xFFFFFFFF);
         uint code;
         GetExitCodeProcess(hProc, out code);
+        Log("child exited " + code);
         ClosePseudoConsole(hpc);
         reader.Join(2000);
         stdout.Flush();

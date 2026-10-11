@@ -34,20 +34,29 @@ await step('ConPTY: сборка помощника, вывод и ресайз'
   const { ensureConPty } = await import(new URL('../server/conpty-win.mjs', import.meta.url))
   const exe = await ensureConPty()
   assert(fs.existsSync(exe), 'exe не создан: ' + exe)
-  const p = spawn(exe, ['80', '24', 'cmd.exe /q'], { windowsHide: true })
+  const p = spawn(exe, ['80', '24', 'cmd.exe /q'], {
+    windowsHide: true,
+    env: { ...process.env, TF_PTY_DEBUG: '1' },
+  })
   let out = ''
   p.stdout.on('data', (d) => (out += d.toString('utf8')))
   let err = ''
   p.stderr.on('data', (d) => (err += d.toString()))
+  let exited = null
+  p.on('exit', (c) => (exited = c))
   const waitFor = async (re, ms = 15000) => {
     const end = Date.now() + ms
     while (Date.now() < end) {
       if (re.test(out)) return
       await sleep(100)
     }
-    throw new Error(`нет ${re} в выводе: ${JSON.stringify(out.slice(-300))} stderr=${err}`)
+    throw new Error(
+      `нет ${re} в выводе: ${JSON.stringify(out.slice(-300))}\n helper exit=${exited}\n helper stderr:\n${err}`,
+    )
   }
-  p.stdin.write('echo hello-conpty\r\n')
+  await waitFor(/>/) /* приглашение оболочки */
+  await sleep(1500)
+  p.stdin.write('echo hello-conpty\r')
   await waitFor(/hello-conpty/)
   p.stdin.write('\0TFRSZ 100 30\n')
   await sleep(300)
