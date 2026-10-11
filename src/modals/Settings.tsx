@@ -1,6 +1,7 @@
 import { ServerHelp } from '../components/ServerHelp'
 import { markSeen } from '../lib/whatsnew'
 import { UsagePanel } from './UsagePanel'
+import { Automations } from './Automations'
 import { Extensions } from './Extensions'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, useProject, toast } from '../store'
@@ -45,6 +46,7 @@ const SECTIONS: { k: string; t: string; icon: IconName; project?: boolean }[] = 
   { k: 'usage', t: 'Расходы', icon: 'bolt' },
   { k: 'deploy', t: 'Деплой', icon: 'rocket', project: true },
   { k: 'extensions', t: 'Расширения', icon: 'layers', project: true },
+  { k: 'automations', t: 'Автоматизации', icon: 'clock', project: true },
   { k: 'backend', t: 'Бэкенд и диск', icon: 'disk' },
   { k: 'appearance', t: 'Оформление', icon: 'paint' },
   { k: 'shortcuts', t: 'Горячие клавиши', icon: 'keyboard' },
@@ -97,6 +99,8 @@ export function SettingsModal({ section = 'account' }: { section?: string }) {
             <Deploy />
           ) : cur.k === 'extensions' ? (
             <Extensions />
+          ) : cur.k === 'automations' ? (
+            <Automations />
           ) : cur.k === 'backend' ? (
             <BackendSection />
           ) : cur.k === 'appearance' ? (

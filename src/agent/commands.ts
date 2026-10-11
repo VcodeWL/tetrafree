@@ -137,6 +137,10 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
         S().openModal({ type: 'settings', section: 'extensions' })
         return done
       }
+      case 'auto': {
+        S().openModal({ type: 'settings', section: 'automations' })
+        return done
+      }
       case 'components': {
         S().openModal({ type: 'uilib' })
         return done

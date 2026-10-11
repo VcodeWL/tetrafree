@@ -100,3 +100,6 @@ npm run build
 - Логика: юнит-тесты (`tsx --test`, `node --test`).
 - Интерфейс: Playwright + Chromium против `npm run dev`, состояние доступно как `window.__tf` (zustand-стор) в dev. Для проверки агента без ключа — `scripts/fake-llm.mjs`.
 - Сервер: подними dev, возьми токен тестового аккаунта и бей по `/api/*` мусорными телами — сервер не должен падать, ответы не 500.
+
+## Автоматизации
+`agent/automations.ts` — чистое ядро (parse, dueNow, matchFiles, expand, autoHash, лимит) и стор разрешений; `agent/autorun.ts` — `startAutomations()` (тик 15 с, наблюдатель файлов с debounce 8 с, смена статуса задач, открытие проекта) и `fireAuto`; UI — `modals/Automations.tsx` (раздел настроек, `/auto`). Агентный запуск идёт только при совпавшем хэше разрешения. Описание — `docs/AUTOMATIONS.md`.

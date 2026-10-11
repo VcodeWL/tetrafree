@@ -19,6 +19,7 @@ import { Palette, openPalette } from './modals/Palette'
 import { BuildSummaryOverlay } from './modals/BuildSummary'
 import { runPipeline } from './agent/ci'
 import { isRunning, stopTurn } from './agent/engine'
+import { startAutomations } from './agent/autorun'
 import { isDesktop, platform, onQuickCapture, updCheck, updInstall } from './lib/desktop'
 import { useBackend } from './lib/backend'
 import { openInEditor } from './lib/editors'
@@ -26,6 +27,10 @@ import { openInEditor } from './lib/editors'
 export function App() {
   const screen = useStore((s) => s.screen)
   const settings = useStore((s) => s.settings)
+
+  useEffect(() => {
+    startAutomations()
+  }, [])
 
   /* узкое окно (<1100 px): сайдбар прячется сам при сужении, возвращается при расширении — если его не трогали руками */
   useEffect(() => {
