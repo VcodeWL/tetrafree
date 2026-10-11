@@ -1,23 +1,28 @@
 version: 2
 updates:
+  # Обновления библиотек — раз в месяц, одним запросом, только минорные и патчи.
+  # Мажорные (vite 5→8, framer-motion 11→14, React 18→19 …) меняют поведение и ломают сборку: их поднимаем руками.
   - package-ecosystem: npm
     directory: /
-    schedule: { interval: weekly }
-    open-pull-requests-limit: 5
-    # React 19 и его типы — осознанный переход, а не автообновление (типы react и react-dom должны быть одной мажорной версии)
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 1
+    groups:
+      npm-minor:
+        update-types: ['minor', 'patch']
     ignore:
-      - dependency-name: react
-        update-types: ['version-update:semver-major']
-      - dependency-name: react-dom
-        update-types: ['version-update:semver-major']
-      - dependency-name: '@types/react'
-        update-types: ['version-update:semver-major']
-      - dependency-name: '@types/react-dom'
+      - dependency-name: '*'
         update-types: ['version-update:semver-major']
   - package-ecosystem: cargo
     directory: /src-tauri
-    schedule: { interval: weekly }
-    open-pull-requests-limit: 3
+    schedule: { interval: monthly }
+    open-pull-requests-limit: 1
+    groups:
+      cargo-minor:
+        update-types: ['minor', 'patch']
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
+    open-pull-requests-limit: 1
