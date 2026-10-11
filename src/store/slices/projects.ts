@@ -1,3 +1,4 @@
+import { clone } from '../../lib/clone'
 import { purge as purgeTrash } from '../../lib/trash'
 import type { Project } from '../../types'
 import { emptyProject, ME } from '../../data/seed'
@@ -145,7 +146,7 @@ export const projectsActions = (
     set((s) => {
       const p = find(s, id)
       if (!p) return
-      const c: Project = structuredClone(p)
+      const c: Project = clone(p)
       c.id = 'p' + uid()
       c.name = uniqName(s.projects, p.name + '-copy')
       c.path = p.path ? p.path.replace(/[^\\/]+$/, c.name) : ''

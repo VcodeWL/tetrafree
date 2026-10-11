@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone'
 import { useUnseenRelease } from '../lib/whatsnew'
 import { Resizer } from '../components/ui/Resizer'
 import { useLayout, SIDE } from '../lib/layout'
@@ -327,7 +328,7 @@ export function Sidebar() {
                   stopTurn(c.id)
                   const p = getProject()!
                   const i = p.chats.findIndex((x) => x.id === c.id)
-                  const copy = structuredClone(p.chats[i])
+                  const copy = clone(p.chats[i])
                   st().deleteChat(c.id)
                   st().toast({
                     title: 'Чат удалён',

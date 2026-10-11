@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone'
 import { isVaulted, vaultMode } from '../lib/vault'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { DateField } from '../components/ui/DateField'
@@ -36,7 +37,7 @@ export function ProviderModal({ id }: { id?: string }) {
   const st = useStore.getState
   const [p, setP] = useState<Provider>(() =>
     orig
-      ? structuredClone(orig)
+      ? clone(orig)
       : {
           id: uid('pr'),
           name: '',

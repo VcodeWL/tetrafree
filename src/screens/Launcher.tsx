@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useStore } from '../store'
@@ -155,7 +156,7 @@ export function Launcher() {
         confirm: 'Удалить проект',
         run: () => {
           const i = st().projects.findIndex((x) => x.id === p.id)
-          const copy = structuredClone(st().projects[i])
+          const copy = clone(st().projects[i])
           st().deleteProject(p.id)
           st().toast({
             title: 'Проект удалён',

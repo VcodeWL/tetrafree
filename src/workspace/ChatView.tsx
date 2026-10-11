@@ -1,3 +1,4 @@
+import { clone } from '../lib/clone'
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore, useProject, getProject } from '../store'
 import type { Chat, Message, Tier } from '../types'
@@ -131,7 +132,7 @@ function AgentStrip({ chat }: { chat: Chat }) {
   const addM = useMenu()
   const nodeM = useMenu<number>()
   const setAgents = (fn: (a: Chat['agents']) => Chat['agents']) =>
-    st().setChat(chat.id, { agents: fn(structuredClone(chat.agents)) })
+    st().setChat(chat.id, { agents: fn(clone(chat.agents)) })
   const missing = PRIMARY_AGENTS.filter((a) => !chat.agents.some((x) => x.name === a))
   return (
     <div className="astrip">
