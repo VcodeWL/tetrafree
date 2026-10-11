@@ -94,7 +94,7 @@ await step('ConPTY: матрица флагов и способов ввода (
       .join('')
   const encs = { plain: (t) => t, win32: w32, 'focus+plain': (t) => '\x1b[I' + t }
   const rows = []
-  for (const flags of [0, 1, 2, 4, 6]) {
+  for (const flags of [0, 6]) {
     for (const [name, enc] of Object.entries(encs)) {
       const p = spawn(exe, ['80', '24', 'cmd.exe /q'], {
         windowsHide: true,
@@ -117,6 +117,46 @@ await step('ConPTY: матрица флагов и способов ввода (
     }
   }
   console.log('     ' + rows.join('\n     '))
+})
+
+/* Контроль: тот же опыт через готовую библиотеку (@lydell/node-pty, предсобранные бинарники). Если и она не может ввести команду в cmd.exe —
+   проблема в окружении раннера CI, а не в нашем помощнике; если может — ошибка у нас. Только отчёт. */
+await step('ConPTY: контроль через node-pty (отчёт)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-npty-'))
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x","private":true}')
+  await new Promise((res, rej) => {
+    const c = spawn('npm', ['i', '@lydell/node-pty', '--no-audit', '--no-fund'], {
+      cwd: dir,
+      shell: true,
+      windowsHide: true,
+    })
+    let e = ''
+    c.stderr.on('data', (d) => (e += d))
+    c.on('exit', (code) => (code === 0 ? res() : rej(new Error('npm i: ' + e.slice(-300)))))
+  })
+  const req = (await import('node:module')).createRequire(path.join(dir, 'x.js'))
+  const pty = req('@lydell/node-pty')
+  const t = pty.spawn('cmd.exe', ['/q'], { name: 'xterm', cols: 80, rows: 24, cwd: dir })
+  let out = ''
+  t.onData((d) => (out += d))
+  const end = Date.now() + 8000
+  while (Date.now() < end && !/>/.test(out)) await sleep(100)
+  await sleep(1200)
+  t.write('echo ctl-probe\r')
+  let ok = false
+  for (let i = 0; i < 50 && !ok; i++) {
+    await sleep(100)
+    ok = /\n\s*ctl-probe/.test(out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''))
+  }
+  t.kill()
+  console.log(
+    '     node-pty: ' +
+      (ok
+        ? 'РАБОТАЕТ — значит, ошибка в нашем помощнике'
+        : 'тоже НЕ работает — вероятно, ограничение раннера CI') +
+      '\n     вывод: ' +
+      JSON.stringify(out.slice(-200)),
+  )
 })
 
 await step('DPAPI: хранилище ключей', async () => {
