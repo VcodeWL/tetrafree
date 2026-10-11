@@ -14,6 +14,7 @@ const ReplaceModal = lazy(() => import('./Replace').then((m) => ({ default: m.Re
 const RemoteModal = lazy(() => import('./Remote').then((m) => ({ default: m.RemoteModal })))
 const TodayModal = lazy(() => import('./Today').then((m) => ({ default: m.TodayModal })))
 const CompareModal = lazy(() => import('./Compare').then((m) => ({ default: m.CompareModal })))
+const UiLibModal = lazy(() => import('./UiLib').then((m) => ({ default: m.UiLibModal })))
 const ReplayModal = lazy(() => import('./Replay').then((m) => ({ default: m.ReplayModal })))
 
 export function ModalRoot() {
@@ -39,6 +40,7 @@ function useModalBody() {
     'trash',
     'replace',
     'remote',
+    'uilib',
   ].includes(m.type)
   if (needsProject && !hasProject) return null
   switch (m.type) {
@@ -70,6 +72,8 @@ function useModalBody() {
       return <RemoteModal />
     case 'replace':
       return <ReplaceModal find={m.find} />
+    case 'uilib':
+      return <UiLibModal />
     case 'today':
       return <TodayModal />
     case 'blame':

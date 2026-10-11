@@ -60,6 +60,9 @@ npm run build
 ### Каталог расширений
 `data/market.ts` — встроенные элементы (файлы навыков/команд, конфиги MCP, наборы), `lib/market.ts` — чистая логика (planInstall/planRemove, учёт в `.tetra/market.json`, `safePath` только под `.tetra/skills|commands`, registryPack, rankSkillDirs, pickSkillFiles) и сеть через `backendFetch` (реестр MCP, skills.sh, GitHub tree + raw). UI — `modals/Catalog.tsx` (вкладка в «Расширениях»), `/market` открывает его через `wanted`. Не проверено: установка из GitHub при лимите API без токена (есть запасной путь по угадыванию папок), запуск установленных из реестра серверов на Windows.
 
+### Библиотека компонентов (Design)
+`lib/uireg.ts` — реестры формата shadcn: parseIndex, resolveBundle (цепочка registryDependencies + догрузка необъявленных импортов), materialize (раскладка по проекту, импорты → относительные, `cn`, npm-зависимости, CSS), addDeps/mergeCss. `lib/uirun.ts` — `RUNTIME_JS` (строка, а не функция: сборщик не должен ничего в ней подменять — уже наступали на `__name`), previewDoc/embedBlock. UI — `modals/UiLib.tsx` (кнопка в левой панели Studio, модалка `uilib`). Пользовательские описания — `docs/COMPONENTS.md`. Не проверено: Windows WebView2 (esm.sh/Tailwind CDN), реестры, которых мы не видели.
+
 ## Релиз (точный порядок)
 
 Версии: `x.y.Z` исправления, `x.Y.0` новые функции, `X.0.0` крупная переработка. Виды записи в changelog **только** `new | imp | fix`; вид релиза `major | logic | visual | patch` (новые функции = `logic`).

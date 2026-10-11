@@ -145,6 +145,11 @@ export const BUILTINS: Builtin[] = [
   { name: 'memory', hint: 'текст', desc: 'Запомнить решение в общей памяти проекта' },
   { name: 'model', hint: '', desc: 'Какая модель отвечает сейчас, и выбор другой' },
   { name: 'mcp', hint: '', desc: 'Подключённые MCP-серверы и их инструменты' },
+  {
+    name: 'components',
+    hint: '',
+    desc: 'Библиотека компонентов shadcn/ui, Magic UI, React Bits: предпросмотр и вставка',
+  },
   { name: 'market', hint: 'запрос', desc: 'Каталог: навыки, команды, MCP-серверы и наборы в один клик' },
   { name: 'skills', hint: '', desc: 'Навыки проекта' },
   { name: 'skill', hint: 'имя [аргументы]', desc: 'Применить навык к задаче' },

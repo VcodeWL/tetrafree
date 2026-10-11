@@ -566,6 +566,12 @@ function Rail({ sel }: { sel: boolean }) {
           onClick={() => addBlock(b.key)}
         />
       ))}
+      <RailBtn
+        i={n++}
+        icon="layers"
+        tip="Библиотека компонентов"
+        onClick={() => useStore.getState().openModal({ type: 'uilib' })}
+      />
       <i className="rsep" />
       <RailBtn
         i={n++}

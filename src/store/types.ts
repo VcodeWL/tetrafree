@@ -46,6 +46,7 @@ export type ModalState =
   | { type: 'remote' }
   | { type: 'today' }
   | { type: 'compare'; a?: string; b?: string }
+  | { type: 'uilib' }
   | { type: 'trash' }
   | { type: 'replay'; chatId: ID; msgId: ID }
   | { type: 'blame'; path: string }
