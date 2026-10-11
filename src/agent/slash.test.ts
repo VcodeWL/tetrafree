@@ -10,6 +10,9 @@ import {
   loopDone,
   loopPrompt,
   suggest,
+  didYouMean,
+  HELP_GROUPS,
+  BUILTINS,
   skillsIndex,
 } from './slash'
 import { decide } from './loop'
@@ -107,4 +110,19 @@ test('подсказки: по префиксу, без дублей, навык
   assert.equal(suggest(files, 'нет').length, 0)
   assert.ok(suggest({}, '/').length >= 8)
   assert.equal(suggest({}, '/loop дело').length, 0)
+})
+
+test('опечатки: «/lopp» → loop, «/mcpp» → mcp, мусор → пусто, свои команды учитываются', () => {
+  assert.equal(didYouMean({}, 'lopp')[0], 'loop')
+  assert.equal(didYouMean({}, 'mcpp')[0], 'mcp')
+  assert.equal(didYouMean({}, 'autpilot')[0], 'autopilot')
+  assert.deepEqual(didYouMean({}, 'щщщщщ'), [])
+  assert.equal(didYouMean({ '.tetra/commands/deploy.md': 'x' }, 'deplot')[0], 'deploy')
+})
+
+test('справка: каждая встроенная команда попадает в группу, имён из групп нет лишних', () => {
+  const names = new Set(BUILTINS.map((b) => b.name))
+  const grouped = HELP_GROUPS.flatMap(([, n]) => n)
+  for (const n of grouped) assert.ok(names.has(n), 'нет команды ' + n)
+  for (const n of names) assert.ok(grouped.includes(n), 'не в группе: ' + n)
 })

@@ -139,7 +139,7 @@ export const BUILTINS: Builtin[] = [
     hint: '[баги тесты визуал…] [каждые 10m]',
     desc: 'Агент сам придумывает улучшения и делает их, пока не нажмёшь «Стоп»',
   },
-  { name: 'stop', hint: '', desc: 'Остановить агента и цикл /loop' },
+  { name: 'stop', hint: '', desc: 'Остановить агента, циклы /loop, /match, /autopilot и очистить очередь' },
   { name: 'help', hint: '', desc: 'Список команд и навыков этого проекта' },
   { name: 'clear', hint: '', desc: 'Начать с чистого контекста: агент забудет прошлую переписку этого чата' },
   { name: 'memory', hint: 'текст', desc: 'Запомнить решение в общей памяти проекта' },
@@ -348,3 +348,42 @@ description: Когда применять этот навык (агент чи�
 `,
   }
 }
+
+/** Расстояние Левенштейна — для «возможно, вы имели в виду». */
+function lev(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++)
+    for (let j = 1; j <= b.length; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[a.length][b.length]
+}
+
+/** Ближайшие к опечатке команды (встроенные, свои, навыки): «/lopp» → /loop. Чистая функция. */
+export function didYouMean(files: Record<string, string>, name: string): string[] {
+  const q = name.toLowerCase()
+  if (!q) return []
+  const all = [
+    ...BUILTINS.map((b) => b.name),
+    ...listCustom(files).map((c) => c.name),
+    ...listSkills(files).map((k) => k.name),
+  ]
+  const lim = q.length <= 4 ? 1 : 2
+  return [...new Set(all)]
+    .map((n) => ({
+      n,
+      d: n.toLowerCase().startsWith(q) || q.startsWith(n.toLowerCase()) ? 0 : lev(q, n.toLowerCase()),
+    }))
+    .filter((x) => x.d <= lim)
+    .sort((a, b) => a.d - b.d || a.n.length - b.n.length)
+    .slice(0, 3)
+    .map((x) => x.n)
+}
+
+/** Группы для /help. Всё, чего нет в группах, попадёт в «Прочее». */
+export const HELP_GROUPS: [string, string[]][] = [
+  ['Агент работает сам', ['loop', 'match', 'autopilot', 'stop']],
+  ['Работа с кодом', ['plan', 'review', 'audit', 'test', 'explain', 'init']],
+  ['Контекст', ['clear', 'memory', 'model', 'help']],
+  ['Расширения и окна', ['market', 'skills', 'skill', 'mcp', 'components', 'auto']],
+]

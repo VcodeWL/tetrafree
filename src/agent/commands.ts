@@ -12,6 +12,8 @@ import { parseMatch, matchHooks } from './match'
 import { parseAuto, autoHooks, AUTOPILOT_FILE, FOCUS } from './autopilot'
 import {
   BUILTINS,
+  HELP_GROUPS,
+  didYouMean,
   parseSlash,
   parseLoop,
   listCustom,
@@ -29,19 +31,39 @@ const NEED_ARGS = new Set(['plan', 'explain', 'memory', 'skill'])
 const CAP = 20000
 
 export function helpText(files: Record<string, string>): string {
-  const b = BUILTINS.map((c) => `**/${c.name}**${c.hint ? ' ' + c.hint : ''} — ${c.desc}`)
-  const cu = listCustom(files).map(
-    (c) => `**/${c.name}**${c.hint ? ' ' + c.hint : ''} — ${c.description || 'своя команда'}`,
-  )
-  const sk = listSkills(files).map((c) => `**/${c.name}** — ${c.description || 'навык'}`)
-  return [
-    'Команды',
-    ...b,
-    ...(cu.length ? ['', 'Свои команды проекта (.tetra/commands)', ...cu] : []),
-    ...(sk.length ? ['', 'Навыки проекта (.tetra/skills)', ...sk] : []),
+  const line = (c: { name: string; hint: string; desc: string }) =>
+    `**/${c.name}**${c.hint ? ' ' + c.hint : ''} — ${c.desc}`
+  const used = new Set<string>()
+  const out: string[] = ['Команды']
+  for (const [title, names] of HELP_GROUPS) {
+    const items = names
+      .map((n) => BUILTINS.find((c) => c.name === n))
+      .filter((c): c is (typeof BUILTINS)[number] => !!c)
+    if (!items.length) continue
+    items.forEach((c) => used.add(c.name))
+    out.push('', title.toUpperCase(), ...items.map(line))
+  }
+  const rest = BUILTINS.filter((c) => !used.has(c.name))
+  if (rest.length) out.push('', 'ПРОЧЕЕ', ...rest.map(line))
+  const cu = listCustom(files)
+  if (cu.length)
+    out.push(
+      '',
+      'Свои команды проекта (.tetra/commands)',
+      ...cu.map((c) => line({ name: c.name, hint: c.hint, desc: c.description || 'своя команда' })),
+    )
+  const sk = listSkills(files)
+  if (sk.length)
+    out.push(
+      '',
+      'Навыки проекта (.tetra/skills)',
+      ...sk.map((c) => line({ name: c.name, hint: '', desc: c.description || 'навык' })),
+    )
+  out.push(
     '',
-    'Как добавить свою команду или навык — в docs/SLASH.md репозитория TetraFree; готовые наборы — в «Расширения».',
-  ].join('\n')
+    'Подсказка: набери «/» в поле ввода — список с поиском, Tab дополняет. Как добавить свою команду или навык — docs/SLASH.md; готовые наборы — «Расширения → Каталог» или /market.',
+  )
+  return out.join('\n')
 }
 
 function skillExtra(s: Skill, args: string) {
@@ -285,7 +307,13 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
   if (sk) return { kind: 'send', extra: skillExtra(sk, args) }
   say(
     chatId,
-    `Нет команды **/${name}**. Список — /help. Если это не команда, а текст, начни сообщение с другого символа`,
+    `Нет команды **/${name}**.` +
+      (didYouMean(files, name).length
+        ? ` Возможно, ${didYouMean(files, name)
+            .map((n) => '**/' + n + '**')
+            .join(' или ')}?`
+        : '') +
+      ' Список — /help. Если это не команда, а текст, начни сообщение с другого символа',
   )
   return done
 }
