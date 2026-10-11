@@ -1,5 +1,5 @@
 name: Release
-# Релиз: git tag v1.24.0 && git push --tags — соберёт установщик Windows, подпишет и выложит в GitHub Releases
+# Релиз: создай тег vX.Y.Z (версия берётся из тега, править файлы не нужно) — соберёт установщик Windows, подпишет и выложит в GitHub Releases
 # вместе с latest.json, по которому приложение находит обновления.
 # Нужно один раз: npx tauri signer generate -w tetrafree.key; затем
 #   Secrets:   TAURI_SIGNING_PRIVATE_KEY (содержимое tetrafree.key), TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -20,7 +20,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
       - run: npm ci
-      - name: Версия тега совпадает с файлами, заметки из CHANGELOG.md
+      - name: Версия из тега в файлы сборки, заметки из CHANGELOG.md
         id: notes
         run: node scripts/release-notes.mjs "${{ github.ref_name }}"
       - name: Node.js как sidecar (сервер работает без установленного Node)
