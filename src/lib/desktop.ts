@@ -30,7 +30,7 @@ export const platform =
     : 'linux'
 
 /* ---- системные функции Windows: автозапуск, значок в трее, глобальная горячая клавиша ----
-   Реализованы в src-tauri за cargo-фичей `extras` (см. README). В обычной сборке команд нет —
+   Реализованы в src-tauri за cargo-фичей `extras` (см. docs/DETAILS.md). В обычной сборке команд нет —
    sysInfo() вернёт null и переключатели в настройках не показываются. */
 export interface SysInfo {
   autostart: boolean
