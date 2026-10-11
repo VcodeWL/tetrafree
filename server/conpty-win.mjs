@@ -91,7 +91,9 @@ static class TfConPty
 
         IntPtr inR, outW;
         if (!CreatePipe(out inR, out inW, IntPtr.Zero, 0) || !CreatePipe(out outR, out outW, IntPtr.Zero, 0)) return 2;
-        int hr = CreatePseudoConsole(Size(cols, rows), inR, outW, 0, out hpc);
+        uint pcFlags = 0;
+        uint.TryParse(Environment.GetEnvironmentVariable("TF_PTY_FLAGS") ?? "0", out pcFlags);
+        int hr = CreatePseudoConsole(Size(cols, rows), inR, outW, pcFlags, out hpc);
         if (hr != 0)
         {
             Console.Error.WriteLine("CreatePseudoConsole: " + hr);

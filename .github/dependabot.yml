@@ -4,6 +4,16 @@ updates:
     directory: /
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
+    # React 19 и его типы — осознанный переход, а не автообновление (типы react и react-dom должны быть одной мажорной версии)
+    ignore:
+      - dependency-name: react
+        update-types: ['version-update:semver-major']
+      - dependency-name: react-dom
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@types/react'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@types/react-dom'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule: { interval: weekly }

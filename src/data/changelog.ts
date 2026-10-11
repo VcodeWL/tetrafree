@@ -24,6 +24,23 @@ export const NOTE_LABEL: Record<NoteKind, string> = { new: 'Новое', imp: '�
 
 export const RELEASES: Release[] = [
   {
+    v: '3.1.2',
+    name: 'Windows: терминал',
+    date: '2025-12-28',
+    kind: 'patch',
+    lead: 'Разбираем ввод в терминале на Windows 11 24H2 и закрываем автообновления React.',
+    notes: [
+      {
+        k: 'imp',
+        t: 'Проверка Windows в CI теперь перебирает флаги ConPTY и способы ввода и показывает, какая комбинация работает на этой версии Windows',
+      },
+      {
+        k: 'imp',
+        t: 'Dependabot больше не предлагает мажорные обновления React и его типов — они ломают установку (@types/react 19 против @types/react-dom 18)',
+      },
+    ],
+  },
+  {
     v: '3.1.1',
     name: 'Копирование',
     date: '2025-12-27',

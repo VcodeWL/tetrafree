@@ -69,6 +69,56 @@ await step('ConPTY: сборка помощника, вывод и ресайз'
   })
 })
 
+/* Диагностика ConPTY: перебираем флаги CreatePseudoConsole и способы ввода — какая комбинация на этом Windows работает.
+   Только отчёт: сборку не роняет (роняет основной шаг выше). */
+await step('ConPTY: матрица флагов и способов ввода (отчёт)', async () => {
+  const { ensureConPty } = await import(new URL('../server/conpty-win.mjs', import.meta.url))
+  const exe = await ensureConPty()
+  const w32 = (str) =>
+    [...str]
+      .map((ch) => {
+        const c = ch === '\r' ? 13 : ch.charCodeAt(0)
+        const vk =
+          ch === '\r'
+            ? 13
+            : /[a-z]/i.test(ch)
+              ? ch.toUpperCase().charCodeAt(0)
+              : /[0-9 ]/.test(ch)
+                ? c
+                : ch === '-'
+                  ? 189
+                  : 0
+        const sc = ch === '\r' ? 28 : 0
+        return `\x1b[${vk};${sc};${c};1;0;1_\x1b[${vk};${sc};${c};0;0;1_`
+      })
+      .join('')
+  const encs = { plain: (t) => t, win32: w32, 'focus+plain': (t) => '\x1b[I' + t }
+  const rows = []
+  for (const flags of [0, 1, 2, 4, 6]) {
+    for (const [name, enc] of Object.entries(encs)) {
+      const p = spawn(exe, ['80', '24', 'cmd.exe /q'], {
+        windowsHide: true,
+        env: { ...process.env, TF_PTY_FLAGS: String(flags) },
+      })
+      let out = ''
+      p.stdout.on('data', (d) => (out += d.toString('utf8')))
+      p.stderr.on('data', () => {})
+      const end = Date.now() + 8000
+      while (Date.now() < end && !/>/.test(out)) await sleep(100)
+      await sleep(1200)
+      p.stdin.write(enc('echo probe-' + flags + '\r'))
+      let ok = false
+      for (let i = 0; i < 40 && !ok; i++) {
+        await sleep(100)
+        ok = /\n\s*probe-\d/.test(out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''))
+      }
+      rows.push(`flags=${flags} ввод=${name}: ${ok ? 'РАБОТАЕТ' : 'нет'}`)
+      p.kill()
+    }
+  }
+  console.log('     ' + rows.join('\n     '))
+})
+
 await step('DPAPI: хранилище ключей', async () => {
   const { createVault } = await import(new URL('../server/secrets.mjs', import.meta.url))
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-vault-'))
