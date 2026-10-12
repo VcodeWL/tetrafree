@@ -7,6 +7,9 @@ import fs from 'node:fs'
 import { ensureConPty } from './conpty-win.mjs'
 
 const WIN = process.platform === 'win32'
+/* PowerShell 5.1 на русской Windows по умолчанию в кодировке 866 — кириллица в терминале превращается в «кракозябры» */
+const WIN_SHELL =
+  'powershell.exe -NoLogo -NoExit -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8;[Console]::InputEncoding=[Text.Encoding]::UTF8"'
 let PY = null
 let WIN_EXE = null
 export let PTY_WHY = ''
@@ -86,8 +89,12 @@ function open(dir, name, cols, rows) {
     TETRA_PROJECT: name,
     LANG: process.env.LANG || 'en_US.UTF-8',
   }
+  /* секреты сервера не нужны оболочке (удалять надо до spawn: процесс получает копию окружения при запуске) */
+  for (const k of ['SMTP_URL', 'GITHUB_CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET']) delete env[k]
+  /* PSModulePath от PowerShell 7 ломает Windows PowerShell 5.1 (PSReadLine, модули) */
+  if (WIN) delete env.PSModulePath
   const child = WIN
-    ? spawn(WIN_EXE, [String(cols), String(rows), process.env.TETRA_WIN_SHELL || 'powershell.exe -NoLogo'], {
+    ? spawn(WIN_EXE, [String(cols), String(rows), process.env.TETRA_WIN_SHELL || WIN_SHELL], {
         cwd: dir,
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -104,8 +111,6 @@ function open(dir, name, cols, rows) {
         ],
         { cwd: dir, detached: true, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], env },
       )
-  for (const k of ['SMTP_URL', 'GITHUB_CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET'])
-    delete env[k] /* секреты сервера не нужны оболочке */
   const s = {
     id: crypto.randomBytes(9).toString('base64url'),
     child,

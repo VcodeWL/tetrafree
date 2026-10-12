@@ -109,6 +109,11 @@ static class TfConPty
 
         STARTUPINFOEX si = new STARTUPINFOEX();
         si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+        /* STARTF_USESTDHANDLES с пустыми дескрипторами: оболочка берёт ввод-вывод только у псевдоконсоли, а не наследует каналы самого помощника (так делают node-pty и WezTerm) */
+        si.StartupInfo.dwFlags = 0x00000100;
+        si.StartupInfo.hStdInput = IntPtr.Zero;
+        si.StartupInfo.hStdOutput = IntPtr.Zero;
+        si.StartupInfo.hStdError = IntPtr.Zero;
         si.lpAttributeList = list;
         PROCESS_INFORMATION pi;
         StringBuilder cl = new StringBuilder(cmdline, Math.Max(cmdline.Length + 1, 32768));
@@ -257,7 +262,13 @@ export const conPtySupported = (release = os.release()) => {
 }
 
 /** путь к собранному помощнику; при первом запуске компилирует (асинхронно, сервер не блокируется). Бросает ошибку с понятным текстом. */
-export async function ensureConPty() {
+let building = null
+export function ensureConPty() {
+  /* вызовы вперемешку (сервер и проверка) не должны запускать две компиляции в один файл */
+  return (building ??= build().finally(() => (building = null)))
+}
+
+async function build() {
   if (!conPtySupported()) throw new Error('нужна Windows 10 версии 1809 или новее')
   const csc = CSC.find((p) => fs.existsSync(p))
   if (!csc) throw new Error('не найден csc.exe (.NET Framework 4)')
@@ -268,7 +279,7 @@ export async function ensureConPty() {
   if (fs.existsSync(exe)) return exe
   const src = path.join(dir, `conpty-${tag}.cs`)
   fs.writeFileSync(src, CONPTY_CS, 'utf8')
-  const tmpExe = exe + '.tmp.exe'
+  const tmpExe = `${exe}.${process.pid}.tmp.exe`
   try {
     await new Promise((resolve, reject) =>
       execFile(
@@ -286,6 +297,22 @@ export async function ensureConPty() {
       .trim()
     throw new Error('не удалось собрать помощник терминала: ' + out)
   }
-  fs.renameSync(tmpExe, exe)
+  try {
+    fs.renameSync(tmpExe, exe)
+  } catch (e) {
+    /* антивирус сканирует свежий .exe и держит его открытым — если готовый файл уже есть, используем его */
+    if (!fs.existsSync(exe)) {
+      try {
+        fs.copyFileSync(tmpExe, exe)
+      } catch {
+        throw new Error('не удалось сохранить помощник терминала: ' + e.message)
+      }
+    }
+    try {
+      fs.unlinkSync(tmpExe)
+    } catch {
+      /* останется во временной папке */
+    }
+  }
   return exe
 }
