@@ -1,0 +1,21 @@
+ℹ tests 75
+ℹ suites 0
+ℹ pass 75
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18475.068674
+ℹ tests 251
+ℹ suites 0
+ℹ pass 251
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9331.309037
+✓ built in 3.95s
+random UI seed 9461: 187 actions / 90 sec; one expected HTTP400 invalid path (first run, transcript only)
+random UI seed 9462: 284 actions / 120 sec; errors 0 (repeat run)
+regex function isolated timeout: 5 sec; exit124 (repeated)
+Agent harness initial run: tests17 pass16 fail1; failing first-version R12, corrected separate R12 passes. No full repeated green harness claimed.

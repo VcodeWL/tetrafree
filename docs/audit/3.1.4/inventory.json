@@ -1,0 +1,547 @@
+{
+  "note": "Records are observations/scenarios, not a count of independently reproduced production bugs. Shared root causes grouped explicitly; hypotheses inside section reports are excluded.",
+  "base_commit": "fade8658c93e2a5d64374639ab98130676df2bf6",
+  "records": [
+    {
+      "id": "SEC-01",
+      "section": "server",
+      "title": "нет серверной origin isolation для недоверенного превью",
+      "priority": null,
+      "root_group": "SEC-01"
+    },
+    {
+      "id": "SEC-02",
+      "section": "server",
+      "title": "итоговый index-файл не проходит проверку symlink containment",
+      "priority": null,
+      "root_group": "SEC-02"
+    },
+    {
+      "id": "SEC-03",
+      "section": "server",
+      "title": "неполная нормализация IPv4-mapped IPv6",
+      "priority": null,
+      "root_group": "SEC-03"
+    },
+    {
+      "id": "SEC-04",
+      "section": "server",
+      "title": "потеря владения pending-registration credentials",
+      "priority": null,
+      "root_group": "SEC-04"
+    },
+    {
+      "id": "SEC-05",
+      "section": "server",
+      "title": "локальная TOTP-политика не применяется к OAuth",
+      "priority": null,
+      "root_group": "SEC-05"
+    },
+    {
+      "id": "SEC-06",
+      "section": "server",
+      "title": "SMTP допускает cleartext fallback",
+      "priority": null,
+      "root_group": "SEC-06"
+    },
+    {
+      "id": "SEC-07",
+      "section": "server",
+      "title": "filesystem containment применяется не ко всем операциям",
+      "priority": null,
+      "root_group": "SEC-07"
+    },
+    {
+      "id": "SEC-08",
+      "section": "server",
+      "title": "MCP initialization race в пуле",
+      "priority": null,
+      "root_group": "SEC-08"
+    },
+    {
+      "id": "SEC-09",
+      "section": "server",
+      "title": "нет correlation check у HTTP JSON MCP response",
+      "priority": null,
+      "root_group": "SEC-09"
+    },
+    {
+      "id": "ST-01",
+      "section": "storage",
+      "title": "P1: новые данные fallback проигрывают старым данным IndexedDB",
+      "priority": "P1",
+      "root_group": "ST-01"
+    },
+    {
+      "id": "ST-02",
+      "section": "storage",
+      "title": "P2: removeItem не упорядочен с уже поставленным flush",
+      "priority": "P2",
+      "root_group": "ST-02"
+    },
+    {
+      "id": "ST-03",
+      "section": "storage",
+      "title": "P1: downgrade/неподдерживаемая версия сбрасывает данные",
+      "priority": "P1",
+      "root_group": "ST-03"
+    },
+    {
+      "id": "ST-04",
+      "section": "storage",
+      "title": "P1: persisted chat.running блокирует исходящий cloud после reload",
+      "priority": "P1",
+      "root_group": "ST-04"
+    },
+    {
+      "id": "ST-05",
+      "section": "storage",
+      "title": "P1: поздняя гидратация заменяет уже сделанные изменения",
+      "priority": "P1",
+      "root_group": "ST-05"
+    },
+    {
+      "id": "ST-06",
+      "section": "storage",
+      "title": "P1: «только внешние удаления» теряют локальную правку во время запроса",
+      "priority": "P1",
+      "root_group": "ST-06"
+    },
+    {
+      "id": "ST-07",
+      "section": "storage",
+      "title": "P1: конфликт с диском уничтожает незакоммиченную чужую версию",
+      "priority": "P1",
+      "root_group": "ST-07"
+    },
+    {
+      "id": "ST-08",
+      "section": "storage",
+      "title": "P1: cloud refresh удаляет локальный префикс истории чата",
+      "priority": "P1",
+      "root_group": "ST-08"
+    },
+    {
+      "id": "ST-09",
+      "section": "storage",
+      "title": "P1: преобразование actor-ID портит произвольный пользовательский текст",
+      "priority": "P1",
+      "root_group": "ST-09"
+    },
+    {
+      "id": "ST-10",
+      "section": "storage",
+      "title": "P1: duplicate/import сохраняют cloud identity оригинала",
+      "priority": "P1",
+      "root_group": "copy-cloud-identity"
+    },
+    {
+      "id": "ST-11",
+      "section": "storage",
+      "title": "P1: memory edit/chat rename теряются из-за неизменяемого stamp",
+      "priority": "P1",
+      "root_group": "ST-11"
+    },
+    {
+      "id": "ST-12",
+      "section": "storage",
+      "title": "P2: image-block превращает живой doc в «удалённый» Markdown",
+      "priority": "P2",
+      "root_group": "ST-12"
+    },
+    {
+      "id": "ST-13",
+      "section": "storage",
+      "title": "P2: CRLF-маркеры обнаруживаются, но resolve не работает",
+      "priority": "P2",
+      "root_group": "ST-13"
+    },
+    {
+      "id": "ST-14",
+      "section": "storage",
+      "title": "P1: cloud baseline durable раньше самого Zustand state",
+      "priority": "P1",
+      "root_group": "ST-14"
+    },
+    {
+      "id": "ST-15",
+      "section": "storage",
+      "title": "P2: stale 401 старой сессии уничтожает новую",
+      "priority": "P2",
+      "root_group": "ST-15"
+    },
+    {
+      "id": "ST-16",
+      "section": "storage",
+      "title": "P2: vault acknowledgement не привязан к backend",
+      "priority": "P2",
+      "root_group": "ST-16"
+    },
+    {
+      "id": "ST-17",
+      "section": "storage",
+      "title": "P3: vault push бесконечно вызывает сам себя",
+      "priority": "P3",
+      "root_group": "ST-17"
+    },
+    {
+      "id": "ST-18",
+      "section": "storage",
+      "title": "P1: конфликтная .cloud-копия затирает существующий файл",
+      "priority": "P1",
+      "root_group": "ST-18"
+    },
+    {
+      "id": "A-01",
+      "section": "agent",
+      "title": "P2 — dangerOf не является надежной границей подтверждения",
+      "priority": "P2",
+      "root_group": "A-01"
+    },
+    {
+      "id": "A-02",
+      "section": "agent",
+      "title": "P1 — старый завершающийся ход удаляет controller нового хода",
+      "priority": "P1",
+      "root_group": "A-02"
+    },
+    {
+      "id": "A-03",
+      "section": "agent",
+      "title": "P1 — после Stop исполняются следующие действия текущего ответа",
+      "priority": "P1",
+      "root_group": "cancellation-effects"
+    },
+    {
+      "id": "A-04",
+      "section": "agent",
+      "title": "P1 — bExec запускает команду с уже отмененным signal",
+      "priority": "P1",
+      "root_group": "cancellation-effects"
+    },
+    {
+      "id": "A-05",
+      "section": "agent",
+      "title": "P1 — автоматизация отправляет модели пустую задачу вместо одобренного prompt",
+      "priority": "P1",
+      "root_group": "A-05"
+    },
+    {
+      "id": "A-06",
+      "section": "agent",
+      "title": "P1 — одобренный tier автоматизации не применяется к существующему одноимённому чату",
+      "priority": "P1",
+      "root_group": "A-06"
+    },
+    {
+      "id": "A-07",
+      "section": "agent",
+      "title": "P1 — смена проекта во время проверки approval перенаправляет задачу",
+      "priority": "P1",
+      "root_group": "A-07"
+    },
+    {
+      "id": "A-08",
+      "section": "agent",
+      "title": "P1 — live write молча затирает человеческую правку, сделанную во время стрима",
+      "priority": "P1",
+      "root_group": "A-08"
+    },
+    {
+      "id": "A-09",
+      "section": "agent",
+      "title": "P1 — принятие устаревших delete/rename не защищает новые данные",
+      "priority": "P1",
+      "root_group": "A-09"
+    },
+    {
+      "id": "A-10",
+      "section": "agent",
+      "title": "P1 — откат удаления/переименования не проверяет последующие правки",
+      "priority": "P1",
+      "root_group": "A-10"
+    },
+    {
+      "id": "A-11",
+      "section": "agent",
+      "title": "P2 — syncSegs не учитывает отмену при применении закрытых операций",
+      "priority": "P2",
+      "root_group": "cancellation-effects"
+    },
+    {
+      "id": "A-12",
+      "section": "agent",
+      "title": "P2, platform-dependent — autoVerify строит shell-строку из имени файла",
+      "priority": "P2",
+      "root_group": "A-12"
+    },
+    {
+      "id": "A-13",
+      "section": "agent",
+      "title": "P2 — сообщение теряется из очереди при смене проекта",
+      "priority": "P2",
+      "root_group": "queue-lifecycle"
+    },
+    {
+      "id": "A-14",
+      "section": "agent",
+      "title": "P2 — Stop в паузе очереди не отменяет запланированный запуск",
+      "priority": "P2",
+      "root_group": "queue-lifecycle"
+    },
+    {
+      "id": "A-15",
+      "section": "agent",
+      "title": "P2 — литеральный пример протокола в code fence интерпретируется как действие",
+      "priority": "P2",
+      "root_group": "A-15"
+    },
+    {
+      "id": "A-16",
+      "section": "agent",
+      "title": "P2 — оборванный exec stream возвращает успех без exit frame",
+      "priority": "P2",
+      "root_group": "A-16"
+    },
+    {
+      "id": "W-01",
+      "section": "windows",
+      "title": "остановка/рестарт Tauri не освобождает дерево процессов",
+      "priority": null,
+      "root_group": "process-tree-lifecycle"
+    },
+    {
+      "id": "W-02",
+      "section": "windows",
+      "title": "updater оставляет приложение без сервера при ошибке install",
+      "priority": null,
+      "root_group": "W-02"
+    },
+    {
+      "id": "W-03",
+      "section": "windows",
+      "title": "smoke ConPTY не доказывает исполнение команд, resize или корректный exit",
+      "priority": null,
+      "root_group": "W-03"
+    },
+    {
+      "id": "W-04",
+      "section": "windows",
+      "title": "отмена Windows exec не прекращает выполняемую задачу",
+      "priority": null,
+      "root_group": "process-tree-lifecycle"
+    },
+    {
+      "id": "W-05",
+      "section": "windows",
+      "title": "stdout/stderr повреждают UTF-8 на границе чанков; OEM Windows не обработана",
+      "priority": null,
+      "root_group": "W-05"
+    },
+    {
+      "id": "W-06",
+      "section": "windows",
+      "title": "API разрешает дробные dimensions, helper требует integer",
+      "priority": null,
+      "root_group": "W-06"
+    },
+    {
+      "id": "W-07",
+      "section": "windows",
+      "title": "PTY ring 256 KB не ограничивает очередь медленного HTTP клиента",
+      "priority": null,
+      "root_group": "W-07"
+    },
+    {
+      "id": "W-08",
+      "section": "windows",
+      "title": "релизный тег обходит quality gates",
+      "priority": null,
+      "root_group": "W-08"
+    },
+    {
+      "id": "W-09",
+      "section": "windows",
+      "title": "sidecar «свежесть» определяется только размером",
+      "priority": null,
+      "root_group": "W-09"
+    },
+    {
+      "id": "W-10",
+      "section": "windows",
+      "title": "non-PTY Windows exec возвращает прежний cwd",
+      "priority": null,
+      "root_group": "W-10"
+    },
+    {
+      "id": "W-11",
+      "section": "windows",
+      "title": "exec передает серверные секреты выполняемым программам",
+      "priority": null,
+      "root_group": "W-11"
+    },
+    {
+      "id": "W-12",
+      "section": "windows",
+      "title": "«только отчет» smoke steps могут сломать/подвесить Windows CI",
+      "priority": null,
+      "root_group": "W-12"
+    },
+    {
+      "id": "W-13",
+      "section": "windows",
+      "title": "helper stderr теряется, health не проверяет работоспособность PTY",
+      "priority": null,
+      "root_group": "W-13"
+    },
+    {
+      "id": "W-14",
+      "section": "windows",
+      "title": "verbatim UNC превращается в относительный путь",
+      "priority": null,
+      "root_group": "W-14"
+    },
+    {
+      "id": "W-15",
+      "section": "windows",
+      "title": "Windows error code 256 становится успешным 0",
+      "priority": null,
+      "root_group": "W-15"
+    },
+    {
+      "id": "W-16",
+      "section": "windows",
+      "title": "release dependencies не воспроизводимы",
+      "priority": null,
+      "root_group": "W-16"
+    },
+    {
+      "id": "D-01",
+      "section": "domain",
+      "title": "P1: копия проекта не отделяется от исходного облака",
+      "priority": "P1",
+      "root_group": "copy-cloud-identity"
+    },
+    {
+      "id": "D-02",
+      "section": "domain",
+      "title": "P1: ZIP-импорт затирает исходную папку",
+      "priority": "P1",
+      "root_group": "D-02"
+    },
+    {
+      "id": "D-03",
+      "section": "domain",
+      "title": "P1: восстановление чата переносит его в другой проект",
+      "priority": "P1",
+      "root_group": "D-03"
+    },
+    {
+      "id": "D-04",
+      "section": "domain",
+      "title": "P1: Markdown-импорт меняет назначение во время ожидания",
+      "priority": "P1",
+      "root_group": "D-04"
+    },
+    {
+      "id": "D-05",
+      "section": "domain",
+      "title": "P1: открытая форма задачи откатывает чужие изменения",
+      "priority": "P1",
+      "root_group": "D-05"
+    },
+    {
+      "id": "D-06",
+      "section": "domain",
+      "title": "P1: вставка картинки после смены проекта пишет не в исходный документ",
+      "priority": "P1",
+      "root_group": "D-06"
+    },
+    {
+      "id": "D-07",
+      "section": "domain",
+      "title": "P1: независимые правки документа/задачи теряются при облачном merge",
+      "priority": "P1",
+      "root_group": "D-07"
+    },
+    {
+      "id": "D-08",
+      "section": "domain",
+      "title": "P2: debounce инспектора теряет последнюю правку при смене страницы",
+      "priority": "P2",
+      "root_group": "D-08"
+    },
+    {
+      "id": "UI-01",
+      "section": "ui",
+      "title": "P1 — смена проекта перезаписывает одноимённый файл даже без редактирования",
+      "priority": "P1",
+      "root_group": "UI-01"
+    },
+    {
+      "id": "UI-02",
+      "section": "ui",
+      "title": "P1 — удалённый файл воскресает из pending autosave",
+      "priority": "P1",
+      "root_group": "UI-02"
+    },
+    {
+      "id": "UI-03",
+      "section": "ui",
+      "title": "P1 — Design сохраняет страницу B через callback страницы A",
+      "priority": "P1",
+      "root_group": "design-editor-lifecycle"
+    },
+    {
+      "id": "UI-04",
+      "section": "ui",
+      "title": "P1 — смена Design-страницы с pending таймером дополнительно перезаписывает A содержимым B",
+      "priority": "P1",
+      "root_group": "design-editor-lifecycle"
+    },
+    {
+      "id": "UI-05",
+      "section": "ui",
+      "title": "P2 — валидация пути пропускает регистронезависимого файл-родителя",
+      "priority": "P2",
+      "root_group": "UI-05"
+    },
+    {
+      "id": "UI-06",
+      "section": "ui",
+      "title": "P3 — Esc не заканчивает редактирование, вопреки подсказке",
+      "priority": "P3",
+      "root_group": "UI-06"
+    },
+    {
+      "id": "UI-07",
+      "section": "ui",
+      "title": "P2 — сочетания редактора не работают в русской раскладке",
+      "priority": "P2",
+      "root_group": "UI-07"
+    },
+    {
+      "id": "UI-08",
+      "section": "ui",
+      "title": "P2 — сложный RegExp блокирует основной поток поиска",
+      "priority": "P2",
+      "root_group": "UI-08"
+    },
+    {
+      "id": "DEP-01",
+      "section": "dependencies",
+      "title": "esbuild",
+      "priority": "P2",
+      "evidence": "npm advisory, not exploit",
+      "root_group": "DEP-01"
+    },
+    {
+      "id": "DEP-02",
+      "section": "dependencies",
+      "title": "vite",
+      "priority": "P2",
+      "evidence": "npm advisory, not exploit",
+      "root_group": "DEP-02"
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "note": "Repeated after environment reset; these observations demonstrate defects, not product correctness. Test profile and synthetic content only.",
+  "results": [
+    {
+      "name": "cross-project-readonly",
+      "result": {
+        "a": "CONTENT_A",
+        "b": "CONTENT_A",
+        "visible": "CONTENT_B\n"
+      }
+    },
+    {
+      "name": "code-edit-delete-pending",
+      "result": {
+        "deletedNow": true,
+        "after": "UNSAVED_TYPED"
+      }
+    },
+    {
+      "name": "escape-leaves-editmode",
+      "result": {
+        "editing": 1,
+        "focused": ""
+      }
+    },
+    {
+      "name": "russian-ctrl-comment",
+      "result": {
+        "before": "CONTENT_B",
+        "prevented": false,
+        "value": "CONTENT_B"
+      }
+    },
+    {
+      "name": "path-ancestor-case-collision",
+      "result": {
+        "error": null
+      }
+    },
+    {
+      "name": "design-switch-pending",
+      "result": {
+        "calls": [
+          [
+            "a",
+            "A_TYPED"
+          ],
+          [
+            "a",
+            "B_ORIGINAL"
+          ]
+        ],
+        "value": "B_ORIGINAL"
+      }
+    },
+    {
+      "name": "design-unmount-stale",
+      "result": {
+        "calls": [
+          [
+            "a",
+            "B_TYPED"
+          ]
+        ],
+        "value": "B_TYPED"
+      }
+    }
+  ]
+}
