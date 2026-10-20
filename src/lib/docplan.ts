@@ -70,6 +70,13 @@ export function planDocs(
   const plan: DocPlan = { write: {}, remove: [], update: [], add: [], attach: {}, base: {} }
   const taken = new Set(Object.keys(files).map((k) => k.toLowerCase()))
   const owned = new Set<string>()
+  // Disabled mirrors still own their file and ancestor: no delete, overwrite or orphan reimport.
+  for (const d of allDocs.filter((d) => !docs.includes(d))) {
+    const rec = prev[d.id]
+    if (rec) plan.base[d.id] = { ...rec }
+    const file = d.file || rec?.file
+    if (file) owned.add(file)
+  }
   const cur = { ...files }
   const put = (p: string, c: string) => {
     plan.write[p] = c
@@ -128,9 +135,9 @@ export function planDocs(
   /* запоминаем название, с которым файл был «общим» */
   const titles = new Map(docs.map((d) => [d.id, d.title]))
   for (const u of plan.update) titles.set(u.id, u.title)
-  for (const [id, b] of Object.entries(plan.base)) b.t = titles.get(id)
+  for (const [id, b] of Object.entries(plan.base)) if (titles.has(id)) b.t = titles.get(id)
   /* документы, удалённые в приложении: убираем их файл, если его не трогали */
-  const live = new Set(docs.map((d) => d.id))
+  const live = new Set(allDocs.map((d) => d.id))
   for (const [id, r] of Object.entries(prev)) {
     if (live.has(id) || owned.has(r.file)) continue
     const c = cur[r.file]

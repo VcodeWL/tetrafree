@@ -8,8 +8,11 @@ import { HLine } from '../components/ui/Code'
 import { tokenize } from '../lib/highlight'
 import { ago, clamp, copyText, download, langOf, fmtBytes, plural } from '../lib/util'
 import { openExternal, isDesktop } from '../lib/desktop'
+import { openProjectPreview, snapshotPreviewDocument } from '../lib/preview'
 import { useEditors, loadEditors, pickEditor, openInEditor } from '../lib/editors'
 import type { Project } from '../types'
+import { mutateFileTree } from '../store/slices/files'
+import { captureFileTree } from '../lib/filePreimage'
 import { checkPath, PROTECTED } from '../lib/paths'
 import { useLiveInProject } from '../agent/live'
 import { CodeSurface, MAX_EDIT } from './CodeEditor'
@@ -204,7 +207,7 @@ function CodePane() {
   useEffect(() => {
     setEditing(false)
     reportCaret(file || '', 0)
-  }, [file])
+  }, [file, p.id])
   const canEdit = !!file && !lv && content.length <= MAX_EDIT
   /* узкая панель: дерево прячется в выезжающий список, широкая: дерево тянется за ручку */
   const wrap = useRef<HTMLDivElement>(null)
@@ -355,12 +358,6 @@ function CodePane() {
   const stack = opsFor(p.id)
   const retab = (from: string, to: string) =>
     setTabs((t) => t.map((x) => (x === from ? to : x.startsWith(from + '/') ? to + x.slice(from.length) : x)))
-  /** перед отменой/повтором убеждаемся, что целевой путь не занят чужим файлом */
-  const assertFree = (paths: string[]) => {
-    const cur = useStore.getState().projects.find((q) => q.id === p.id)
-    const busy = paths.find((x) => cur && (x in cur.files || cur.dirs.includes(x)))
-    if (busy) throw new Error(`Путь «${busy}» уже занят`)
-  }
   const doneToast = (op: Op, title: string, desc: string, icon: 'edit' | 'folder' | 'trash' | 'plus') => {
     stack.push(op)
     st().toast({
@@ -400,81 +397,111 @@ function CodePane() {
       st().toast({ title: 'Не получилось', desc: (e as Error).message, icon: 'warn', tone: 'err' })
     }
   }
-  const newAt = (dir: string, kind: 'file' | 'dir') =>
+  const newAt = (dir: string, kind: 'file' | 'dir') => {
+    const pid = p.id
     st().openModal({
       type: 'rename',
       title: kind === 'file' ? 'Новый файл' : 'Новая папка',
       value: dir ? dir + '/' : '',
       label: 'Создать',
       hint: dir ? `в «${dir}»` : 'в корне проекта',
-      check: (v) => checkPath(p, v),
+      check: (v) => {
+        const current = st().projects.find((project) => project.id === pid)
+        return current ? checkPath(current, v) : 'Исходный проект уже удалён'
+      },
       run: (v) => {
-        if (kind === 'dir') {
-          st().addDir(v)
-          doneToast(
-            {
-              label: `папка «${v}» создана`,
-              undo: () => st().deletePath(v),
-              redo: () => {
-                assertFree([v])
-                st().addDir(v)
-              },
-            },
-            'Папка создана',
-            v,
-            'folder',
-          )
-        } else {
-          st().writeFile(v, '')
-          st().openFile(v)
-          setEditing(true)
-          stack.push({
-            label: `файл «${v}» создан`,
-            undo: () => st().deletePath(v),
+        try {
+          const create = () =>
+            mutateFileTree(useStore.setState, pid, { kind: kind === 'file' ? 'create' : 'mkdir', path: v })
+          create()
+          let expected = captureFileTree(useStore, pid, v)
+          const op: Op = {
+            label: `${kind === 'file' ? 'файл' : 'папка'} «${v}» создан${kind === 'file' ? '' : 'а'}`,
+            undo: () => mutateFileTree(useStore.setState, pid, { kind: 'delete', path: v, before: expected }),
             redo: () => {
-              assertFree([v])
-              st().writeFile(v, '')
+              create()
+              expected = captureFileTree(useStore, pid, v)
             },
-          })
+          }
+          if (kind === 'dir') doneToast(op, 'Папка создана', v, 'folder')
+          else {
+            if (st().projectId === pid) {
+              st().openFile(v)
+              setEditing(true)
+            }
+            stack.push(op)
+          }
+        } catch (e) {
+          st().toast({ title: 'Не удалось создать', desc: (e as Error).message, tone: 'warn', icon: 'warn' })
         }
       },
     })
+  }
   const renameAt = (path: string, isDir: boolean) => {
     if (!guard(path, 'переименование')) return
+    const pid = p.id
+    const source = captureFileTree(useStore, pid, path)
     st().openModal({
       type: 'rename',
       title: isDir ? 'Переименовать папку' : 'Переименовать файл',
       value: path,
       label: 'Переименовать',
       hint: 'Можно указать новый путь целиком, это переместит файл',
-      check: (v) => checkPath(p, v, path),
+      check: (v) => {
+        const current = st().projects.find((project) => project.id === pid)
+        if (!current) return 'Исходный проект уже удалён'
+        if (!source.unchanged()) return 'Исходные файлы изменились. Открой переименование заново.'
+        return checkPath(current, v, path)
+      },
       run: (v) => {
-        st().renamePath(path, v)
-        retab(path, v)
-        doneToast(
-          {
-            label: `«${path}» → «${v}»`,
-            undo: () => {
-              assertFree([path])
-              st().renamePath(v, path)
-              retab(v, path)
+        try {
+          mutateFileTree(useStore.setState, pid, { kind: 'rename', from: path, to: v, before: source })
+          if (st().projectId === pid) retab(path, v)
+          let expected = captureFileTree(useStore, pid, v)
+          doneToast(
+            {
+              label: `«${path}» → «${v}»`,
+              undo: () => {
+                mutateFileTree(useStore.setState, pid, {
+                  kind: 'rename',
+                  from: v,
+                  to: path,
+                  before: expected,
+                })
+                expected = captureFileTree(useStore, pid, path)
+                if (st().projectId === pid) retab(v, path)
+              },
+              redo: () => {
+                mutateFileTree(useStore.setState, pid, {
+                  kind: 'rename',
+                  from: path,
+                  to: v,
+                  before: expected,
+                })
+                expected = captureFileTree(useStore, pid, v)
+                if (st().projectId === pid) retab(path, v)
+              },
             },
-            redo: () => {
-              assertFree([v])
-              st().renamePath(path, v)
-              retab(path, v)
-            },
-          },
-          'Переименовано',
-          v,
-          'edit',
-        )
+            'Переименовано',
+            v,
+            'edit',
+          )
+        } catch (e) {
+          st().toast({
+            title: 'Не удалось переименовать',
+            desc: (e as Error).message,
+            tone: 'warn',
+            icon: 'warn',
+          })
+        }
       },
     })
   }
   const removeAt = (path: string, isDir: boolean) => {
     if (!guard(path, 'удаление')) return
-    const n = isDir ? Object.keys(p.files).filter((f) => f.startsWith(path + '/')).length : 0
+    const pid = p.id
+    const source = captureFileTree(useStore, pid, path)
+    const n = isDir ? Object.keys(source.files).length : 0
     st().openModal({
       type: 'confirm',
       danger: true,
@@ -486,26 +513,29 @@ function CodePane() {
           : 'Папка пуста.'
         : 'Вернуть можно из истории версий, если файл уже попадал в версию.',
       run: () => {
-        const snap = Object.fromEntries(
-          Object.entries(p.files).filter(([f]) => f === path || f.startsWith(path + '/')),
-        )
-        const dirs = p.dirs.filter((d) => d === path || d.startsWith(path + '/'))
-        const pid = p.id
-        st().deletePath(path)
-        doneToast(
-          {
-            label: `«${path}» удалён`,
-            undo: () => {
-              assertFree([...Object.keys(snap), ...dirs])
-              Object.entries(snap).forEach(([f, c]) => st().writeFile(f, c, pid))
-              dirs.forEach((d) => st().addDir(d))
+        try {
+          mutateFileTree(useStore.setState, pid, { kind: 'delete', path, before: source })
+          let expected = source
+          doneToast(
+            {
+              label: `«${path}» удалён`,
+              undo: () => {
+                mutateFileTree(useStore.setState, pid, {
+                  kind: 'restore',
+                  files: source.files,
+                  dirs: source.dirs,
+                })
+                expected = captureFileTree(useStore, pid, path)
+              },
+              redo: () => mutateFileTree(useStore.setState, pid, { kind: 'delete', path, before: expected }),
             },
-            redo: () => st().deletePath(path),
-          },
-          'Удалено',
-          path,
-          'trash',
-        )
+            'Удалено',
+            path,
+            'trash',
+          )
+        } catch (e) {
+          st().toast({ title: 'Не удалось удалить', desc: (e as Error).message, tone: 'warn', icon: 'warn' })
+        }
       },
     })
   }
@@ -514,31 +544,37 @@ function CodePane() {
   const moveInto = (src: string, dir: string) => {
     const to = (dir ? dir + '/' : '') + src.split('/').pop()
     if (to === src || !guard(src, 'перемещение')) return
-    const err = checkPath(p, to, src)
-    if (err) {
-      st().toast({ title: 'Не удалось переместить', desc: err, icon: 'warn', tone: 'err' })
-      return
+    const pid = p.id
+    try {
+      mutateFileTree(useStore.setState, pid, {
+        kind: 'rename',
+        from: src,
+        to,
+        before: captureFileTree(useStore, pid, src),
+      })
+      retab(src, to)
+      let expected = captureFileTree(useStore, pid, to)
+      doneToast(
+        {
+          label: `«${src}» перемещён в «${to}»`,
+          undo: () => {
+            mutateFileTree(useStore.setState, pid, { kind: 'rename', from: to, to: src, before: expected })
+            expected = captureFileTree(useStore, pid, src)
+            if (st().projectId === pid) retab(to, src)
+          },
+          redo: () => {
+            mutateFileTree(useStore.setState, pid, { kind: 'rename', from: src, to, before: expected })
+            expected = captureFileTree(useStore, pid, to)
+            if (st().projectId === pid) retab(src, to)
+          },
+        },
+        'Перемещено',
+        to,
+        'folder',
+      )
+    } catch (e) {
+      st().toast({ title: 'Не удалось переместить', desc: (e as Error).message, tone: 'warn', icon: 'warn' })
     }
-    st().renamePath(src, to)
-    retab(src, to)
-    doneToast(
-      {
-        label: `«${src}» перемещён в «${to}»`,
-        undo: () => {
-          assertFree([src])
-          st().renamePath(to, src)
-          retab(to, src)
-        },
-        redo: () => {
-          assertFree([to])
-          st().renamePath(src, to)
-          retab(src, to)
-        },
-      },
-      'Перемещено',
-      to,
-      'folder',
-    )
   }
   const allDirs = useMemo(() => Array.from(new Set(p.dirs)), [p.dirs])
   const collapseAll = () =>
@@ -1067,12 +1103,13 @@ function CodePane() {
                 </>
               ) : (
                 <CodeSurface
-                  key={file}
+                  key={JSON.stringify([p.id, file])}
                   p={p}
                   file={file}
                   lang={lang}
                   content={content}
                   editing={editing && canEdit}
+                  onFinish={() => setEditing(false)}
                 />
               )}
             </div>
@@ -1377,8 +1414,22 @@ function BrowserPane() {
   const w = DEVICES.find((d) => d.k === dev)!.w
   const openWin = () => {
     if (!html) return
-    const u = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
-    window.open(u, '_blank')
+    if (!ver) {
+      void openProjectPreview(p, 'site/index.html')
+      return
+    }
+    const u = URL.createObjectURL(new Blob([snapshotPreviewDocument(html)], { type: 'text/html' }))
+    if (isDesktop) {
+      const a = document.createElement('a')
+      a.href = u
+      a.download = 'preview-v' + ver.n + '.html'
+      a.click()
+      st().toast({
+        title: 'Сохранённая версия скачана',
+        desc: 'Открой HTML в браузере; версия изолирована от приложения',
+        icon: 'down',
+      })
+    } else window.open(u, '_blank', 'noopener,noreferrer')
     setTimeout(() => URL.revokeObjectURL(u), 60_000)
   }
   return (

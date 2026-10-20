@@ -171,8 +171,14 @@ export function Auth() {
     }
     if (it.oauth) {
       setBusy('oauth')
-      api<Sess>('POST', '/api/auth/oauth/exchange', { ticket: it.oauth })
-        .then(done)
+      api<Sess & { need?: string; ticket?: string }>('POST', '/api/auth/oauth/exchange', { ticket: it.oauth })
+        .then((r) => {
+          if (r.need === '2fa' && r.ticket) {
+            setTicket(r.ticket)
+            go('2fa')
+            setBusy(null)
+          } else done(r)
+        })
         .catch((e) => fail(e))
     }
   }, []) // eslint-disable-line
@@ -181,7 +187,15 @@ export function Auth() {
     setBusy('form')
     setErr({})
     try {
-      done(await api<Sess>('POST', '/api/auth/verify', { email: e, code: c }))
+      const r = await api<Sess & { need?: string; ticket?: string }>('POST', '/api/auth/verify', {
+        email: e,
+        code: c,
+      })
+      if (r.need === '2fa' && r.ticket) {
+        setTicket(r.ticket)
+        go('2fa')
+        setBusy(null)
+      } else done(r)
     } catch (x) {
       fail(x, 'code')
       setCode('')
@@ -210,7 +224,16 @@ export function Auth() {
     try {
       if (step === 'signin') {
         try {
-          done(await api<Sess>('POST', '/api/auth/login', { email: mail, password: pass, remember }))
+          const r = await api<Sess & { need?: string; ticket?: string }>('POST', '/api/auth/login', {
+            email: mail,
+            password: pass,
+            remember,
+          })
+          if (r.need === '2fa' && r.ticket) {
+            setTicket(r.ticket)
+            go('2fa')
+            setBusy(null)
+          } else done(r)
         } catch (x) {
           const d = (x as ApiError).data as { need?: string; ticket?: string }
           if (d?.need === 'verify') {

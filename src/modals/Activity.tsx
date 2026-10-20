@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useStore, useProject, toast } from '../store'
 import { Icon } from '../components/ui/Icon'
 import { AgentAvatar } from '../components/ui/primitives'
@@ -7,7 +7,9 @@ import { ago } from '../lib/util'
 import { ME } from '../data/seed'
 
 export function ActivityModal() {
-  const p = useProject()!
+  const openedProject = useProject()!
+  const origin = useRef(openedProject).current
+  const p = useStore((s) => s.projects.find((p) => p.id === origin.id)) || origin
   const st = useStore.getState
   const [tab, setTab] = useState<'lanes' | 'memory'>('lanes')
   const [fact, setFact] = useState('')
@@ -15,18 +17,39 @@ export function ActivityModal() {
   const [edit, setEdit] = useState<{ id: string; text: string } | null>(null)
   const saveEdit = () => {
     if (!edit) return
-    if (edit.text.trim()) st().editMemory(edit.id, { text: edit.text })
+    if (
+      !st()
+        .projects.find((p) => p.id === origin.id)
+        ?.memory.some((m) => m.id === edit.id)
+    ) {
+      toast({
+        title: 'Запись не сохранена',
+        desc: 'Исходный проект или запись удалены',
+        icon: 'warn',
+        tone: 'warn',
+      })
+      return
+    }
+    if (edit.text.trim()) st().editMemory(edit.id, { text: edit.text }, origin.id)
     setEdit(null)
   }
   const goChat = (id?: string) => {
     if (!id || !p.chats.some((c) => c.id === id)) return
+    if (st().projectId !== p.id) {
+      toast({ title: 'Открой исходный проект', desc: 'Чат принадлежит другому проекту', icon: 'warn' })
+      return
+    }
     st().setCenter({ kind: 'chat', id })
     st().closeModal()
   }
   const mem = p.memory.filter((m) => !q || m.text.toLowerCase().includes(q.toLowerCase()))
   const add = () => {
     if (!fact.trim()) return
-    st().remember({ text: fact.trim(), by: st().people[ME].name, kind: 'fact' })
+    if (!st().projects.some((x) => x.id === p.id)) {
+      toast({ title: 'Запись не добавлена', desc: 'Исходный проект удалён', icon: 'warn' })
+      return
+    }
+    st().remember({ text: fact.trim(), by: st().people[ME].name, kind: 'fact' }, p.id)
     setFact('')
     toast({ title: 'Добавлено в память проекта', icon: 'check', tone: 'ok' })
   }
@@ -136,7 +159,9 @@ export function ActivityModal() {
                   className={'mem-k ' + m.kind}
                   title="Сменить: факт / решение"
                   aria-label={`Тип записи: ${m.kind === 'decision' ? 'решение' : 'факт'}. Сменить`}
-                  onClick={() => st().editMemory(m.id, { kind: m.kind === 'decision' ? 'fact' : 'decision' })}
+                  onClick={() =>
+                    st().editMemory(m.id, { kind: m.kind === 'decision' ? 'fact' : 'decision' }, p.id)
+                  }
                 >
                   {m.kind === 'decision' ? 'решение' : 'факт'}
                 </button>
@@ -193,12 +218,31 @@ export function ActivityModal() {
                   title="Забыть"
                   aria-label="Забыть запись"
                   onClick={() => {
+                    const pid = p.id
+                    if (st().projectId !== pid) {
+                      toast({ title: 'Удаление отменено', desc: 'Открой исходный проект', icon: 'warn' })
+                      return
+                    }
                     const keep = { ...m }
                     st().forget(m.id)
                     toast({
                       title: 'Запись удалена из памяти',
                       icon: 'trash',
-                      action: { label: 'Вернуть', run: () => st().restoreMemory(keep) },
+                      action: {
+                        label: 'Вернуть',
+                        run: () => {
+                          if (!st().projects.some((p) => p.id === pid)) {
+                            toast({
+                              title: 'Запись не восстановлена',
+                              desc: 'Исходный проект удалён',
+                              icon: 'warn',
+                              tone: 'warn',
+                            })
+                            return
+                          }
+                          st().restoreMemory(keep, pid)
+                        },
+                      },
                     })
                   }}
                 >

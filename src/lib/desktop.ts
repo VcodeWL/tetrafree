@@ -11,7 +11,19 @@ export const winToggleMax = async () => {
   if (isDesktop) (await win()).toggleMaximize()
 }
 export const winClose = async () => {
-  if (isDesktop) (await win()).close()
+  if (!isDesktop) return
+  try {
+    await (await import('../store/persistence')).flushPersistence()
+    await (await win()).close()
+  } catch {
+    const { useStore } = await import('../store')
+    useStore.getState().toast({
+      title: 'Не удалось подтвердить сохранение',
+      desc: 'Окно оставлено открытым. Освободи место или экспортируй данные перед закрытием.',
+      icon: 'warn',
+      tone: 'err',
+    })
+  }
 }
 export async function openExternal(url: string) {
   if (isDesktop) {
@@ -68,7 +80,10 @@ export interface UpdateInfo {
 /** null — обновлений нет; бросает ошибку, если сборка без автообновления или нет сети */
 export const updCheck = () => call<UpdateInfo | null>('update_check')
 /** Скачивает, ставит и перезапускает приложение */
-export const updInstall = () => call<void>('update_install')
+export const updInstall = async () => {
+  await (await import('../store/persistence')).flushPersistence()
+  return call<void>('update_install')
+}
 /** Прогресс загрузки обновления: done/total в байтах (total может быть неизвестен) */
 export async function onUpdateProgress(
   fn: (done: number, total: number | null) => void,

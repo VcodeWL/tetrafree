@@ -53,3 +53,41 @@ test('снятие маркеров конфликта', () => {
   assert.equal(resolveMarkers(r, 'both'), L('a', 'mine', 'theirs', 'c'))
   assert.equal(hasMarkers(resolveMarkers(r, 'both')), false)
 })
+
+test('resolve CRLF and mixed EOL conflicts removes markers and preserves selected bytes', () => {
+  for (const mode of ['ours', 'theirs', 'both'] as const) {
+    const text = 'prefix\r\n<<<<<<< mine\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> remote\r\nsuffix'
+    assert.equal(hasMarkers(text), true)
+    const out = resolveMarkers(text, mode)
+    assert.equal(hasMarkers(out), false)
+    assert.equal(
+      out,
+      'prefix\r\n' +
+        (mode === 'ours' ? 'ours\r\n' : mode === 'theirs' ? 'theirs\r\n' : 'ours\r\ntheirs\r\n') +
+        'suffix',
+    )
+  }
+  const mixed = '<<<<<<< x\r\na\n=======\nb\r\n>>>>>>> y'
+  assert.equal(resolveMarkers(mixed, 'both'), 'a\nb\r\n')
+  assert.equal(resolveMarkers('<<<<<<< unfinished\r\na', 'ours'), '<<<<<<< unfinished\r\na')
+})
+
+test('R08 benign 150000-line insertion and independent append merge without RangeError or lost text', () => {
+  const insertion = Array(150000).fill('entry').join('\n')
+  const ours = 'start\n' + insertion + '\nend'
+  assert.ok(Buffer.byteLength(ours) < 1024 * 1024)
+  const result = merge3('start\nend', ours, 'start\nend\nextra')
+  assert.ok(result)
+  assert.equal(result.conflict, false)
+  assert.equal(result.text, ours + '\nextra')
+  const swapped = merge3('start\nend', 'start\nend\nextra', ours)
+  assert.equal(swapped?.text, result.text)
+})
+test('R08 large conflict sides are emitted iteratively and remain resolvable', () => {
+  const insertion = Array(150000).fill('entry').join('\n')
+  const result = merge3('start\nend', 'start\n' + insertion + '\nend', 'start\ntheirs\nend')
+  assert.ok(result)
+  assert.equal(result.conflict, true)
+  assert.equal(resolveMarkers(result.text, 'ours'), 'start\n' + insertion + '\nend')
+  assert.equal(resolveMarkers(result.text, 'theirs'), 'start\ntheirs\nend')
+})

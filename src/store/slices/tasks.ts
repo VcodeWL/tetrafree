@@ -13,14 +13,16 @@ export const tasksActions = (
   Actions,
   'saveTask' | 'moveTask' | 'deleteTask' | 'setTaskView' | 'saveTaskView' | 'removeTaskView' | 'setLanes'
 > => ({
-  saveTask: (t) => {
-    let id = t.id || ''
+  saveTask: (t, pid) => {
+    let id = ''
     let again = null as Partial<Task> | null
     set((s) => {
-      const p = find(s)
+      const p = find(s, pid)
       if (!p) return
       const ex = t.id ? p.tasks.find((x) => x.id === t.id) : undefined
+      if (t.id && !ex) return // удалённую задачу не воскрешаем старой формой
       if (ex) {
+        id = ex.id
         if (t.status === 'done' && ex.status !== 'done')
           again = spawnNext({ ...current(ex), ...t } as Task, localDay())
         /* зависимость, замыкающая цикл (A ждёт B, B ждёт A), не принимается — и из интерфейса, и от агента */
@@ -44,9 +46,9 @@ export const tasksActions = (
       } as Task)
     })
     if (again) {
-      const nid = get().saveTask(again as Task)
+      const nid = get().saveTask(again as Task, pid)
       const k = get()
-        .projects.find((x) => x.id === get().projectId)
+        .projects.find((x) => x.id === (pid ?? get().projectId))
         ?.tasks.find((x) => x.id === nid)?.key
       get().toast({
         title: 'Создан повтор',

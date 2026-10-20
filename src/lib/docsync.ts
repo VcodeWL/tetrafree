@@ -1,5 +1,7 @@
 /* Применяет план docplan к стору: документы появляются на диске как docs/<название>.md и обратно. */
 import { useStore } from '../store'
+import { flushPersistence } from '../store/persistence'
+import { put as putTrash } from './trash'
 import { fnv } from './backend'
 import { hasSynced, syncEnabled } from './sync'
 import { docMd } from './docmd'
@@ -20,7 +22,15 @@ const load = (pid: string): { base: DocBase; init: boolean } => {
   return { base: {}, init: true }
 }
 
-export function syncDocs(pid: string) {
+const active = new Map<string, Promise<unknown>>()
+export function syncDocs(pid: string): Promise<unknown> {
+  const next = (active.get(pid) || Promise.resolve()).catch(() => {}).then(() => syncDocsOnce(pid))
+  active.set(pid, next)
+  return next.finally(() => {
+    if (active.get(pid) === next) active.delete(pid)
+  })
+}
+async function syncDocsOnce(pid: string) {
   const p = S().projects.find((x) => x.id === pid)
   if (!p) return
   const { base, init } = load(pid)
@@ -34,6 +44,11 @@ export function syncDocs(pid: string) {
   const added: Record<string, string> = {}
   const addedTitle: Record<string, { title: string; blocks: (typeof plan.add)[number]['blocks'] }> = {}
   S().up((q) => {
+    if (plan.remove.length)
+      q.trash = putTrash(
+        q.trash || [],
+        Object.fromEntries(plan.remove.filter((k) => q.files[k] !== undefined).map((k) => [k, q.files[k]])),
+      )
     for (const k of plan.remove) delete q.files[k]
     for (const [k, v] of Object.entries(plan.write)) {
       q.files[k] = v
@@ -69,11 +84,8 @@ export function syncDocs(pid: string) {
   const files = S().projects.find((x) => x.id === pid)!.files
   for (const [id, file] of Object.entries(added))
     plan.base[id] = { file, h: fnv(files[file]), d: fnv(docMd(addedTitle[id])), t: addedTitle[id].title }
-  try {
-    localStorage.setItem(KEY(pid), JSON.stringify(plan.base))
-  } catch {
-    /* квота */
-  }
+  await flushPersistence()
+  localStorage.setItem(KEY(pid), JSON.stringify(plan.base))
   return changed
 }
 
@@ -97,7 +109,14 @@ export function startDocSync() {
           return run(pid)
         }
         tries.delete(pid)
-        syncDocs(pid)
+        void syncDocs(pid).catch(() => {
+          S().toast({
+            title: 'Документы пока не сохранены',
+            desc: 'Общая версия не обновлена. Проверь свободное место и повтори изменение.',
+            tone: 'err',
+            icon: 'warn',
+          })
+        })
       }, 700),
     )
   }

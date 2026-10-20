@@ -60,3 +60,27 @@ export function replaceIn(src: string, q: string, repl: string, o: Opts): string
   const re = compile(q, o)
   return o.regex ? src.replace(re, repl) : src.replace(re, () => repl)
 }
+
+export interface ReplaceRequest {
+  files: Record<string, string>
+  q: string
+  opts: Opts
+  replacement?: string
+}
+export type ReplaceReply =
+  { ok: true; hits: Hit[]; files: Record<string, string> } | { ok: false; error: string }
+
+/** Executed only in the UI's disposable worker, including compilation and substitution. */
+export function executeReplace(request: ReplaceRequest): ReplaceReply {
+  try {
+    const hits = findHits(request.files, request.q, request.opts)
+    const files: Record<string, string> = Object.create(null)
+    if (request.replacement !== undefined) {
+      for (const hit of hits)
+        files[hit.path] = replaceIn(request.files[hit.path], request.q, request.replacement, request.opts)
+    }
+    return { ok: true, hits, files }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}

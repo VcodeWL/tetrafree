@@ -1,4 +1,4 @@
-import { clone } from '../../lib/clone'
+import { detachProject } from '../../lib/projectIO'
 import { purge as purgeTrash } from '../../lib/trash'
 import type { Project } from '../../types'
 import { emptyProject, ME } from '../../data/seed'
@@ -39,6 +39,27 @@ export function templateFiles(template: string, name: string): Record<string, st
   }
 }
 
+/** Windows: регистр/разделители и . / .. не создают независимую папку. */
+export function projectPathKey(path: string | null | undefined): string {
+  const normalized = (path || '').trim().replace(/\\/g, '/').toLowerCase()
+  const prefix = normalized.startsWith('//') ? '//' : normalized.startsWith('/') ? '/' : ''
+  const parts: string[] = []
+  for (const part of normalized.split('/').filter(Boolean)) {
+    if (part === '.') continue
+    const rootSize = parts[0]?.endsWith(':') ? 1 : prefix === '//' ? 2 : 0
+    if (part === '..' && parts.length > rootSize && parts[parts.length - 1] !== '..') parts.pop()
+    else if (part !== '..' || (!prefix && rootSize === 0)) parts.push(part)
+  }
+  return prefix + parts.join('/')
+}
+
+function guardFolder(projects: Project[], path: string, except?: string) {
+  const key = projectPathKey(path)
+  if (!key) return
+  const owner = projects.find((p) => p.id !== except && p.path && projectPathKey(p.path) === key)
+  if (owner) throw new Error(`Эта папка уже занята проектом «${owner.name}»`)
+}
+
 export const projectsActions = (
   set: SetState,
 ): Pick<
@@ -73,6 +94,7 @@ export const projectsActions = (
     const id = 'p' + uid()
     const clean = adopt ? name.trim() || name : slug(name) || name
     set((s) => {
+      guardFolder(s.projects, path)
       const files: Record<string, string> = adopt ? {} : templateFiles(template, clean)
       const p = emptyProject({
         id,
@@ -146,38 +168,36 @@ export const projectsActions = (
     set((s) => {
       const p = find(s, id)
       if (!p) return
-      const c: Project = clone(p)
+      const c: Project = detachProject(p)
       c.id = 'p' + uid()
       c.name = uniqName(s.projects, p.name + '-copy')
-      c.path = p.path ? p.path.replace(/[^\\/]+$/, c.name) : ''
       c.createdAt = Date.now()
       c.openedAt = Date.now()
-      c.lanes = []
-      c.chats.forEach((ch) => {
-        ch.running = false
-      })
       s.projects.splice(s.projects.indexOf(p) + 1, 0, c)
     }),
   up: (fn, pid) =>
     set((s) => {
       const p = find(s, pid)
-      if (p) fn(p)
+      if (p) {
+        fn(p)
+        guardFolder(s.projects, p.path, p.id)
+      }
     }),
   importProject: (pr) =>
     set((s) => {
       const name = uniqName(s.projects, pr.name)
       s.projects.unshift({
-        ...pr,
+        ...detachProject(pr),
         id: 'p' + uid(),
         name,
         openedAt: Date.now(),
-        lanes: [],
-        chats: pr.chats.map((c) => ({ ...c, running: false })),
       })
     }),
   restoreProject: (pr, index) =>
     set((s) => {
-      if (!s.projects.some((x) => x.id === pr.id))
+      if (!s.projects.some((x) => x.id === pr.id)) {
+        guardFolder(s.projects, pr.path, pr.id)
         s.projects.splice(Math.min(index, s.projects.length), 0, pr)
+      }
     }),
 })

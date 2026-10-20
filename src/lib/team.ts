@@ -6,37 +6,37 @@
    Изменения доезжают по SSE-потоку почти мгновенно (запасной вариант — опрос раз в 5 с). */
 import { useStore } from '../store'
 import { create } from 'zustand'
-import type { Project, Person, Version, TeamEntry, LineComment, DeployRun, Task } from '../types'
+import type { Project, Person, Version, TeamEntry, DeployRun } from '../types'
 import { api, ApiError, useAccount, refreshInvites, clearInvite } from './account'
 import { fnv, serverOnline, useBackend } from './backend'
 import { authHeader, getToken } from './token'
 import { merge3, hasMarkers } from './merge3'
 import { emptyProject } from '../data/seed'
 import { initialsOf } from './util'
+import * as persistence from '../store/persistence'
+import { convertMetaIds, mergeRecords, mergeValue, type TeamMeta } from './teamMetadata'
+import { recoveryPath } from './syncRecovery'
+import {
+  createSyncJournal,
+  normalizeDirs,
+  mergeDirs,
+  undoAncestor,
+  journalReplayPolicy,
+  type SyncIntent,
+} from './syncJournal'
 
 const S = () => useStore.getState()
 const cpid = (p: Pick<Project, 'id' | 'cloud'>) => p.cloud?.pid || p.id
 const myUid = () => useAccount.getState().user?.id
 
-interface Meta {
-  desc: string
-  icon: Project['icon']
-  template: string
-  tools: string[]
-  docs: Project['docs']
-  tasks: Project['tasks']
-  taskSeq: number
-  memory: Project['memory']
-  chats: Project['chats']
-  history?: TeamEntry[]
-  deploy?: { auto: boolean; runs: DeployRun[] }
-  comments?: LineComment[]
-  tomb?: Record<string, number>
-}
+type Meta = TeamMeta
 interface Base {
   rev: number
   files: Record<string, string>
   meta: string
+  /** Wire-format ancestor, optional for older checkpoints. */
+  metadata?: Meta
+  dirs?: string[]
 }
 const baseKey = (pid: string) => 'tf-cloud:' + pid
 const loadBase = (pid: string): Base | null => {
@@ -50,7 +50,7 @@ const saveBase = (pid: string, b: Base) => {
   try {
     localStorage.setItem(baseKey(pid), JSON.stringify(b))
   } catch {
-    /* квота */
+    throw new Error('Не удалось сохранить облачный checkpoint: локальное хранилище недоступно')
   }
 }
 const hashes = (f: Record<string, string>) =>
@@ -86,9 +86,8 @@ const setTxt = (pid: string, files: Record<string, string>) => {
   }
 }
 
-/** локальные id → серверные (me → uid) и обратно */
-const toWire = <T>(o: T, uid: string): T => JSON.parse(JSON.stringify(o), (_k, v) => (v === 'me' ? uid : v))
-const fromWire = <T>(o: T, uid: string): T => JSON.parse(JSON.stringify(o), (_k, v) => (v === uid ? 'me' : v))
+const toWire = (o: Meta, uid: string) => convertMetaIds(o, uid, 'to')
+const fromWire = (o: Meta, uid: string) => convertMetaIds(o, uid, 'from')
 
 const entryOf = (v: Version): TeamEntry => {
   const { snapshot, ...r } = v
@@ -111,17 +110,17 @@ export const teamHistory = (p: Project): TeamEntry[] =>
     p.versions.filter((v) => !/^(Облако|Из облака):/.test(v.title)).map(entryOf),
   )
 
-function exportMeta(p: Project): Meta {
+function exportMeta(p: Project, bounded = true): Meta {
   const chats = p.chats.map((c) => ({
     ...c,
     running: false,
-    messages: c.messages.slice(-80).map((m) => {
+    messages: (bounded ? c.messages.slice(-80) : c.messages).map((m) => {
       const x = { ...m } as Record<string, unknown>
       delete x.live
       return x as unknown as typeof m
     }),
   }))
-  const runs = p.deploy.runs.map((r) => ({ ...r, log: r.log.slice(-200) }))
+  const runs = p.deploy.runs.map((r) => ({ ...r, log: bounded ? r.log.slice(-200) : r.log }))
   return toWire(
     {
       desc: p.desc,
@@ -185,8 +184,23 @@ export async function inviteByEmail(p: Project, email: string): Promise<InviteRe
     S().up((x) => {
       x.cloud = { pid, rev: 1, owner: true, ownerId: uid }
     }, p.id)
-    saveBase(pid, { rev: 1, files: hashes(p.files), meta: fnv(JSON.stringify(exportMeta(p))) })
-    setTxt(pid, { ...p.files })
+    const metadata = exportMeta(p)
+    await persistence.flushPersistence()
+    const current = S().projects.find((x) => x.id === p.id)
+    if (
+      current?.cloud?.pid === pid &&
+      current.files === p.files &&
+      JSON.stringify(exportMeta(current)) === JSON.stringify(metadata)
+    ) {
+      saveBase(pid, {
+        rev: 1,
+        files: hashes(p.files),
+        meta: fnv(JSON.stringify(metadata)),
+        metadata,
+        dirs: normalizeDirs(p.dirs),
+      })
+      setTxt(pid, { ...p.files })
+    }
   }
   return { link: r.link, mail: r.mail, mailError: r.mailError }
 }
@@ -329,8 +343,18 @@ export async function acceptInvite(tokenOrId: string) {
     useStore.setState((x) => {
       x.projects.unshift(proj)
     })
-    saveBase(t.id, { rev: t.rev, files: hashes(t.files), meta: fnv(JSON.stringify(t.meta ?? {})) })
-    setTxt(t.id, { ...t.files })
+    const checkpointProject = S().projects.find((x) => x.id === id)!
+    await persistence.flushPersistence()
+    if (S().projects.find((x) => x.id === id) === checkpointProject) {
+      saveBase(t.id, {
+        rev: t.rev,
+        files: hashes(t.files),
+        meta: fnv(JSON.stringify(t.meta ?? {})),
+        ...(t.meta ? { metadata: t.meta } : {}),
+        dirs: normalizeDirs(t.dirs),
+      })
+      setTxt(t.id, { ...t.files })
+    }
     local = proj
   }
   applyMembers(
@@ -374,20 +398,6 @@ const setCS = (pid: string, v: CS) => {
 }
 const hasRunning = (p: Project) => p.chats.some((c) => c.running)
 
-type Stamp<T> = (x: T) => number
-function mergeSet<T extends { id: string }>(
-  local: T[],
-  remote: T[],
-  stamp: Stamp<T>,
-  tomb: Record<string, number>,
-): T[] {
-  const m = new Map(local.map((x) => [x.id, x]))
-  for (const r of remote) {
-    const l = m.get(r.id)
-    if (!l || stamp(r) > stamp(l)) m.set(r.id, r)
-  }
-  return [...m.values()].filter((x) => !(tomb[x.id] > stamp(x)))
-}
 /** запуск деплоя: завершённое важнее «идёт»; зависшие чужие «идёт» (> 15 мин) считаем прерванными */
 function mergeRuns(local: DeployRun[], remote: DeployRun[]): DeployRun[] {
   const m = new Map(local.map((x) => [x.id, x]))
@@ -414,9 +424,8 @@ function mergeRuns(local: DeployRun[], remote: DeployRun[]): DeployRun[] {
     .slice(0, 40)
 }
 
-/** вливаем чужую мету в проект. unchanged — у меня с прошлой синхронизации ничего не менялось, можно просто взять чужое */
-function applyMeta(p: Project, rm: Meta, unchanged: boolean) {
-  /* мета пришла по сети: у клиента старой версии каких-то полей может не быть — не падаем, а берём пустые */
+/** Merge each field/ID-bearing child against its own ancestor. Missing wire messages are not deletes. */
+function applyMeta(p: Project, rm: Meta, ancestor?: Meta): number {
   rm = {
     ...rm,
     docs: rm.docs || [],
@@ -430,40 +439,38 @@ function applyMeta(p: Project, rm: Meta, unchanged: boolean) {
   for (const [k, v] of Object.entries(rm.tomb || {})) tomb[k] = Math.max(tomb[k] || 0, v)
   for (const k in tomb) if (tomb[k] < Date.now() - 90 * 864e5) delete tomb[k]
   if (p.cloud) p.cloud.tomb = tomb
-  const running = new Set(p.chats.filter((c) => c.running).map((c) => c.id))
-  const localChats = p.chats
-  const docStamp: Stamp<Project['docs'][0]> = (x) => x.updatedAt || 0
-  const taskStamp: Stamp<Task> = (x) => x.updatedAt || 0
-  const memStamp: Stamp<Project['memory'][0]> = (x) => x.at
-  const chatStamp: Stamp<Project['chats'][0]> = (x) => x.lastAt
-  if (unchanged && !running.size) {
-    const keep = <T extends { id: string }>(xs: T[], st: Stamp<T>) => xs.filter((x) => !(tomb[x.id] > st(x)))
-    p.docs = keep(rm.docs, docStamp)
-    p.tasks = keep(rm.tasks, taskStamp)
-    p.memory = keep(rm.memory, memStamp)
-    p.chats = keep(rm.chats, chatStamp)
-    p.desc = rm.desc
-    p.comments = rm.comments || p.comments
-    if (rm.deploy) p.deploy.auto = rm.deploy.auto
-  } else {
-    p.docs = mergeSet(p.docs, rm.docs, docStamp, tomb)
-    p.tasks = mergeSet(p.tasks, rm.tasks, taskStamp, tomb)
-    p.memory = mergeSet(p.memory, rm.memory, memStamp, tomb)
-    const rc = new Map(rm.chats.map((c) => [c.id, c]))
-    p.chats = mergeSet(localChats, rm.chats, chatStamp, tomb).map((c) => {
-      const l = localChats.find((x) => x.id === c.id)
-      const r = rc.get(c.id)
-      if (!l || !r || running.has(c.id)) return running.has(c.id) && l ? l : c
-      const msgs = [...new Map([...l.messages, ...r.messages].map((m) => [m.id, m])).values()].sort(
-        (a, b) => (a.at || 0) - (b.at || 0),
-      )
-      return {
-        ...(chatStamp(r) > chatStamp(l) ? r : l),
-        lastAt: Math.max(l.lastAt, r.lastAt),
-        messages: msgs,
-      }
-    })
-    p.comments = mergeSet(p.comments || [], rm.comments || [], (c) => c.at, tomb)
+  let conflicts = 0
+  const docs = mergeRecords(p.docs, rm.docs, ancestor?.docs, tomb, (x) => x.updatedAt || 0)
+  p.docs = docs.records
+  conflicts += docs.conflicts
+  const tasks = mergeRecords(p.tasks, rm.tasks, ancestor?.tasks, tomb, (x) => x.updatedAt || 0)
+  p.tasks = tasks.records
+  conflicts += tasks.conflicts
+  const memory = mergeRecords(p.memory, rm.memory, ancestor?.memory, tomb, (x) => x.at)
+  p.memory = memory.records
+  conflicts += memory.conflicts
+  const chats = mergeRecords(p.chats, rm.chats, ancestor?.chats, tomb, (x) => x.lastAt)
+  p.chats = chats.records.map((c) => ({ ...c, messages: byAt(c.messages, (m) => m.at || 0) }))
+  conflicts += chats.conflicts
+  const comments = mergeRecords(p.comments || [], rm.comments || [], ancestor?.comments, tomb, (x) => x.at)
+  p.comments = comments.records
+  conflicts += comments.conflicts
+  const scalarConflicts: Record<string, unknown> = {}
+  for (const key of ['desc', 'icon', 'template', 'tools'] as const) {
+    if (rm[key] === undefined) continue
+    const merged = mergeValue(p[key], rm[key], ancestor?.[key])
+    if (merged.conflict) scalarConflicts[key] = rm[key]
+    else Object.assign(p, { [key]: merged.value })
+  }
+  if (rm.deploy) {
+    const auto = mergeValue(p.deploy.auto, rm.deploy.auto, ancestor?.deploy?.auto)
+    if (auto.conflict) scalarConflicts['deploy.auto'] = rm.deploy.auto
+    else p.deploy.auto = auto.value as boolean
+  }
+  if (Object.keys(scalarConflicts).length) {
+    const path = recoveryPath('metadata', 'cloud.json', Object.keys(p.files), p.dirs)
+    p.files[path] = JSON.stringify({ reason: 'Конфликт полей проекта', remote: scalarConflicts }, null, 2)
+    conflicts++
   }
   p.taskSeq = Math.max(p.taskSeq, rm.taskSeq)
   /* две задачи с одним номером (создали одновременно) — более поздней даём новый */
@@ -477,6 +484,49 @@ function applyMeta(p: Project, rm: Meta, unchanged: boolean) {
   }
   if (rm.deploy) p.deploy.runs = mergeRuns(p.deploy.runs, rm.deploy.runs)
   if (p.cloud) p.cloud.team = mergeHistory(p.cloud.team || [], rm.history || [])
+  return conflicts
+}
+
+interface CloudLocal {
+  files: Record<string, string>
+  dirs: string[]
+  meta: Meta
+}
+interface CloudAck {
+  base: Base
+  texts?: Record<string, string>
+}
+const cloudJournal = createSyncJournal<CloudAck, CloudLocal>()
+const cloudJournalKey = (cp: string) => 'tf-cloud-intent:' + cp
+const localCloud = (p: Project): CloudLocal => ({
+  files: { ...p.files },
+  dirs: normalizeDirs(p.dirs),
+  meta: exportMeta(p, false),
+})
+function recoverCloudLocal(p: Project, intent: SyncIntent<CloudAck, CloudLocal>, uid: string) {
+  const desired = intent.local,
+    meta = fromWire(desired.meta, uid)
+  Object.assign(p, fromMeta(meta))
+  p.files = { ...desired.files }
+  p.dirs = [...desired.dirs]
+  if (p.cloud) {
+    p.cloud.tomb = { ...(meta.tomb || {}) }
+    p.cloud.team = meta.history || p.cloud.team
+  }
+}
+function preserveAmbiguousCloud(p: Project, intent: SyncIntent<CloudAck, CloudLocal>) {
+  const text = JSON.stringify(
+    {
+      reason:
+        'Возраст snapshot или новые runtime-правки не разрешают replay. Live не изменён; проверь сохранённый local intent.',
+      desired: intent.local,
+      prior: intent.prior,
+    },
+    null,
+    2,
+  )
+  if (!Object.values(p.files).includes(text))
+    p.files[recoveryPath('metadata', 'journal-recovery.json', Object.keys(p.files), p.dirs)] = text
 }
 
 /** один проход: забрать чужое → слить → отправить своё. true — сервер ушёл вперёд, нужно повторить сразу */
@@ -485,15 +535,48 @@ async function tickOnce(pid: string): Promise<boolean> {
   const uid = myUid()
   if (!p0?.cloud || !uid || !getToken() || !serverOnline()) return false
   const cp = p0.cloud.pid
+  const token = getToken(),
+    backend = useBackend.getState().base
+  const sameContext = () => {
+    const p = S().projects.find((x) => x.id === pid)
+    return (
+      p?.cloud?.pid === cp &&
+      myUid() === uid &&
+      getToken() === token &&
+      useBackend.getState().base === backend
+    )
+  }
   setCS(pid, { ...(cloudState.get(pid) || { at: 0 }), syncing: true })
   let retry = false
   try {
-    let base = loadBase(cp) || {
-      rev: p0.cloud.rev,
-      files: hashes(p0.files),
-      meta: fnv(JSON.stringify(exportMeta(p0))),
+    // No checkpoint is not proof that the current edits are a common ancestor.
+    const journalKey = cloudJournalKey(cp),
+      scope = JSON.stringify([backend, uid, cp])
+    const loaded = await cloudJournal.load(journalKey)
+    if (!sameContext()) return false
+    let intent = loaded.intent
+    if (intent && intent.scope !== scope)
+      throw new Error('Ack journal принадлежит другому контексту; требуется восстановление')
+    if (intent && journalReplayPolicy(intent, loaded.recovered) === 'ambiguous') {
+      if (!intent.recoveryBlocked) {
+        intent = { ...intent, recoveryBlocked: true }
+        await cloudJournal.save(journalKey, intent, true)
+        if (!sameContext()) return false
+      }
+      S().up((p) => preserveAmbiguousCloud(p, intent!), pid)
+      S().toast({
+        title: 'Требуется проверка journal recovery',
+        desc: 'Live оставлен без замены. Другая версия сохранена в metadata.journal-recovery.json. Облачный clean checkpoint не продвинут.',
+        icon: 'warn',
+        tone: 'warn',
+      })
+      await persistence.flushPersistence()
+      throw new Error('Неоднозначное journal recovery: сохранил обе версии, автоматический replay остановлен')
     }
-    let bt = getTxt(cp) ?? (loadBase(cp) ? undefined : { ...p0.files })
+    if (loaded.recovered && intent && journalReplayPolicy(intent, loaded.recovered) === 'replay')
+      S().up((p) => recoverCloudLocal(p, intent!, uid), pid)
+    let base = intent?.ack.base || loadBase(cp) || { rev: 0, files: {}, meta: '' }
+    let bt = intent?.ack.texts || getTxt(cp)
     const r = await api<{
       same?: true
       rev: number
@@ -501,12 +584,18 @@ async function tickOnce(pid: string): Promise<boolean> {
       dirs?: string[]
       meta?: Meta | null
       by?: { id: string; name: string }
-    }>('GET', `/api/team/${encodeURIComponent(cp)}?since=${base.rev}`)
+    }>('GET', `/api/team/${encodeURIComponent(cp)}?since=${intent?.phase === 'prepared' ? 0 : base.rev}`)
+    if (!sameContext()) return false
     let rev = base.rev
     if (!r.same && r.files) {
       /* ← чужие изменения */
       const remoteFiles = r.files
-      const bh = base.files
+      const beforeMerge = localCloud(S().projects.find((x) => x.id === pid)!)
+      const requestLocal = intent?.phase === 'prepared' ? intent.prior : localCloud(p0)
+      const bh = undoAncestor(base.files, hashes(requestLocal.files), hashes(beforeMerge.files)) as Record<
+        string,
+        string
+      >
       const who = r.by?.name || 'участник'
       const applied: string[] = [],
         merged: string[] = [],
@@ -538,17 +627,43 @@ async function tickOnce(pid: string): Promise<boolean> {
             p.files[k] = m.text
             ;(m.conflict ? conflicts : merged).push(k)
           } else {
-            p.files[k + '.cloud'] = remoteFiles[k]
+            const copy = recoveryPath(
+              k,
+              'cloud',
+              [...Object.keys(p.files), ...Object.keys(remoteFiles), ...Object.keys(bh)],
+              [...p.dirs, ...(r.dirs || [])],
+            )
+            p.files[copy] = remoteFiles[k]
             copies.push(k)
           } /* нет общего предка — сохраняем обе версии */
         }
-        for (const d of r.dirs || []) if (!p.dirs.includes(d)) p.dirs.push(d)
+        p.dirs = mergeDirs(p.dirs, r.dirs || [], base.dirs, requestLocal.dirs)
+        // A remotely removed empty directory cannot hide a surviving local file's parent.
+        for (const file of Object.keys(p.files)) {
+          const parts = file.split('/')
+          parts.pop()
+          for (let n = 1; n <= parts.length; n++) {
+            const dir = parts.slice(0, n).join('/')
+            if (!p.dirs.includes(dir)) p.dirs.push(dir)
+          }
+        }
       }, pid)
       const rm = r.meta ? fromWire(r.meta, uid) : null
       if (rm) {
-        const cur = S().projects.find((p) => p.id === pid)!
-        const unchanged = fnv(JSON.stringify(exportMeta(cur))) === base.meta
-        S().up((p) => applyMeta(p, rm, unchanged), pid)
+        let metaConflicts = 0
+        const ancestorWire = undoAncestor(base.metadata, requestLocal.meta, beforeMerge.meta) as
+          Meta | undefined
+        const ancestor = ancestorWire ? fromWire(ancestorWire, uid) : undefined
+        S().up((p) => {
+          metaConflicts = applyMeta(p, rm, ancestor)
+        }, pid)
+        if (metaConflicts)
+          S().toast({
+            title: 'Конфликт метаданных команды',
+            desc: 'Независимые поля слиты; пересекающиеся правки сохранены конфликтными копиями. Проверь документы, задачи, память и чаты.',
+            icon: 'warn',
+            tone: 'warn',
+          })
       }
       const st = S()
       if (applied.length || merged.length) {
@@ -589,14 +704,54 @@ async function tickOnce(pid: string): Promise<boolean> {
           tone: 'warn',
         })
       rev = r.rev
-      base = { rev, files: hashes(remoteFiles), meta: r.meta ? fnv(JSON.stringify(r.meta)) : base.meta }
+      base = {
+        rev,
+        files: hashes(remoteFiles),
+        meta: r.meta ? fnv(JSON.stringify(r.meta)) : base.meta,
+        metadata: r.meta || base.metadata,
+        dirs: normalizeDirs(r.dirs || []),
+      }
       bt = remoteFiles
+      const local = localCloud(S().projects.find((x) => x.id === pid)!)
+      intent = {
+        phase: 'accepted',
+        scope,
+        ack: { base, texts: bt },
+        prior:
+          intent?.prior ||
+          (JSON.stringify(beforeMerge) !== JSON.stringify(requestLocal) ? requestLocal : local),
+        local,
+      }
+      await cloudJournal.save(journalKey, intent)
+      if (!sameContext()) return false
     }
     /* → наши изменения */
     const p = S().projects.find((x) => x.id === pid)!
     if (hasRunning(p)) {
+      const metaAtCheckpoint = JSON.stringify(exportMeta(p))
+      try {
+        await persistence.flushPersistence()
+      } catch (error) {
+        if (intent && sameContext())
+          await cloudJournal.save(journalKey, {
+            ...intent,
+            local: localCloud(S().projects.find((x) => x.id === pid)!),
+          })
+        throw error
+      }
+      if (!sameContext()) return false
+      const latest = S().projects.find((x) => x.id === pid)!
+      if (
+        latest.files !== p.files ||
+        latest.dirs !== p.dirs ||
+        JSON.stringify(exportMeta(latest)) !== metaAtCheckpoint
+      ) {
+        if (intent) await cloudJournal.save(journalKey, { ...intent, local: localCloud(latest) })
+        return true
+      }
       saveBase(cp, base)
       if (bt) setTxt(cp, bt)
+      if (intent) await cloudJournal.save(journalKey, null)
       return false
     }
     const out: Record<string, string> = { ...p.files }
@@ -609,30 +764,72 @@ async function tickOnce(pid: string): Promise<boolean> {
     const sameFiles =
       Object.keys(fh).length === Object.keys(base.files).length &&
       Object.entries(fh).every(([k, v]) => base.files[k] === v)
-    if (!sameFiles || mh !== base.meta) {
+    const dirs = normalizeDirs(p.dirs)
+    const sameDirs =
+      base.dirs !== undefined && JSON.stringify(dirs) === JSON.stringify(normalizeDirs(base.dirs))
+    if (!sameFiles || mh !== base.meta || !sameDirs) {
+      const prior = localCloud(p)
+      intent = { phase: 'prepared', scope, ack: { base, texts: bt }, prior, local: prior }
+      await cloudJournal.save(journalKey, intent)
+      if (!sameContext()) return false
       try {
         const put = await api<{ rev: number }>('PUT', `/api/team/${encodeURIComponent(cp)}`, {
           baseRev: rev,
           files: out,
-          dirs: p.dirs,
+          dirs,
           meta,
         })
         rev = put.rev
-        base = { rev, files: fh, meta: mh }
+        base = { rev, files: fh, meta: mh, metadata: meta, dirs }
         bt = out
+        if (!sameContext()) return false
+        intent = {
+          ...intent,
+          phase: 'accepted',
+          ack: { base, texts: bt },
+          local: localCloud(S().projects.find((x) => x.id === pid)!),
+        }
+        await cloudJournal.save(journalKey, intent)
       } catch (e) {
+        if (sameContext() && intent) {
+          intent = { ...intent, local: localCloud(S().projects.find((x) => x.id === pid)!) }
+          await cloudJournal.save(journalKey, intent)
+        }
         if ((e as ApiError).status !== 409) throw e
         retry = true /* на сервере новее — забираем и сливаем прямо сейчас */
       }
     }
+    try {
+      await persistence.flushPersistence()
+    } catch (error) {
+      if (intent && sameContext())
+        await cloudJournal.save(journalKey, {
+          ...intent,
+          local: localCloud(S().projects.find((x) => x.id === pid)!),
+        })
+      throw error
+    }
+    if (!sameContext()) return false
+    const current = S().projects.find((x) => x.id === pid)!
+    // Changes during PUT/flush are not the acknowledged generation. Re-fetch from the old checkpoint.
+    if (
+      current.files !== p.files ||
+      JSON.stringify(exportMeta(current)) !== JSON.stringify(meta) ||
+      JSON.stringify(normalizeDirs(current.dirs)) !== JSON.stringify(dirs)
+    ) {
+      if (intent) await cloudJournal.save(journalKey, { ...intent, local: localCloud(current) })
+      return true
+    }
     saveBase(cp, base)
     if (bt) setTxt(cp, bt)
+    if (intent) await cloudJournal.save(journalKey, null)
     if (p.cloud?.rev !== rev)
       S().up((x) => {
         if (x.cloud) x.cloud.rev = rev
       }, pid)
     setCS(pid, { at: Date.now() })
   } catch (e) {
+    if (!sameContext()) return false
     const err = e as ApiError
     if (err.status === 404) {
       S().up((x) => {
@@ -837,10 +1034,11 @@ export function startCloud() {
     if (!p?.cloud) return
     const sig = [
       p.files,
+      p.dirs,
       p.docs,
       p.tasks,
       p.memory,
-      p.chats.length,
+      p.chats,
       p.comments,
       p.deploy.runs,
       p.versions.length,

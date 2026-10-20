@@ -57,7 +57,12 @@ function McpTab() {
   const [st, setSt] = useState<McpStatus | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState('')
-  const [confirm, setConfirm] = useState('')
+  const [confirm, setConfirm] = useState<{
+    name: string
+    hash: string
+    desc: string
+    overrides: string[]
+  } | null>(null)
   const [tools, setTools] = useState<Record<string, McpTool[] | string>>({})
   const [adding, setAdding] = useState(false)
   const key = useMemo(
@@ -78,9 +83,10 @@ function McpTab() {
     }
   }
   useEffect(() => {
+    setConfirm(null)
     void load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, online])
+  }, [p.id, key, online])
 
   const run = async (name: string, fn: () => Promise<void>) => {
     if (busy) return
@@ -137,32 +143,54 @@ function McpTab() {
             )}
           </div>
           <code className="ec-cmd">{s.desc}</code>
-          {confirm === s.name && (
+          {s.overrides.map((line) => (
+            <div className="hint" key={line}>
+              {line}
+            </div>
+          ))}
+          {s.runningHash && s.runningHash !== s.hash && (
+            <div className="ext-note warn">
+              Запущена другая версия конфигурации. Остановка и отзыв относятся к запущенной версии.
+            </div>
+          )}
+          {confirm?.name === s.name && (
             <div className="ext-note warn">
               Сервер запустится на этом компьютере <b>с твоими правами</b> и сможет читать и менять файлы и
               ходить в сеть — как любая программа. Разрешай, только если доверяешь тому, кто написал эту
-              команду. Изменишь команду — разрешение сбросится.
+              команду. Изменишь конфигурацию — разрешение сбросится.
+              <code className="ec-cmd">{confirm.desc}</code>
+              <div className="hint">Версия: {confirm.hash}</div>
+              {confirm.overrides.map((line) => (
+                <div className="hint" key={line}>
+                  {line}
+                </div>
+              ))}
               <div className="ec-act">
                 <button
                   className="btn sm pri"
                   onClick={() =>
                     void run(s.name, async () => {
-                      await mcpApprove(p, s.name, true)
-                      setConfirm('')
+                      await mcpApprove(p, s.name, true, confirm.hash)
+                      setConfirm(null)
                     })
                   }
                 >
                   Да, разрешить
                 </button>
-                <button className="btn sm gho" onClick={() => setConfirm('')}>
+                <button className="btn sm gho" onClick={() => setConfirm(null)}>
                   Отмена
                 </button>
               </div>
             </div>
           )}
           <div className="ec-act">
-            {!s.disabled && !s.approved && confirm !== s.name && (
-              <button className="btn sm pri" onClick={() => setConfirm(s.name)}>
+            {!s.disabled && !s.approved && confirm?.name !== s.name && (
+              <button
+                className="btn sm pri"
+                onClick={() =>
+                  setConfirm({ name: s.name, hash: s.hash, desc: s.desc, overrides: [...s.overrides] })
+                }
+              >
                 Разрешить…
               </button>
             )}
@@ -183,15 +211,21 @@ function McpTab() {
             {s.running && (
               <button
                 className="btn sm gho"
-                onClick={() => void run(s.name, () => mcpStop(p, s.name).then(() => undefined))}
+                onClick={() =>
+                  void run(s.name, () => mcpStop(p, s.name, s.runningHash || s.hash).then(() => undefined))
+                }
               >
                 Остановить
               </button>
             )}
-            {s.approved && (
+            {(s.approved || s.running) && (
               <button
                 className="btn sm gho"
-                onClick={() => void run(s.name, () => mcpApprove(p, s.name, false).then(() => undefined))}
+                onClick={() =>
+                  void run(s.name, () =>
+                    mcpApprove(p, s.name, false, s.runningHash || s.hash).then(() => undefined),
+                  )
+                }
               >
                 Отозвать
               </button>

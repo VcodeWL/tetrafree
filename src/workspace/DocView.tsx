@@ -24,6 +24,7 @@ const TYPES: { t: BlockType; label: string; icon: IconName; hint: string }[] = [
 const isText = (b: Block) => b.type !== 'table' && b.type !== 'image'
 
 export function DocView({ doc }: { doc: Doc }) {
+  const pid = useStore((x) => x.projectId)
   const liveTeam = useStore((x) => {
     const p = x.projects.find((q) => q.id === x.projectId)
     return !!p?.cloud
@@ -37,7 +38,9 @@ export function DocView({ doc }: { doc: Doc }) {
   const bm = useMenu<string>()
   const toc = useMenu()
   const blocks = doc.blocks
-  const save = (b: Block[]) => st().updateDoc(doc.id, { blocks: b })
+  const save = (b: Block[]) => {
+    if (pid) st().updateDoc(doc.id, { blocks: b }, pid)
+  }
   const patch = (id: string, p: Partial<Block>) => save(blocks.map((b) => (b.id === id ? { ...b, ...p } : b)))
   const insertAfter = (id: string, nb: Block) => {
     const i = blocks.findIndex((b) => b.id === id)
@@ -57,31 +60,40 @@ export function DocView({ doc }: { doc: Doc }) {
     if (prev) setFocus({ id: prev.id, caret: 'end' })
   }
   const fileIn = useRef<HTMLInputElement>(null)
-  const pickFor = useRef<string | null>(null)
+  const pickFor = useRef<((files: File[]) => void) | null>(null)
   /** свежие блоки: после await (сжатие картинки) замыкание `blocks` уже устарело */
   const fresh = () =>
     st()
-      .projects.find((q) => q.id === st().projectId)
-      ?.docs.find((d) => d.id === doc.id)?.blocks || []
-  const addImages = async (files: File[], afterId: string | null, replaceId?: string) => {
+      .projects.find((q) => q.id === pid)
+      ?.docs.find((d) => d.id === doc.id)?.blocks
+  const addImages = async (
+    files: File[],
+    afterId: string | null,
+    replaceId?: string,
+    expectedReplacement?: string,
+  ) => {
     const imgs = files.filter(isImageFile)
-    if (!imgs.length) return
+    if (!imgs.length || !pid) return
+    // Замещение допустимо только для неизменившегося пустого блока из начала операции.
+    const replacement = replaceId ? fresh()?.find((b) => b.id === replaceId) : undefined
+    const replacementSnapshot = expectedReplacement ?? (replacement ? JSON.stringify(replacement) : undefined)
     let at = afterId
     for (const f of imgs) {
       try {
         const src = await shrinkImage(f)
         const cur = fresh()
+        if (!cur) throw new Error('Исходный проект или документ удалён')
         const nb: Block = { id: uid('b'), type: 'image', text: '', src }
         const rep = replaceId && cur.find((x) => x.id === replaceId)
-        if (rep) {
-          st().updateDoc(doc.id, { blocks: cur.map((x) => (x.id === rep.id ? { ...nb, id: x.id } : x)) })
-          replaceId = undefined
+        replaceId = undefined
+        if (rep && isText(rep) && !blockText(rep).trim() && JSON.stringify(rep) === replacementSnapshot) {
+          st().updateDoc(doc.id, { blocks: cur.map((x) => (x.id === rep.id ? { ...nb, id: x.id } : x)) }, pid)
           at = rep.id
         } else {
           const i = at ? cur.findIndex((x) => x.id === at) : cur.length - 1
           const n = [...cur]
           n.splice(i + 1, 0, nb)
-          st().updateDoc(doc.id, { blocks: n })
+          st().updateDoc(doc.id, { blocks: n }, pid)
           at = nb.id
         }
       } catch (e) {
@@ -125,7 +137,9 @@ export function DocView({ doc }: { doc: Doc }) {
           className="dtitle"
           value={doc.title}
           placeholder="Без названия"
-          onChange={(e) => st().updateDoc(doc.id, { title: e.target.value })}
+          onChange={(e) => {
+            if (pid) st().updateDoc(doc.id, { title: e.target.value }, pid)
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === 'ArrowDown') {
               e.preventDefault()
@@ -315,7 +329,7 @@ export function DocView({ doc }: { doc: Doc }) {
                     const t = blocks[i]
                     if (t) setFocus({ id: t.id, caret: dir < 0 ? 'end' : 'start' })
                   }}
-                  onPasteImage={(f) => void addImages(f, b.id, b.text ? undefined : b.id)}
+                  onPasteImage={(f) => void addImages(f, b.id, b.text ? undefined : b.id, JSON.stringify(b))}
                   onSlash={(el) => slash.open(el.getBoundingClientRect(), b.id)}
                 />
               )}
@@ -414,9 +428,15 @@ export function DocView({ doc }: { doc: Doc }) {
             label="Картинка"
             right="файл или Ctrl+V"
             onClick={() => {
-              pickFor.current = slash.st!.data
               const id = slash.st!.data
-              patch(id, { text: blocks.find((x) => x.id === id)!.text.replace(/^\/\S*/, '') })
+              // Выбор файла тоже может завершиться после смены проекта/документа.
+              const target = blocks.find((x) => x.id === id)!
+              const cleaned = { ...target, text: target.text.replace(/^\/\S*/, '') }
+              const replaceId = cleaned.text ? undefined : id
+              pickFor.current = (files) => {
+                void addImages(files, id, replaceId, JSON.stringify(cleaned))
+              }
+              patch(id, { text: cleaned.text })
               slash.close()
               fileIn.current?.click()
             }}
@@ -433,9 +453,9 @@ export function DocView({ doc }: { doc: Doc }) {
         onChange={(e) => {
           const fs = [...(e.target.files || [])]
           e.target.value = ''
-          const id = pickFor.current
+          const insert = pickFor.current
           pickFor.current = null
-          if (id) void addImages(fs, id, blocks.find((x) => x.id === id)?.text ? undefined : id)
+          insert?.(fs)
         }}
       />
       {bm.st && (

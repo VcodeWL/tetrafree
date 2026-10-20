@@ -123,7 +123,7 @@ export interface Actions {
   openFile: (path: string) => void
   setDirty: (path: string, content: string | null) => void
   toggleDir: (dir: string) => void
-  createChat: (o: { title: string; creator: Actor; agents: ChatAgent[]; first?: Message[] }) => ID
+  createChat: (o: { title: string; creator: Actor; agents: ChatAgent[]; first?: Message[] }, pid?: ID) => ID
   renameChat: (id: ID, title: string) => void
   duplicateChat: (id: ID) => ID | null
   deleteChat: (id: ID) => void
@@ -131,12 +131,12 @@ export interface Actions {
   patchMsg: (chatId: ID, msgId: ID, patch: Partial<Message>, pid?: ID) => void
   setChat: (chatId: ID, patch: Partial<Chat>, pid?: ID) => void
   setDraft: (chatId: ID, v: string) => void
-  createDoc: () => ID
+  createDoc: (pid?: ID) => ID
   /** добавить готовые документы (импорт); открывает первый */
-  addDocs: (docs: { title: string; blocks: Block[] }[]) => void
-  updateDoc: (id: ID, patch: { title?: string; blocks?: Block[] }) => void
-  deleteDoc: (id: ID) => void
-  saveTask: (t: Partial<Task> & { title: string }) => ID
+  addDocs: (docs: { title: string; blocks: Block[] }[], pid?: ID) => void
+  updateDoc: (id: ID, patch: { title?: string; blocks?: Block[] }, pid?: ID) => void
+  deleteDoc: (id: ID, pid?: ID) => void
+  saveTask: (t: Partial<Task> & { title: string }, pid?: ID) => ID
   moveTask: (id: ID, status: TaskStatus, beforeId?: ID | null) => void
   deleteTask: (id: ID) => void
   setTaskView: (v: Persisted['taskView']) => void
@@ -174,12 +174,12 @@ export interface Actions {
   setSideHidden: (v: boolean) => void
   remember: (m: Omit<Memory, 'id' | 'at'>, pid?: ID) => void
   forget: (id: ID) => void
-  editMemory: (id: ID, patch: Partial<Pick<Memory, 'text' | 'kind'>>) => void
-  restoreMemory: (m: Memory) => void
+  editMemory: (id: ID, patch: Partial<Pick<Memory, 'text' | 'kind'>>, pid?: ID) => void
+  restoreMemory: (m: Memory, pid?: ID) => void
   addComment: (c: { file: string; line: number; anchor: string; text: string }) => void
   toggleComment: (id: ID) => void
   deleteComment: (id: ID) => void
   importProject: (p: Project) => void
   restoreProject: (p: Project, index: number) => void
-  restoreChat: (c: Chat, index: number) => void
+  restoreChat: (c: Chat, index: number, pid?: ID) => void
 }

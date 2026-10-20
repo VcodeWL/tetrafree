@@ -18,10 +18,10 @@ export const chatsActions = (
   | 'setDraft'
   | 'restoreChat'
 > => ({
-  createChat: ({ title, creator, agents, first }) => {
+  createChat: ({ title, creator, agents, first }, pid) => {
     const id = 'c' + uid()
     set((s) => {
-      const p = find(s)
+      const p = find(s, pid)
       if (!p) return
       const who =
         creator.kind === 'agent'
@@ -41,7 +41,7 @@ export const chatsActions = (
           ...(first || []),
         ],
       })
-      s.center = { kind: 'chat', id }
+      if (s.projectId === p.id) s.center = { kind: 'chat', id }
     })
     return id
   },
@@ -91,7 +91,11 @@ export const chatsActions = (
   renameChat: (id, title) =>
     set((s) => {
       const c = chatOf(find(s), id)
-      if (c) c.title = title
+      if (c && c.title !== title) {
+        c.title = title
+        /* lastAt — последняя активность чата, включая переименование. */
+        c.lastAt = Math.max(Date.now(), c.lastAt + 1)
+      }
     }),
   deleteChat: (id) =>
     set((s) => {
@@ -108,7 +112,7 @@ export const chatsActions = (
       const c = chatOf(find(s, pid), chatId)
       if (!c) return
       c.messages.push(m)
-      c.lastAt = m.at
+      c.lastAt = Math.max(m.at, c.lastAt + 1)
       const viewing =
         s.screen === 'workspace' &&
         s.center.kind === 'chat' &&
@@ -132,13 +136,17 @@ export const chatsActions = (
       s.drafts[chatId] = v
     }),
 
-  restoreChat: (c, index) =>
+  restoreChat: (c, index, pid) =>
     set((s) => {
-      const p = find(s)
+      const p = find(s, pid)
       if (p && !p.chats.some((x) => x.id === c.id)) {
         if (p.cloud?.tomb) delete p.cloud.tomb[c.id]
-        p.chats.splice(Math.min(index, p.chats.length), 0, { ...c, running: false, lastAt: Date.now() })
-        s.center = { kind: 'chat', id: c.id }
+        p.chats.splice(Math.min(index, p.chats.length), 0, {
+          ...c,
+          running: false,
+          lastAt: Math.max(Date.now(), c.lastAt + 1),
+        })
+        if (s.projectId === p.id) s.center = { kind: 'chat', id: c.id }
       }
     }),
 })

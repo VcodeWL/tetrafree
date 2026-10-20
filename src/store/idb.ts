@@ -8,25 +8,44 @@ let opening: Promise<IDBDatabase | null> | null = null
 
 function open(): Promise<IDBDatabase | null> {
   if (opening) return opening
-  opening = new Promise((resolve) => {
+  const attempt = new Promise<IDBDatabase | null>((resolve) => {
+    let settled = false
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) {
+        db?.close()
+        return
+      }
+      settled = true
+      resolve(db)
+    }
     try {
-      if (typeof indexedDB === 'undefined') return resolve(null)
+      if (typeof indexedDB === 'undefined') return finish(null)
       const rq = indexedDB.open(DB, 1)
       rq.onupgradeneeded = () => {
         if (!rq.result.objectStoreNames.contains(ST)) rq.result.createObjectStore(ST)
       }
       rq.onsuccess = () => {
         const db = rq.result
-        db.onversionchange = () => db.close()
-        resolve(db)
+        db.onversionchange = () => {
+          db.close()
+          if (opening === attempt) opening = null
+        }
+        db.onclose = () => {
+          if (opening === attempt) opening = null
+        }
+        finish(db)
       }
-      rq.onerror = () => resolve(null)
-      rq.onblocked = () => resolve(null)
+      rq.onerror = () => finish(null)
+      rq.onblocked = () => finish(null)
     } catch {
-      resolve(null)
+      finish(null)
     }
   })
-  return opening
+  opening = attempt
+  void attempt.then((db) => {
+    if (!db && opening === attempt) opening = null
+  })
+  return attempt
 }
 
 /** true, если IndexedDB открылся и им можно пользоваться */
@@ -46,6 +65,7 @@ function run<T>(mode: IDBTransactionMode, f: (s: IDBObjectStore) => IDBRequest<T
           tx.onerror = () => reject(tx.error || new Error('Ошибка IndexedDB'))
           tx.onabort = () => reject(tx.error || new Error('Транзакция IndexedDB прервана'))
         } catch (e) {
+          if (e instanceof DOMException && e.name === 'InvalidStateError') opening = null
           reject(e)
         }
       }),

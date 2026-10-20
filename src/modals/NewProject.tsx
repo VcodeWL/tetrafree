@@ -1,5 +1,6 @@
 /* Новый проект: настоящая папка на диске. Либо создаём новую (родительская папка + имя), либо открываем существующую. */
 import { repoName } from '../lib/paths'
+import { projectPathKey } from '../store/slices/projects'
 import { ServerHelp } from '../components/ServerHelp'
 import { useEffect, useRef, useState } from 'react'
 import { useStore, toast } from '../store'
@@ -44,11 +45,24 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 
   const sep = info?.sep || '/'
   const [mode, setMode] = useState<'new' | 'open' | 'clone'>(m0)
   const [name, setName] = useState('')
-  const [parent, setParent] = useState(() => localStorage.getItem(LAST) || '')
+  const [parent, setParent] = useState(() => {
+    try {
+      return localStorage.getItem(LAST) || ''
+    } catch {
+      return ''
+    }
+  })
   const [folder, setFolder] = useState('') // режим «открыть»
   const [url, setUrl] = useState('') // режим «клонировать»
   const [tpl, setTpl] = useState('Пустой')
   const [busy, setBusy] = useState(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const [picking, setPicking] = useState<null | 'parent' | 'folder'>(null)
   const [chk, setChk] = useState<FolderCheck | null>(null)
   const [checking, setChecking] = useState(false)
@@ -67,7 +81,7 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 
   const target = isNew ? (parent && s ? join(parent.trim(), s, sep) : '') : folder.trim()
   /* имя папки для нового проекта — латиница; открытая папка сохраняет своё настоящее название */
   const projName = isNew ? s : (name.trim() || baseName(folder)).slice(0, 60)
-  const dup = projects.find((p) => p.path && p.path.replace(/[\\/]+$/, '') === target.replace(/[\\/]+$/, ''))
+  const dup = projects.find((p) => p.path && projectPathKey(p.path) === projectPathKey(target))
   const nameErr =
     isNew && name.trim() && !s
       ? 'Используй буквы, цифры и дефисы'
@@ -79,8 +93,9 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 
   const seq = useRef(0)
   useEffect(() => {
     setChk(null)
+    const sequence = seq
+    const my = ++sequence.current
     if (!online || !target) return
-    const my = ++seq.current
     const t = setTimeout(() => {
       Promise.race([
         bCheckFolder(target),
@@ -91,7 +106,10 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 
         .then((r) => my === seq.current && setChk(r))
         .catch((e) => my === seq.current && setChk({ ok: false, reason: (e as Error).message }))
     }, 250)
-    return () => clearTimeout(t)
+    return () => {
+      ++sequence.current
+      clearTimeout(t)
+    }
   }, [target, online])
 
   const nonEmpty = isNew && !!chk?.ok && !!chk.entries
@@ -113,46 +131,72 @@ export function NewProjectModal({ mode: m0 = 'new' }: { mode?: 'new' | 'open' | 
   const create = async () => {
     if (!ready || !chk?.dir) return
     setBusy(true)
-    if (isNew) {
-      try {
-        localStorage.setItem(LAST, parent.trim())
-      } catch {
-        /* хранилище недоступно */
+    try {
+      if (isNew) {
+        try {
+          localStorage.setItem(LAST, parent.trim())
+        } catch {
+          /* хранилище недоступно */
+        }
       }
-    }
-    if (mode === 'clone') {
-      try {
-        const c = await bClone(url, chk.dir)
-        if (!c.ok) {
+      if (mode === 'clone') {
+        try {
+          const c = await bClone(url, chk.dir)
+          if (!mounted.current) return
+          if (!c.ok) {
+            setBusy(false)
+            toast({ title: 'Не удалось клонировать', desc: c.reason, icon: 'warn', tone: 'err' })
+            return
+          }
+        } catch (e) {
+          if (!mounted.current) return
           setBusy(false)
-          toast({ title: 'Не удалось клонировать', desc: c.reason, icon: 'warn', tone: 'err' })
+          toast({ title: 'Нет связи с сервером', desc: (e as Error).message, icon: 'warn', tone: 'err' })
           return
         }
-      } catch (e) {
-        setBusy(false)
-        toast({ title: 'Нет связи с сервером', desc: (e as Error).message, icon: 'warn', tone: 'err' })
+      }
+      if (!mounted.current) return
+      const id = st().createProject({
+        name: projName,
+        path: chk.dir,
+        template: mode === 'new' ? tpl : 'Пустой',
+        adopt: mode !== 'new',
+      })
+      const r = await reconcile(id, { quiet: true })
+      if (!r) {
+        toast({
+          title: 'Проект добавлен, но папка ещё не синхронизирована',
+          desc:
+            useBackend.getState().lastError ||
+            'Проверь связь с сервером и включи синхронизацию. Локальная запись проекта сохранена.',
+          icon: 'warn',
+          tone: 'warn',
+          action: { label: 'Повторить', run: () => void reconcile(id) },
+        })
         return
       }
-    }
-    const id = st().createProject({
-      name: projName,
-      path: chk.dir,
-      template: mode === 'new' ? tpl : 'Пустой',
-      adopt: mode !== 'new',
-    })
-    const r = await reconcile(id, { quiet: true })
-    if (mode !== 'new')
+      if (mode !== 'new')
+        toast({
+          title: `${mode === 'clone' ? 'Клонировано' : 'Открыто'}: ${projName}`,
+          desc: r
+            ? r.truncated
+              ? `Папка большая — прочитана часть файлов (${nFiles(r.pulled)})`
+              : `Прочитано файлов: ${r.pulled}`
+            : chk.dir,
+          icon: r?.truncated ? 'warn' : 'check',
+          tone: r?.truncated ? 'warn' : 'ok',
+        })
+      else toast({ title: `Проект ${projName} создан`, desc: chk.dir, icon: 'check', tone: 'ok' })
+    } catch (e) {
       toast({
-        title: `${mode === 'clone' ? 'Клонировано' : 'Открыто'}: ${projName}`,
-        desc: r
-          ? r.truncated
-            ? `Папка большая — прочитана часть файлов (${nFiles(r.pulled)})`
-            : `Прочитано файлов: ${r.pulled}`
-          : chk.dir,
-        icon: r?.truncated ? 'warn' : 'check',
-        tone: r?.truncated ? 'warn' : 'ok',
+        title: 'Не удалось открыть проект',
+        desc: e instanceof Error ? e.message : String(e),
+        icon: 'warn',
+        tone: 'err',
       })
-    else toast({ title: `Проект ${projName} создан`, desc: chk.dir, icon: 'check', tone: 'ok' })
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
   }
 
   if (picking)
@@ -538,13 +582,23 @@ export function ProjectFolderModal({ id }: { id: string }) {
   const [sel, setSel] = useState<string | null>(null)
   const [chk, setChk] = useState<FolderCheck | null>(null)
   const [busy, setBusy] = useState(false)
-  const taken = useStore((s) => s.projects.find((x) => x.id !== id && !!sel && x.path === sel))
+  const taken = useStore((s) =>
+    s.projects.find((x) => x.id !== id && !!sel && projectPathKey(x.path) === projectPathKey(sel)),
+  )
   useEffect(() => {
     setChk(null)
+    let active = true
     if (sel)
       bCheckFolder(sel)
-        .then(setChk)
-        .catch((e) => setChk({ ok: false, reason: (e as Error).message }))
+        .then((r) => {
+          if (active) setChk(r)
+        })
+        .catch((e) => {
+          if (active) setChk({ ok: false, reason: (e as Error).message })
+        })
+    return () => {
+      active = false
+    }
   }, [sel])
   if (!p) return null
   if (!sel)
@@ -562,19 +616,43 @@ export function ProjectFolderModal({ id }: { id: string }) {
     ? `Эта папка уже занята проектом «${taken.name}»`
     : chk && !chk.ok
       ? chk.reason
-      : sel === p.path
+      : projectPathKey(sel) === projectPathKey(p.path)
         ? 'Это та же папка'
         : ''
   const go = async () => {
     if (!chk?.dir || err) return
     setBusy(true)
-    st().up((x) => {
-      x.path = chk.dir!
-    }, id)
-    forgetBase(id)
-    await reconcile(id, { quiet: true })
-    toast({ title: 'Папка проекта изменена', desc: chk.dir, icon: 'folder', tone: 'ok' })
-    st().closeModal()
+    try {
+      st().up((x) => {
+        x.path = chk.dir!
+      }, id)
+      forgetBase(id)
+      const result = await reconcile(id, { quiet: true })
+      if (!result) {
+        toast({
+          title: 'Путь изменён, но файлы ещё не синхронизированы',
+          desc:
+            useBackend.getState().lastError ||
+            'Включи синхронизацию и повтори сверку. Локальные файлы сохранены.',
+          icon: 'warn',
+          tone: 'warn',
+          action: { label: 'Повторить', run: () => void reconcile(id) },
+        })
+        st().closeModal()
+        return
+      }
+      toast({ title: 'Папка проекта изменена', desc: chk.dir, icon: 'folder', tone: 'ok' })
+      st().closeModal()
+    } catch (e) {
+      toast({
+        title: 'Не удалось сменить папку',
+        desc: e instanceof Error ? e.message : String(e),
+        icon: 'warn',
+        tone: 'err',
+      })
+    } finally {
+      setBusy(false)
+    }
   }
   return (
     <Modal label="Папка проекта" busy={busy}>

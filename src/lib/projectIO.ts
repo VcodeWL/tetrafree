@@ -3,6 +3,57 @@ import { docMd } from './docmd'
 import { makeZip, readZip } from './zip'
 import { emptyProject } from '../data/seed'
 import { uid, slug } from './util'
+import { clone } from './clone'
+import { agentPathError } from './paths'
+
+/** Копия — автономные данные, не ещё один клиент исходного облака/папки. */
+export function detachProject(p: Project): Project {
+  const c = clone(p)
+  delete c.cloud
+  delete c.mirror
+  c.path = ''
+  c.lanes = []
+  // Автозапуск — разрешение исходного проекта, не импортируем его молча.
+  c.deploy.auto = false
+  c.chats.forEach((chat) => {
+    chat.running = false
+    chat.agents.forEach((agent) => {
+      agent.sub = []
+    })
+    chat.messages.forEach((message) => {
+      if (message.kind !== 'agent') return
+      if (message.streaming) {
+        message.streaming = false
+        message.stopped = true
+        delete message.thinking
+      }
+      message.parts?.forEach((part) => {
+        if (part.k === 'file' && part.state === 'writing') {
+          part.state = 'error'
+          part.error = 'Выполнение прервано при копировании/импорте'
+        } else if (part.k === 'cmd' && part.state === 'running') part.state = 'error'
+      })
+    })
+  })
+  return c
+}
+
+function guardFiles(files: Record<string, string>) {
+  const seen = new Set<string>()
+  const names = new Set(Object.keys(files).map((path) => path.toLowerCase()))
+  for (const path of Object.keys(files)) {
+    const error = agentPathError(path)
+    if (error) throw new Error(error)
+    const lower = path.toLowerCase()
+    if (seen.has(lower)) throw new Error('В архиве совпадают имена файлов: ' + path)
+    seen.add(lower)
+    const parts = lower.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      const parent = parts.slice(0, i).join('/')
+      if (names.has(parent)) throw new Error('В архиве файл используется как папка: ' + path)
+    }
+  }
+}
 
 /* Экспорт: файлы репозитория + .tetra (история, чаты, память, доки, задачи). Секреты провайдеров не попадают. */
 export function exportProject(p: Project): Blob {
@@ -25,7 +76,7 @@ export function exportProject(p: Project): Blob {
     version: 1,
     exportedAt: new Date().toISOString(),
     generated,
-    project: { ...p, files: undefined, lanes: [] },
+    project: { ...detachProject(p), files: undefined },
   }
   files['.tetra/project.json'] = JSON.stringify(meta, null, 2)
   return makeZip(files)
@@ -35,6 +86,7 @@ export async function importProjectFile(file: File): Promise<Project> {
   const files = await readZip(await file.arrayBuffer())
   const metaRaw = files['.tetra/project.json']
   delete files['.tetra/project.json']
+  guardFiles(files)
   if (metaRaw) {
     const meta = JSON.parse(metaRaw)
     if (meta.format !== 'tetrafree-project') throw new Error('Неизвестный формат архива')
@@ -43,7 +95,7 @@ export async function importProjectFile(file: File): Promise<Project> {
     ;((meta.generated as string[]) || []).forEach((f) => {
       delete files[f]
     })
-    return { ...pr, files, dirs: dirsOf(files), memory: pr.memory || [] }
+    return detachProject({ ...pr, files, dirs: dirsOf(files), memory: pr.memory || [] })
   }
   /* обычный архив папки: создаём проект из файлов */
   const root = commonRoot(Object.keys(files))

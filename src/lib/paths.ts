@@ -18,15 +18,21 @@ export function checkPath(p: Pick<Project, 'files' | 'dirs'>, path: string, self
   const dev = parts.find((x) => RESERVED.test(x))
   if (dev) return `«${dev}» — зарезервированное имя Windows (CON, PRN, AUX, NUL, COM1–9, LPT1–9)`
   const lower = path.toLowerCase()
-  const clash = (x: string) => x !== self && !(self && x.startsWith(self + '/')) && x.toLowerCase() === lower
+  const own = self?.toLowerCase()
+  const moving = (x: string) => !!own && (x.toLowerCase() === own || x.toLowerCase().startsWith(own + '/'))
+  const clash = (x: string) => !moving(x) && x.toLowerCase() === lower
   if (Object.keys(p.files).some(clash) || p.dirs.some(clash)) return 'Такое имя уже занято'
   // нельзя сделать папкой путь, где уже лежит файл, и наоборот
   for (let i = 1; i < parts.length; i++) {
     const pre = parts.slice(0, i).join('/')
-    if (pre in p.files && pre !== self) return `«${pre}» — это файл, а не папка`
+    const ancestor = Object.keys(p.files).find((x) => !moving(x) && x.toLowerCase() === pre.toLowerCase())
+    if (ancestor) return `«${ancestor}» — это файл, а не папка`
   }
-  if (self && (path === self || path.startsWith(self + '/')))
-    return 'Нельзя переместить папку внутрь самой себя'
+  const descendant = [...Object.keys(p.files), ...p.dirs].find(
+    (x) => !moving(x) && x.toLowerCase().startsWith(lower + '/'),
+  )
+  if (descendant) return 'Такой путь уже используется как папка'
+  if (own && lower.startsWith(own + '/')) return 'Нельзя переместить папку внутрь самой себя'
   return null
 }
 

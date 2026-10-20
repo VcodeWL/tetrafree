@@ -138,9 +138,10 @@ test('migrate v5→v6 сохраняет абсолютный путь прое�
   assert.equal(r.model, 'k:gpt')
 })
 
-test('migrate из неизвестной версии не падает и даёт начальное состояние', () => {
-  const r = migrate({ junk: 1 }, 1) as unknown as { projects: unknown[] }
-  assert.ok(Array.isArray(r.projects))
+test('migrate неизвестной версии запрещает reset и сохраняет исходные данные', () => {
+  const old = { junk: 1 }
+  assert.throws(() => migrate(old, 1), /не поддерживается/)
+  assert.deepEqual(old, { junk: 1 })
 })
 
 test('merge: без входа открывается экран входа, на удалённый проект — лаунчер', () => {
@@ -198,8 +199,26 @@ test('сохранение: версии пакуются разницей и с
   const back = merge(saved, full())
   assert.deepEqual(back.projects[0].versions, cur.projects[0].versions)
 })
-test('migrate: данные схемы 6 принимаются как есть, из будущего — сбрасываются', () => {
+test('migrate: данные схемы 6 принимаются как есть, из будущего — защищены', () => {
   const old = { projects: [{ id: 'x', versions: [] }], people: {} }
   assert.equal(migrate(old, 6), old as never)
-  assert.deepEqual((migrate(old, 8) as unknown as { projects: unknown[] }).projects, [])
+  assert.throws(() => migrate(old, 8), /не поддерживается/)
+})
+
+test('hydration resets persisted running and streaming without discarding text', () => {
+  const s = full()
+  s.projects = [
+    {
+      id: 'p',
+      files: {},
+      versions: [],
+      chats: [{ id: 'c', running: true, messages: [{ kind: 'agent', text: 'partial', streaming: true }] }],
+    },
+  ] as never
+  const saved = partialize(s)
+  assert.equal(saved.projects[0].chats[0].running, false)
+  const reloaded = merge({ ...saved, projects: s.projects }, full())
+  assert.equal(reloaded.projects[0].chats[0].running, false)
+  assert.equal(reloaded.projects[0].chats[0].messages[0].text, 'partial')
+  assert.equal((reloaded.projects[0].chats[0].messages[0] as { streaming: boolean }).streaming, false)
 })

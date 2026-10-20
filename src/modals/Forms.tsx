@@ -22,6 +22,7 @@ import {
   type Provider,
   type ProviderKind,
   type TaskStatus,
+  type Task,
   type Tier,
 } from '../types'
 
@@ -309,19 +310,27 @@ export function ProviderModal({ id }: { id?: string }) {
 
 /* ---------- новый чат ---------- */
 export function NewChatModal() {
-  const p = useProject()!
+  const openedProject = useProject()!
+  const p = useRef(openedProject).current
   const st = useStore.getState
   const [title, setTitle] = useState('')
   const [agents, setAgents] = useState<string[]>(['builder'])
   const [tier, setTier] = useState<Tier>('Спросить')
   const create = () => {
+    if (!st().projects.some((x) => x.id === p.id)) {
+      toast({ title: 'Чат не создан', desc: 'Исходный проект удалён', icon: 'warn' })
+      return
+    }
     const t = title.trim() || 'Новый чат'
-    const id = st().createChat({
-      title: t,
-      creator: { kind: 'human', id: ME },
-      agents: agents.map((name) => ({ name, tier, sub: [] })),
-    })
-    st().setCenter({ kind: 'chat', id })
+    const id = st().createChat(
+      {
+        title: t,
+        creator: { kind: 'human', id: ME },
+        agents: agents.map((name) => ({ name, tier, sub: [] })),
+      },
+      p.id,
+    )
+    if (st().projectId === p.id) st().setCenter({ kind: 'chat', id })
     st().closeModal()
   }
   const ref = useRef<HTMLInputElement>(null)
@@ -502,11 +511,45 @@ export function ShortcutsModal() {
 }
 
 /* ---------- задача ---------- */
+/** Dirty-field patch; конфликт проверяется только в полях, изменённых формой. */
+export function taskFormPatch(base: Partial<Task>, draft: Partial<Task>, live: Partial<Task>) {
+  const patch: Partial<Task> = {}
+  const conflicts: (keyof Task)[] = []
+  for (const key of Object.keys(draft) as (keyof Task)[]) {
+    const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+    if (equal(draft[key], base[key])) continue
+    Object.assign(patch, { [key]: draft[key] })
+    if (!equal(live[key], base[key]) && !equal(live[key], draft[key])) conflicts.push(key)
+  }
+  return { patch, conflicts }
+}
+function taskFields(t?: Partial<Task>, status?: TaskStatus): Partial<Task> {
+  return {
+    title: t?.title || '',
+    desc: t?.desc || '',
+    status: t?.status || status || 'backlog',
+    priority: t?.priority || 'med',
+    assignee: t?.assignee ?? null,
+    start: t?.start || undefined,
+    due: t?.due || undefined,
+    subtasks: t?.subtasks?.length ? t.subtasks : undefined,
+    labels: t?.labels?.length ? t.labels : undefined,
+    repeat: t?.repeat || undefined,
+    blockedBy: t?.blockedBy?.length ? t.blockedBy : undefined,
+  }
+}
+
 export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) {
-  const p = useProject()!
+  const openedProject = useProject()!
+  const origin = useRef(openedProject).current
+  const pid = origin.id
+  const p = useStore((s) => s.projects.find((x) => x.id === pid)) || origin
   const people = useStore((s) => s.people)
   const st = useStore.getState
   const orig = p.tasks.find((t) => t.id === id)
+  const baseline = useRef(clone(taskFields(orig, status))).current
+  const [conflict, setConflict] = useState<{ fields: (keyof Task)[]; against: Partial<Task> } | null>(null)
+  const [saveError, setSaveError] = useState('')
   const [title, setTitle] = useState(orig?.title || '')
   const [desc, setDesc] = useState(orig?.desc || '')
   const [stt, setStt] = useState<TaskStatus>(orig?.status || status || 'backlog')
@@ -546,41 +589,87 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
   }
   const addComment = () => {
     const text = cmtText.trim()
-    if (!text || !orig) return
-    st().saveTask({
-      id: orig.id,
-      title: orig.title,
-      comments: [
-        ...(orig.comments || []),
-        { id: uid('c'), by: ME, text: text.slice(0, 2000), at: Date.now() },
-      ],
-    })
+    const live = st()
+      .projects.find((x) => x.id === pid)
+      ?.tasks.find((x) => x.id === id)
+    if (!text || !live) return
+    st().saveTask(
+      {
+        id: live.id,
+        title: live.title,
+        comments: [
+          ...(live.comments || []),
+          { id: uid('c'), by: ME, text: text.slice(0, 2000), at: Date.now() },
+        ],
+      },
+      pid,
+    )
     setCmtText('')
   }
   const dateErr = start && due && due < start ? 'Срок раньше начала' : ''
   const whoKey = (a: Actor | null) => (!a ? '' : a.kind === 'agent' ? 'a:' + a.name : 'h:' + a.id)
   const fromKey = (k: string): Actor | null =>
     !k ? null : k.startsWith('a:') ? { kind: 'agent', name: k.slice(2) } : { kind: 'human', id: k.slice(2) }
-  const save = (patch: Partial<{ status: TaskStatus; assignee: Actor | null }> = {}) => {
+  const save = (extra: Partial<{ status: TaskStatus; assignee: Actor | null }> = {}, overwrite = false) => {
     if (!title.trim() || dateErr) return null
-    const tid = st().saveTask({
-      id: orig?.id,
+    const project = st().projects.find((x) => x.id === pid)
+    const live = project?.tasks.find((x) => x.id === id)
+    if (!project || (id && !live)) {
+      setSaveError('Исходный проект или задача удалены. Черновик оставлен в форме.')
+      return null
+    }
+    const draft = taskFields({
       title: title.trim(),
       desc: desc.trim(),
       status: stt,
       priority: prio,
       assignee: who,
-      start: start || undefined,
-      due: due || undefined,
-      subtasks: subs.length ? subs : undefined,
-      labels: labels.length ? labels : undefined,
+      start,
+      due,
+      subtasks: subs,
+      labels,
       repeat: repeat || undefined,
-      blockedBy: blockedBy.length ? blockedBy : undefined,
-      ...patch,
+      blockedBy,
+      ...extra,
     })
-    return tid
+    let changes = draft
+    if (live) {
+      const current = taskFields(live)
+      const result = taskFormPatch(baseline, draft, current)
+      changes = result.patch
+      // Подтверждение привязано к показанной версии: новая внешняя правка требует нового решения.
+      const casChanged =
+        overwrite &&
+        (!conflict ||
+          Object.keys(changes).some(
+            (key) =>
+              JSON.stringify(current[key as keyof Task]) !==
+              JSON.stringify(conflict.against[key as keyof Task]),
+          ))
+      if (casChanged || (result.conflicts.length && !overwrite)) {
+        setConflict({
+          fields: result.conflicts.length ? result.conflicts : (Object.keys(changes) as (keyof Task)[]),
+          against: clone(current),
+        })
+        setSaveError(
+          'Эти поля изменены снаружи. Черновик сохранён; подтвердите замену или исправьте значения.',
+        )
+        return null
+      }
+      if (!Object.keys(changes).length) return live.id
+    }
+    setConflict(null)
+    setSaveError('')
+    return (
+      st().saveTask({ ...changes, id: live?.id, title: changes.title ?? live?.title ?? title.trim() }, pid) ||
+      null
+    )
   }
   const delegate = () => {
+    if (st().projectId !== pid) {
+      setSaveError('Для передачи агенту открой исходный проект. Черновик оставлен в форме.')
+      return
+    }
     const agent = who?.kind === 'agent' ? who.name : 'builder'
     const tid = save({ assignee: { kind: 'agent', name: agent }, status: stt === 'backlog' ? 'doing' : stt })
     if (!tid) return
@@ -588,21 +677,30 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
       .getState()
       .projects.find((x) => x.id === p.id)!
       .tasks.find((x) => x.id === tid)!
-    const cid = st().createChat({
-      title: `#${t.key} ${t.title}`.slice(0, 48),
-      creator: { kind: 'human', id: ME },
-      agents: [{ name: agent, tier: 'Спросить', sub: [] }],
-    })
+    const cid = st().createChat(
+      {
+        title: `#${t.key} ${t.title}`.slice(0, 48),
+        creator: { kind: 'human', id: ME },
+        agents: [{ name: agent, tier: 'Спросить', sub: [] }],
+      },
+      pid,
+    )
     st().setCenter({ kind: 'chat', id: cid })
     st().closeModal()
-    setTimeout(
-      () =>
-        sendMessage(
-          cid,
-          `Возьми задачу #${t.key}: ${t.title}${t.desc ? '\n\n' + t.desc : ''}${t.due ? `\n\nСрок: ${t.due}` : ''}`,
-        ),
-      60,
-    )
+    setTimeout(() => {
+      if (st().projectId !== pid) {
+        st().toast({
+          title: 'Задача сохранена, отправка агенту отменена',
+          desc: 'Проект переключён',
+          icon: 'warn',
+        })
+        return
+      }
+      sendMessage(
+        cid,
+        `Возьми задачу #${t.key}: ${t.title}${t.desc ? '\n\n' + t.desc : ''}${t.due ? `\n\nСрок: ${t.due}` : ''}`,
+      )
+    }, 60)
   }
   return (
     <Modal label="Задача">
@@ -625,7 +723,9 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Что нужно сделать"
-          onKeyDown={(e) => e.key === 'Enter' && (save(), title.trim() && st().closeModal())}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && save()) st().closeModal()
+          }}
         />
       </div>
       <div className="field">
@@ -920,6 +1020,44 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
           {actorName(orig.assignee, people)}
         </div>
       )}
+      {saveError && (
+        <div className="fhint" role="alert">
+          {saveError}
+        </div>
+      )}
+      {conflict && (
+        <div className="fhint">
+          Конфликтующие поля:{' '}
+          {conflict.fields
+            .map(
+              (field) =>
+                (
+                  ({
+                    title: 'название',
+                    desc: 'описание',
+                    status: 'статус',
+                    priority: 'приоритет',
+                    assignee: 'исполнитель',
+                    start: 'начало',
+                    due: 'срок',
+                    subtasks: 'подзадачи',
+                    labels: 'метки',
+                    repeat: 'повтор',
+                    blockedBy: 'зависимости',
+                  }) as Record<string, string>
+                )[field] || field,
+            )
+            .join(', ')}
+          <button
+            className="btn"
+            onClick={() => {
+              if (save({}, true)) st().closeModal()
+            }}
+          >
+            Сохранить мои изменения
+          </button>
+        </div>
+      )}
       <div className="mfoot">
         {orig && (
           <button
@@ -931,7 +1069,11 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
                 title: `Удалить #${orig.key}?`,
                 body: `«${orig.title}» пропадёт с доски и из таймлайна.`,
                 confirm: 'Удалить',
-                run: () => st().deleteTask(orig.id),
+                run: () => {
+                  if (st().projectId === pid) st().deleteTask(orig.id)
+                  else
+                    st().toast({ title: 'Удаление отменено', desc: 'Открой исходный проект', icon: 'warn' })
+                },
               })
             }
           >
@@ -959,12 +1101,15 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
               void _i
               void _k
               void _c
-              st().saveTask({
-                ...rest,
-                title: orig.title + ' (копия)',
-                status: 'backlog',
-                subtasks: orig.subtasks?.map((x) => ({ ...x, id: uid('s'), done: false })),
-              })
+              st().saveTask(
+                {
+                  ...rest,
+                  title: orig.title + ' (копия)',
+                  status: 'backlog',
+                  subtasks: orig.subtasks?.map((x) => ({ ...x, id: uid('s'), done: false })),
+                },
+                pid,
+              )
               st().closeModal()
               toast({ title: 'Копия создана', icon: 'copy' })
             }}

@@ -74,18 +74,21 @@ export function merge3(
     const cb = B.slice(bi, b),
       co = O.slice(oi, o),
       ct = T.slice(ti, t)
-    if (eq(co, ct)) out.push(...co)
-    else if (eq(cb, co)) out.push(...ct)
-    else if (eq(cb, ct)) out.push(...co)
+    // Function argument spreading has a much lower engine-dependent limit than array size.
+    // A normal large insertion must not throw before the caller can preserve both sides.
+    const append = (lines: string[]) => {
+      for (const line of lines) out.push(line)
+    }
+    if (eq(co, ct)) append(co)
+    else if (eq(cb, co)) append(ct)
+    else if (eq(cb, ct)) append(co)
     else {
       conflicts++
-      out.push(
-        `<<<<<<< ${labels.ours || 'мои правки'}`,
-        ...co,
-        '=======',
-        ...ct,
-        `>>>>>>> ${labels.theirs || 'чужие правки'}`,
-      )
+      out.push(`<<<<<<< ${labels.ours || 'мои правки'}`)
+      append(co)
+      out.push('=======')
+      append(ct)
+      out.push(`>>>>>>> ${labels.theirs || 'чужие правки'}`)
     }
   }
   for (let i = 0; i < B.length; i++) {
@@ -125,7 +128,7 @@ export function mapCaret(oldT: string, newT: string, pos: number): number {
 /** снять маркеры конфликта: мои / чужие / обе версии подряд */
 export function resolveMarkers(text: string, mode: 'ours' | 'theirs' | 'both'): string {
   return text.replace(
-    /^<<<<<<< .*\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>> .*(?:\n|$)/gm,
+    /^<<<<<<< [^\r\n]*\r?\n([\s\S]*?)^=======\r?\n([\s\S]*?)^>>>>>>> [^\r\n]*(?:\r?\n|$)/gm,
     (_m, a: string, b: string) => (mode === 'ours' ? a : mode === 'theirs' ? b : a + b),
   )
 }

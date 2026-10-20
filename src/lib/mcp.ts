@@ -6,6 +6,10 @@ import { MCP_FILES } from './mcpconfig'
 
 export interface McpServer {
   name: string
+  hash: string
+  runningHash: string | null
+  overrides: string[]
+  missing?: boolean
   type: 'stdio' | 'http'
   desc: string
   disabled: boolean
@@ -45,9 +49,10 @@ export async function mcpStatus(p: Ref): Promise<McpStatus> {
   await flushConfig(p)
   return bMcp<McpStatus>(p, 'status')
 }
-export const mcpApprove = (p: Ref, server: string, approved: boolean) =>
-  bMcp<{ ok: boolean }>(p, 'approve', { server, approved })
-export const mcpStop = (p: Ref, server: string) => bMcp<{ ok: boolean }>(p, 'stop', { server })
+export const mcpApprove = (p: Ref, server: string, approved: boolean, expectedHash: string) =>
+  bMcp<{ ok: boolean }>(p, 'approve', { server, approved, expectedHash })
+export const mcpStop = (p: Ref, server: string, expectedHash: string) =>
+  bMcp<{ ok: boolean }>(p, 'stop', { server, expectedHash })
 export const mcpTools = (p: Ref, server: string) =>
   bMcp<{ tools: McpTool[]; server: { name?: string; version?: string } }>(p, 'tools', { server })
 export const mcpCall = (p: Ref, server: string, tool: string, args: Record<string, unknown>) =>

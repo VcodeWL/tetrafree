@@ -138,3 +138,18 @@ test('импортированный файл не переименовывае�
   assert.deepEqual(r2.remove, [])
   assert.deepEqual(r2.write, {})
 })
+
+test('image disables mirror without deleting, overwriting or reimporting its file/ancestor', () => {
+  const s = settled()
+  const imageDoc = {
+    ...s.d,
+    blocks: [...s.d.blocks, { id: 'im', type: 'image', text: 'data:image/png;base64,x' } as Block],
+  }
+  const out = planDocs([imageDoc], s.files, s.base, h, false)
+  assert.deepEqual(out.remove, [])
+  assert.deepEqual(out.write, {})
+  assert.deepEqual(out.add, [])
+  assert.deepEqual(out.base, s.base)
+  const externalEdit = { ...s.files, [s.d.file!]: 'external while disabled' }
+  assert.deepEqual(planDocs([imageDoc], externalEdit, out.base, h, false).write, {})
+})

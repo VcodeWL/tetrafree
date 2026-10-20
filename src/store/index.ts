@@ -3,7 +3,14 @@ import { persist } from 'zustand/middleware'
 import { immer } from 'zustand/middleware/immer'
 import type { Actor, Chat, Doc, ID } from '../types'
 import { initialPersisted, initialUI } from './defaults'
-import { PERSIST_VERSION, idbStorage, merge, migrate, partialize } from './persistence'
+import {
+  PERSIST_VERSION,
+  idbStorage,
+  merge,
+  migrate,
+  partialize,
+  registerPersistenceCheckpoint,
+} from './persistence'
 import { chatsActions } from './slices/chats'
 import { docsActions } from './slices/docs'
 import { filesActions } from './slices/files'
@@ -22,36 +29,70 @@ export { pickFile } from './helpers'
  * ui (экраны, модалки, тосты), projects, files (файлы, корзина, версии), chats, docs, tasks, settings (люди, провайдеры), memory.
  * Новая мутация = новая запись в Actions (types.ts) + реализация в нужном слайсе. Схема хранения — persistence.ts.
  */
+const storage = idbStorage(() =>
+  useStore.getState().toast({
+    title: 'Не удалось сохранить состояние',
+    desc: 'Последние изменения пока не сохранены. Освободи место или экспортируй проекты.',
+    tone: 'err',
+    icon: 'warn',
+  }),
+)
+let hydrationError: unknown
+export async function hydrateStore(): Promise<void> {
+  await useStore.persist.rehydrate()
+  if (hydrationError) throw hydrationError
+  if (!useStore.persist.hasHydrated()) throw new Error('Загрузка состояния не завершена')
+}
+
 export const useStore = create<S & Actions>()(
   persist(
-    immer((set, get) => ({
-      ...initialPersisted(),
-      ...initialUI(),
-      ...uiActions(set, get),
-      ...projectsActions(set),
-      ...filesActions(set),
-      ...chatsActions(set),
-      ...docsActions(set),
-      ...tasksActions(set, get),
-      ...settingsActions(set),
-      ...memoryActions(set),
-    })),
+    immer((set, get, api) => {
+      const publish: typeof set = (...args) => {
+        storage.reserveRevision()
+        return set(...args)
+      }
+      // Cover both slice actions and public useStore.setState, before either notifies subscribers.
+      api.setState = publish
+      return {
+        ...initialPersisted(),
+        ...initialUI(),
+        ...uiActions(publish, get),
+        ...projectsActions(publish),
+        ...filesActions(publish),
+        ...chatsActions(publish),
+        ...docsActions(publish),
+        ...tasksActions(publish, get),
+        ...settingsActions(publish),
+        ...memoryActions(publish),
+      }
+    }),
     {
       name: 'tetrafree',
       version: PERSIST_VERSION,
-      storage: idbStorage(() =>
-        useStore.getState().toast({
-          title: 'Локальное хранилище заполнено',
-          desc: 'Последние изменения не сохранятся после перезапуска. Удали старые проекты или экспортируй их в архив.',
-          tone: 'err',
-          icon: 'warn',
-        }),
-      ),
+      storage,
+      skipHydration: true,
+      onRehydrateStorage: () => {
+        hydrationError = undefined
+        return (_state, error) => {
+          hydrationError = error
+          storage.completeHydration(error)
+        }
+      },
       partialize,
       merge: (persisted, current) => merge(persisted, current as Full),
       migrate: (old, from) => migrate(old, from) as Full,
     },
   ),
+)
+
+registerPersistenceCheckpoint(
+  async () => {
+    if (!useStore.persist.hasHydrated()) throw hydrationError || new Error('Состояние ещё не загружено')
+    storage.setItem('tetrafree', { state: partialize(useStore.getState()), version: PERSIST_VERSION })
+    await storage.flush()
+  },
+  () => storage.captureGeneration(),
+  () => storage.captureRuntimeRevision(),
 )
 
 /* ---------- селекторы ---------- */

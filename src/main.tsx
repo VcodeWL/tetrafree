@@ -4,7 +4,8 @@ import '@xterm/xterm/css/xterm.css'
 import './styles/app.css'
 import './styles/components.css'
 import { App } from './App'
-import { useStore } from './store'
+import { useStore, hydrateStore } from './store'
+import { recoverySnapshots } from './store/persistence'
 import { startSync } from './lib/sync'
 import { startDocSync } from './lib/docsync'
 import { initAccount } from './lib/account'
@@ -21,28 +22,95 @@ if (import.meta.env.DEV) {
   })
 }
 
-/* Состояние читается из IndexedDB асинхронно: всё, что обращается к стору, стартует после загрузки (но не ждём дольше 10 с) */
-const hydrated = new Promise<void>((resolve) => {
-  if (useStore.persist.hasHydrated()) return resolve()
-  const t = setTimeout(resolve, 10000)
-  useStore.persist.onFinishHydration(() => {
-    clearTimeout(t)
-    resolve()
-  })
-})
-
-void hydrated.then(() => {
-  startSync()
-  startDocSync()
-  initAccount()
-  startCloud()
-  startScheduler()
-  startAutoBackup()
-  startVault()
-
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
+/* До окончания hydration не монтируем write-capable UI и не запускаем фоновые писатели. */
+const root = ReactDOM.createRoot(document.getElementById('root')!)
+let disposed = false
+function Recovery({ message }: { message: string }) {
+  const [exportError, setExportError] = React.useState('')
+  const exportRaw = () => {
+    try {
+      const snapshots = { ...recoverySnapshots }
+      try {
+        const raw = localStorage.getItem('tetrafree')
+        if (raw !== null) snapshots.localStorage = raw
+      } catch {
+        /* loaded IDB raw can still be exported */
+      }
+      if (!Object.keys(snapshots).length) {
+        setExportError('Снимки пока недоступны. Дождись чтения хранилища; не очищай данные приложения.')
+        return
+      }
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(snapshots, null, 2)], { type: 'application/json' }),
+      )
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'tetrafree-recovery.json'
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch {
+      setExportError(
+        'Экспорт недоступен. Не очищай данные приложения; сохрани копию профиля WebView перед восстановлением.',
+      )
+    }
+  }
+  return (
+    <main style={{ padding: 32, maxWidth: 800, margin: 'auto' }}>
+      <h1>Не удалось безопасно открыть данные</h1>
+      <p role="alert">{message}</p>
+      <p>Редактирование и синхронизация не запущены. Исходные данные не очищены и не перезаписаны.</p>
+      <p>
+        Если данные сохранены другой версией TetraFree, установи совместимую версию. Перед восстановлением
+        скачай исходные снимки; не очищай хранилище приложения.
+      </p>
+      <p>Файл восстановления может содержать личные данные и резервные API-ключи. Храни его безопасно.</p>
+      <button onClick={exportRaw}>Скачать доступные исходные снимки</button>{' '}
+      <button onClick={() => location.reload()}>Повторить загрузку</button>
+      {exportError && <p role="status">{exportError}</p>}
+    </main>
   )
-})
+}
+const t = setTimeout(() => {
+  if (disposed) return
+  root.render(
+    <Recovery message="Чтение хранилища занимает больше 10 секунд. Продолжаем ждать; работа с пустым состоянием запрещена." />,
+  )
+}, 10000)
+void hydrateStore()
+  .then(() => {
+    if (disposed) return
+    clearTimeout(t)
+    startSync()
+    startDocSync()
+    initAccount()
+    startCloud()
+    startScheduler()
+    startAutoBackup()
+    startVault()
+    root.render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+    )
+  })
+  .catch((error: unknown) => {
+    if (disposed) return
+    clearTimeout(t)
+    root.render(
+      <Recovery
+        message={
+          error instanceof Error
+            ? error.message
+            : 'Ошибка чтения состояния. Сохрани исходные снимки для восстановления.'
+        }
+      />,
+    )
+  })
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    disposed = true
+    clearTimeout(t)
+    root.unmount()
+  })
+}

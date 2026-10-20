@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { useStore, toast } from '../store'
 import { Icon } from '../components/ui/Icon'
 import { PersonAv } from '../components/ui/primitives'
@@ -86,11 +86,117 @@ function LocalNote() {
   )
 }
 
+type FreshProof = { password: string; stepupCode: string; emailCode: string }
+const emptyProof = (): FreshProof => ({ password: '', stepupCode: '', emailCode: '' })
+const proofReady = (user: Acc, proof: FreshProof) =>
+  user.twofa
+    ? proof.stepupCode.replace(/\s/g, '').length >= 6
+    : user.hasPassword
+      ? !!proof.password
+      : /^\d{6}$/.test(proof.emailCode)
+
+function FreshProofFields({
+  user,
+  value,
+  onChange,
+  omitPassword = false,
+}: {
+  user: Acc
+  value: FreshProof
+  onChange: (next: FreshProof) => void
+  omitPassword?: boolean
+}) {
+  const id = useId()
+  const [busy, setBusy] = useState(false)
+  const [cool, setCool] = useState(0)
+  const [info, setInfo] = useState('')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (cool <= 0) return
+    const t = setTimeout(() => setCool(cool - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cool])
+  const send = async () => {
+    if (busy || cool > 0) return
+    setBusy(true)
+    setError('')
+    try {
+      const r = await api<{ mail: string }>('POST', '/api/auth/stepup/email')
+      setInfo(
+        r.mail === 'dev'
+          ? 'Код отправлен в Dev-почту. Он действует 5 минут.'
+          : 'Код отправлен на твою почту и действует 5 минут.',
+      )
+      setCool(30)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (user.twofa)
+    return (
+      <div className="field">
+        <label htmlFor={id}>Текущий код 2FA или резервный код</label>
+        <input
+          id={id}
+          value={value.stepupCode}
+          autoComplete="one-time-code"
+          maxLength={64}
+          onChange={(e) => onChange({ ...value, stepupCode: e.target.value })}
+        />
+        <p className="hint">
+          Подтверждение обязательно и при входе через провайдера. Резервный код используется один раз.
+        </p>
+      </div>
+    )
+  if (user.hasPassword)
+    return omitPassword ? null : (
+      <div className="field">
+        <label htmlFor={id}>Текущий пароль для подтверждения</label>
+        <input
+          id={id}
+          type="password"
+          value={value.password}
+          autoComplete="current-password"
+          onChange={(e) => onChange({ ...value, password: e.target.value })}
+        />
+      </div>
+    )
+  return (
+    <div className="field">
+      <label htmlFor={id}>Код подтверждения из письма</label>
+      <input
+        id={id}
+        value={value.emailCode}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        maxLength={6}
+        onChange={(e) => onChange({ ...value, emailCode: e.target.value.replace(/\D/g, '') })}
+      />
+      <button type="button" className="btn sm gho" disabled={busy || cool > 0} onClick={() => void send()}>
+        {busy ? 'Отправляю…' : cool > 0 ? `Ещё раз через ${cool} с` : 'Отправить код на почту'}
+      </button>
+      {info && (
+        <p className="hint" role="status">
+          {info}
+        </p>
+      )}
+      {error && (
+        <div className="ferr" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Password({ user }: { user: Acc }) {
   const [open, setOpen] = useState(false)
   const [o, setO] = useState('')
   const [n, setN] = useState('')
   const [n2, setN2] = useState('')
+  const [proof, setProof] = useState<FreshProof>(emptyProof)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const save = async () => {
@@ -101,7 +207,9 @@ function Password({ user }: { user: Acc }) {
     setBusy(true)
     setErr('')
     try {
-      await api('POST', '/api/auth/password', { old: o, password: n })
+      await api('POST', '/api/auth/password', { ...proof, old: o, password: n })
+      useAccount.setState({ user: { ...user, hasPassword: true } })
+      setProof(emptyProof())
       toast({
         title: 'Пароль изменён',
         desc: 'Остальные сессии завершены, на почту ушло уведомление',
@@ -171,8 +279,13 @@ function Password({ user }: { user: Acc }) {
               onChange={(e) => setN2(e.target.value)}
             />
           </div>
+          <FreshProofFields user={user} value={proof} onChange={setProof} omitPassword />
           {err && <div className="ferr">{err}</div>}
-          <button type="submit" className="btn pri" disabled={busy || !n || !n2}>
+          <button
+            type="submit"
+            className="btn pri"
+            disabled={busy || !n || !n2 || ((user.twofa || !user.hasPassword) && !proofReady(user, proof))}
+          >
             {busy ? <span className="bspin" /> : null}Сохранить
           </button>
         </form>
@@ -184,18 +297,25 @@ function Password({ user }: { user: Acc }) {
 function TwoFA({ user }: { user: Acc }) {
   const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null)
   const [code, setCode] = useState('')
-  const [pw, setPw] = useState('')
+  const [proof, setProof] = useState<FreshProof>(emptyProof)
+  const [begin, setBegin] = useState(false)
   const [rec, setRec] = useState<string[] | null>(null)
   const [off, setOff] = useState(false)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const setUser = (u: Acc) => useAccount.setState({ user: u })
   const start = async () => {
+    if (busy || !proofReady(user, proof)) return
+    setBusy(true)
     setErr('')
     try {
-      setSetup(await api('POST', '/api/auth/2fa/setup'))
+      setSetup(await api('POST', '/api/auth/2fa/setup', proof))
+      setBegin(false)
+      setProof(emptyProof())
     } catch (e) {
       setErr((e as Error).message)
+    } finally {
+      setBusy(false)
     }
   }
   const enable = async () => {
@@ -217,10 +337,10 @@ function TwoFA({ user }: { user: Acc }) {
     setBusy(true)
     setErr('')
     try {
-      const r = await api<{ user: Acc }>('POST', '/api/auth/2fa/disable', { password: pw })
+      const r = await api<{ user: Acc }>('POST', '/api/auth/2fa/disable', proof)
       setUser(r.user)
       setOff(false)
-      setPw('')
+      setProof(emptyProof())
       toast({ title: '2FA отключена', icon: 'shield' })
     } catch (e) {
       setErr((e as Error).message)
@@ -251,12 +371,45 @@ function TwoFA({ user }: { user: Acc }) {
           </button>
         ) : (
           !setup && (
-            <button className="btn sm" onClick={start}>
+            <button
+              className="btn sm"
+              onClick={() => {
+                setBegin(!begin)
+                setProof(emptyProof())
+                setErr('')
+              }}
+            >
               Включить
             </button>
           )
         )}
       </div>
+      {begin && !setup && !user.twofa && (
+        <form
+          className="subform"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void start()
+          }}
+        >
+          <FreshProofFields user={user} value={proof} onChange={setProof} />
+          {err && <div className="ferr">{err}</div>}
+          <button type="submit" className="btn pri" disabled={busy || !proofReady(user, proof)}>
+            Продолжить настройку 2FA
+          </button>
+          <button
+            type="button"
+            className="btn gho"
+            onClick={() => {
+              setBegin(false)
+              setProof(emptyProof())
+              setErr('')
+            }}
+          >
+            Отмена
+          </button>
+        </form>
+      )}
       {setup && (
         <form
           className="subform"
@@ -353,26 +506,17 @@ function TwoFA({ user }: { user: Acc }) {
           className="subform"
           onSubmit={(e) => {
             e.preventDefault()
-            if (!busy && pw) void disable()
+            if (!busy && proofReady(user, proof)) void disable()
           }}
         >
-          <div className="field">
-            <label>Пароль для подтверждения</label>
-            <input
-              type="password"
-              aria-label="Пароль"
-              autoComplete="current-password"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-            />
-          </div>
+          <FreshProofFields user={user} value={proof} onChange={setProof} />
           {err && <div className="ferr">{err}</div>}
-          <button type="submit" className="btn danger" disabled={busy || !pw}>
+          <button type="submit" className="btn danger" disabled={busy || !proofReady(user, proof)}>
             {busy && <i className="bspin" />}Отключить 2FA
           </button>
         </form>
       )}
-      {!setup && !off && !rec && err && <div className="ferr">{err}</div>}
+      {!begin && !setup && !off && !rec && err && <div className="ferr">{err}</div>}
     </div>
   )
 }
@@ -511,7 +655,7 @@ function AuditLog() {
 
 function DeleteAccount({ user }: { user: Acc }) {
   const [open, setOpen] = useState(false)
-  const [pw, setPw] = useState('')
+  const [proof, setProof] = useState<FreshProof>(emptyProof)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const del = async () => {
@@ -519,7 +663,7 @@ function DeleteAccount({ user }: { user: Acc }) {
     setBusy(true)
     setErr('')
     try {
-      await api('DELETE', '/api/auth/account', { password: pw })
+      await api('DELETE', '/api/auth/account', proof)
       toast({ title: 'Аккаунт удалён', icon: 'trash' })
       await logout()
     } catch (e) {
@@ -547,22 +691,12 @@ function DeleteAccount({ user }: { user: Acc }) {
             className="subform"
             onSubmit={(e) => {
               e.preventDefault()
-              if (!user.hasPassword || pw) void del()
+              if (proofReady(user, proof)) void del()
             }}
           >
-            {user.hasPassword && (
-              <div className="field">
-                <label>Пароль</label>
-                <input
-                  type="password"
-                  aria-label="Пароль"
-                  value={pw}
-                  onChange={(e) => setPw(e.target.value)}
-                />
-              </div>
-            )}
+            <FreshProofFields user={user} value={proof} onChange={setProof} />
             {err && <div className="ferr">{err}</div>}
-            <button type="submit" className="btn danger" disabled={busy || (user.hasPassword && !pw)}>
+            <button type="submit" className="btn danger" disabled={busy || !proofReady(user, proof)}>
               {busy && <i className="bspin" />}Удалить навсегда
             </button>
           </form>

@@ -1,142 +1,290 @@
 import { stripSecrets } from '../lib/vaultState'
-import { createJSONStorage } from 'zustand/middleware'
 import type { Attachment, Message, Person, Project, Provider } from '../types'
 import { pickFile } from './helpers'
-import { idbAvailable, idbGet, idbSet, idbDel } from './idb'
-import { initialPersisted } from './defaults'
+import { idbGet, idbSet } from './idb'
 import { packVersions, unpackVersions, type PackedVersion } from './snapshots'
 import type { Full, Persisted, S, UI } from './types'
 
 /** Версия схемы localStorage. Менять вместе с веткой в migrate() — иначе у пользователя сбросятся данные. */
 export const PERSIST_VERSION = 7
 
-/* localStorage с защитой от переполнения: вместо падения — одно предупреждение */
-let quotaWarned = false
-const safeStorage = (onQuota: () => void): Storage => ({
-  get length() {
-    return localStorage.length
-  },
-  key: (i) => localStorage.key(i),
-  getItem: (k) => {
-    try {
-      return localStorage.getItem(k)
-    } catch {
-      return null
-    }
-  },
-  removeItem: (k) => {
-    try {
-      localStorage.removeItem(k)
-    } catch {
-      /* noop */
-    }
-  },
-  clear: () => localStorage.clear(),
-  setItem: (k, v) => {
-    try {
-      localStorage.setItem(k, v)
-      quotaWarned = false
-    } catch {
-      if (quotaWarned) return
-      quotaWarned = true
-      setTimeout(onQuota, 0)
-    }
-  },
-})
+/** revision относится к завершённой записи; отсутствующая revision — старый формат (0). */
+export type StoredValue = { state: unknown; version?: number; revision?: number; deleted?: boolean }
+export type PersistenceGeneration = { current: number; hydrated: number }
+export type DurableStorage = import('zustand/middleware').PersistStorage<unknown> & {
+  flush(): Promise<void>
+  completeHydration(error?: unknown): void
+  captureGeneration(): PersistenceGeneration
+  reserveRevision(): void
+  captureRuntimeRevision(): number
+}
+let checkpoint: (() => Promise<void>) | undefined
+let generationReader: (() => PersistenceGeneration) | undefined
+let runtimeReader: (() => number) | undefined
+/** current is an issued ordering watermark, NOT a durability proof; hydrated is the loaded envelope revision. */
+export function capturePersistenceGeneration(): PersistenceGeneration {
+  if (!generationReader) throw new Error('Стор хранилища ещё не зарегистрирован')
+  return generationReader()
+}
+/** Зарегистрирован стором: снимок берётся заново, а не из старого debounce-таймера. */
+/** Conservative runtime mutation counter since successful hydration; never a durable read proof. */
+export function capturePersistenceRuntimeRevision(): number {
+  if (!runtimeReader) throw new Error('Стор хранилища ещё не зарегистрирован')
+  return runtimeReader()
+}
+export function registerPersistenceCheckpoint(
+  flush: () => Promise<void>,
+  capture?: () => PersistenceGeneration,
+  captureRuntime?: () => number,
+) {
+  checkpoint = flush
+  if (capture) generationReader = capture
+  if (captureRuntime) runtimeReader = captureRuntime
+}
+/** Нельзя подтверждать sync baseline, если хотя бы одна durable-запись не удалась. */
+export async function flushPersistence(): Promise<void> {
+  if (!checkpoint) throw new Error('Хранилище ещё не загружено')
+  await checkpoint()
+}
 
-/* Состояние лежит в IndexedDB (потолок — диск, а не 5 МБ localStorage). Что здесь важно:
-   — первое чтение: если в IndexedDB пусто, а в localStorage есть старые данные — они переносятся, и localStorage
-     очищается только ПОСЛЕ успешной записи и повторного чтения;
-   — запись откладывается: во время стрима стор меняется ~15 раз в секунду, а копировать весь проект столько раз незачем;
-   — IndexedDB недоступен → прежний путь через localStorage. */
-export type StoredValue = { state: unknown; version?: number }
+/* Для recovery-экспорта сохраняем исходные байты, в том числе неразбираемый JSON. */
+export const recoverySnapshots: Record<string, string> = {}
+const parse = (raw: string | undefined | null): StoredValue | null => {
+  if (raw == null) return null
+  const v: unknown = JSON.parse(raw)
+  if (!v || typeof v !== 'object' || !('state' in v)) throw new Error('Повреждён снимок состояния')
+  const value = v as StoredValue
+  if (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0))
+    throw new Error('Повреждена ревизия состояния')
+  return value
+}
 
-/* В базе лежит JSON-строка: значения стора могут содержать то, что structured clone не принимает, а JSON — отбрасывает, как и раньше */
-const parse = (raw: string | undefined): StoredValue | null => {
-  if (typeof raw !== 'string') return null
-  try {
-    return JSON.parse(raw) as StoredValue
-  } catch {
-    return null
+function validateState(value: unknown, currentSchema: boolean) {
+  const bad = () => {
+    throw new Error('Повреждено состояние. Исходные данные сохранены для восстановления.')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return bad()
+  const p = value as Record<string, unknown>
+  const object = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v)
+  if (
+    currentSchema &&
+    (!Array.isArray(p.projects) || !Array.isArray(p.providers) || !object(p.people) || !object(p.settings))
+  )
+    bad()
+  for (const key of ['projects', 'providers']) if (p[key] !== undefined && !Array.isArray(p[key])) bad()
+  for (const pr of (p.projects || []) as Record<string, unknown>[]) {
+    if (!object(pr) || typeof pr.id !== 'string' || !object(pr.files) || !Array.isArray(pr.chats)) bad()
+    for (const c of pr.chats as Record<string, unknown>[]) if (!object(c) || !Array.isArray(c.messages)) bad()
   }
 }
 
-export function idbStorage(onQuota: () => void): import('zustand/middleware').PersistStorage<unknown> {
-  let _j: ReturnType<typeof createJSONStorage> | undefined
-  const LS = () => (_j ??= createJSONStorage(() => safeStorage(onQuota)))!
-  let useIdb: boolean | null = null
-  let pending: { k: string; v: StoredValue } | null = null
+export function idbStorage(onQuota: () => void): DurableStorage {
+  let revision = 0
+  let hydratedRevision = 0
+  let runtimeRevision = 0
+  const nextRevision = () => {
+    if (!Number.isSafeInteger(revision + 1)) throw new Error('Исчерпано пространство ревизий хранилища')
+    return ++revision
+  }
+  let writable = false
+  let hydrationError: unknown
+  let pending: { k: string; raw: string; revision: number } | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
-  let migrated = false
-  let flushing: Promise<void> = Promise.resolve()
-
-  const ready = async () => (useIdb ??= await idbAvailable())
-
-  const write = async (k: string, v: StoredValue) => {
-    if (await ready()) {
+  let queue: Promise<void> = Promise.resolve()
+  let lastError: unknown
+  let warned = false
+  const notify = () => {
+    if (!warned) {
+      warned = true
+      setTimeout(onQuota, 0)
+    }
+  }
+  const enqueue = (operation: () => Promise<void>) => {
+    const next = queue.catch(() => {}).then(operation)
+    queue = next
+    // Background debounce must not produce an unhandled rejection. Explicit flush still rejects.
+    void next.catch((error: unknown) => {
+      lastError = error
+      notify()
+    })
+    return next
+  }
+  const authorityKey = (k: string) => k + ':authority'
+  const write = async (k: string, raw: string) => {
+    const rev = (JSON.parse(raw) as StoredValue).revision!
+    const mark = (backend: 'pending' | 'idb' | 'ls') => {
+      const marker = JSON.stringify({ revision: rev, backend })
+      localStorage.setItem(authorityKey(k), marker)
+      if (localStorage.getItem(authorityKey(k)) !== marker)
+        throw new Error('Запись указателя актуального снимка не подтверждена')
+    }
+    // Invalidate the previous LS authority BEFORE a newer IDB commit. If even this small
+    // journal cannot be written while a fallback exists, don't create an unknowably stale fallback.
+    let allowIdb = true
+    try {
+      mark('pending')
+    } catch {
       try {
-        await idbSet(k, JSON.stringify(v))
-        if (!migrated) {
-          /* старые данные из localStorage удаляем только когда новая копия точно прочиталась */
-          const back = parse(await idbGet<string>(k))
-          if (back && back.state) {
-            try {
-              localStorage.removeItem(k)
-            } catch {
-              /* noop */
-            }
-            migrated = true
-          }
-        }
-        quotaWarned = false
-        return
+        allowIdb = localStorage.getItem(k) === null
       } catch {
-        /* диск переполнен или база закрыта — пробуем localStorage ниже */
+        allowIdb = false
       }
     }
-    void LS().setItem(k, v as never)
+    try {
+      if (!allowIdb) throw new Error('Нельзя обновить указатель актуального снимка')
+      await idbSet(k, raw)
+      try {
+        mark('idb')
+      } catch {
+        /* pending marker forces safe recovery if IDB later becomes unreadable */
+      }
+      try {
+        localStorage.removeItem(k)
+      } catch {
+        /* stale fallback cannot regain authority */
+      }
+    } catch {
+      localStorage.setItem(k, raw)
+      if (localStorage.getItem(k) !== raw) throw new Error('Запись состояния не подтверждена')
+      // A durable raw without a readable authority is NOT a usable fallback checkpoint.
+      // Keep the raw for recovery, but reject so callers cannot advance their baseline.
+      mark('ls')
+    }
+    lastError = undefined
+    warned = false
   }
-
-  const flush = () => {
+  const flush = async () => {
+    if (!writable) throw hydrationError || new Error('Состояние ещё не загружено; запись заблокирована')
     if (timer) clearTimeout(timer)
     timer = null
-    if (!pending) return flushing
-    const p = pending
-    pending = null
-    flushing = flushing.then(() => write(p.k, p.v)).catch(() => undefined)
-    return flushing
+    if (pending) {
+      const p = pending
+      pending = null
+      await enqueue(async () => {
+        try {
+          await write(p.k, p.raw)
+        } catch (error) {
+          // Keep failed current state retryable unless a newer state has superseded it.
+          if (!pending && p.revision === revision) pending = p
+          throw error
+        }
+      })
+    } else {
+      await queue
+      if (lastError) throw lastError
+    }
+  }
+  const schedule = () => {
+    if (writable && pending && !timer) timer = setTimeout(() => void flush().catch(() => {}), 500)
   }
   if (typeof window !== 'undefined') {
-    window.addEventListener('beforeunload', () => void flush())
-    window.addEventListener('pagehide', () => void flush())
+    window.addEventListener('beforeunload', () => void flush().catch(() => {}))
+    window.addEventListener('pagehide', () => void flush().catch(() => {}))
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') void flush()
+      if (document.visibilityState === 'hidden') void flush().catch(() => {})
     })
   }
   return {
-    getItem: async (k) => {
-      if (pending && pending.k === k) return pending.v as never
-      if (await ready()) {
-        try {
-          const v = parse(await idbGet<string>(k))
-          if (v && typeof v === 'object' && 'state' in v) {
-            migrated = true
-            return v as never
-          }
-        } catch {
-          /* читаем из localStorage */
-        }
+    flush,
+    captureGeneration: () => ({ current: revision, hydrated: hydratedRevision }),
+    // Zustand notifies subscribers BEFORE persist.setItem. Reserve a lower bound before
+    // publishing each runtime mutation; the actual following setItem issues a newer revision.
+    captureRuntimeRevision: () => runtimeRevision,
+    reserveRevision: () => {
+      nextRevision()
+      if (writable) {
+        if (!Number.isSafeInteger(runtimeRevision + 1))
+          throw new Error('Исчерпано пространство runtime-ревизий')
+        runtimeRevision++
       }
-      return LS().getItem(k) as never
+    },
+    completeHydration(error) {
+      hydrationError = error
+      writable = !error
+      if (error) pending = null
+      else {
+        runtimeRevision = 0
+        schedule()
+      }
+    },
+    getItem: async (k) => {
+      writable = false
+      let idbRaw: string | undefined
+      let readError: unknown
+      try {
+        idbRaw = await idbGet<string>(k)
+      } catch (error) {
+        readError = error
+      }
+      const lsRaw = localStorage.getItem(k) // unreadable storage is NOT an empty first run
+      if (idbRaw !== undefined) recoverySnapshots.indexedDB = idbRaw
+      if (lsRaw !== null) recoverySnapshots.localStorage = lsRaw
+      const disk = parse(idbRaw),
+        fallback = parse(lsRaw)
+      let authority: { backend?: string; revision?: number } | null = null
+      try {
+        authority = JSON.parse(localStorage.getItem(authorityKey(k)) || 'null')
+      } catch {
+        /* validate snapshots independently */
+      }
+      if (readError && (!fallback || authority?.backend !== 'ls' || authority.revision !== fallback.revision))
+        throw new Error(
+          'IndexedDB недоступен; актуальность запасного снимка не подтверждена. Данные не изменены.',
+        )
+      const latest = !disk
+        ? fallback
+        : !fallback
+          ? disk
+          : (fallback.revision ?? 0) > (disk.revision ?? 0)
+            ? fallback
+            : disk
+      if (
+        authority &&
+        (authority.backend === 'idb' || authority.backend === 'ls') &&
+        Number.isSafeInteger(authority.revision) &&
+        authority.revision! > (latest?.revision ?? 0)
+      )
+        throw new Error('Актуальный снимок недоступен; старые данные не будут восстановлены поверх него.')
+      revision = Math.max(revision, disk?.revision ?? 0, fallback?.revision ?? 0)
+      if (
+        latest &&
+        (latest.version === undefined ||
+          !Number.isInteger(latest.version) ||
+          latest.version < 4 ||
+          latest.version > PERSIST_VERSION)
+      )
+        throw new Error(
+          `Схема ${latest.version} не поддерживается этой версией TetraFree. Нужна совместимая версия приложения.`,
+        )
+      if (latest && !latest.deleted) validateState(latest.state, latest.version === PERSIST_VERSION)
+      // Assign only after a successful supported read; migration's queued writes must not change it.
+      hydratedRevision = latest?.revision ?? 0
+      if (latest?.deleted) return null
+      return latest as never
     },
     setItem: (k, v) => {
-      pending = { k, v: v as StoredValue }
-      if (!timer) timer = setTimeout(() => void flush(), 500)
+      if (hydrationError) throw hydrationError
+      // Serialize immediately: a delayed write must not capture later object mutations.
+      pending = { k, raw: JSON.stringify({ ...v, revision: nextRevision() }), revision }
+      schedule()
     },
     removeItem: async (k) => {
+      if (!writable) throw hydrationError || new Error('Удаление до загрузки запрещено')
+      if (timer) clearTimeout(timer)
+      timer = null
       pending = null
-      if (await ready()) await idbDel(k).catch(() => undefined)
-      return LS().removeItem(k)
+      // A revisioned tombstone protects against an old IDB copy after failed delete.
+      const raw = JSON.stringify({
+        state: null,
+        version: PERSIST_VERSION,
+        revision: nextRevision(),
+        deleted: true,
+      })
+      await enqueue(async () => {
+        await write(k, raw)
+        // Retain the tombstone even after a successful IDB write. Physically deleting it
+        // could expose an uncleared older LS copy on restart. The next set supersedes it.
+      })
     },
   }
 }
@@ -178,7 +326,7 @@ export const partialize = (
   projects: s.projects.map((p) => ({
     ...p,
     versions: packVersions(p.versions) as unknown as Project['versions'],
-    chats: p.chats.map((c) => ({ ...c, messages: c.messages.map(stripVolatile) })),
+    chats: p.chats.map((c) => ({ ...c, running: false, messages: c.messages.map(stripVolatile) })),
   })),
   providers: stripSecrets(s.providers),
   settings: s.settings,
@@ -203,6 +351,7 @@ export const merge = (persisted: unknown, current: Full): Full => {
   merged.projects = (merged.projects || []).map((pr) => ({
     ...pr,
     versions: unpackVersions((pr.versions || []) as unknown as PackedVersion[]),
+    chats: (pr.chats || []).map((c) => ({ ...c, running: false, messages: c.messages.map(stripVolatile) })),
   }))
   if (!merged.authed) merged.screen = 'auth'
   if (merged.screen === 'workspace' && !merged.projects.find((x) => x.id === merged.projectId))
@@ -212,9 +361,10 @@ export const merge = (persisted: unknown, current: Full): Full => {
   return merged
 }
 
-/* старые версии → текущая; неизвестная версия сбрасывается к начальному состоянию */
+/* старые поддерживаемые версии → текущая; неизвестные нельзя перезаписывать */
 export const migrate = (old: unknown, from: number): S => {
-  if (!old || typeof old !== 'object' || from < 4 || from > 6) return initialPersisted() as unknown as S
+  if (!old || typeof old !== 'object' || from < 4 || from > 6)
+    throw new Error(`Схема ${from} не поддерживается. Исходные данные не изменены.`)
   if (from === 4) v4to5(old as { projects?: Project[] })
   /* 6 → 7 («Разница версий»): формат читается и старый, и новый — переносить нечего */
   if (from <= 5) return v5to6(old as Record<string, unknown>) as unknown as S

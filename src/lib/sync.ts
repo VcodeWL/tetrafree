@@ -1,7 +1,7 @@
 /* Двусторонняя синхронизация проекта с папкой на диске (через локальный бэкенд).
    Для каждого файла помним «базовый» хеш — то, что было одинаково и там и там.
    Изменился только стор → пишем на диск. Изменился только диск → импортируем как версию «Правки с диска».
-   Изменились оба → побеждает приложение (диск получит его версию), пользователь видит предупреждение. */
+   Изменились оба → сначала durable recovery-копия чужого текста, затем CAS-запись своей версии. */
 import { useStore, toast } from '../store'
 import {
   useBackend,
@@ -16,11 +16,22 @@ import {
   isAbsPath,
   fnv,
 } from './backend'
-import type { Project } from '../types'
 
 import { folderLost } from './paths'
 import { makeIgnore } from './ignore'
+import * as persistence from '../store/persistence'
+import { recoveryPath } from './syncRecovery'
+import { getToken } from './token'
+import { createSyncJournal, journalReplayPolicy, type SyncIntent } from './syncJournal'
 
+type DiskLocal = Record<string, string>
+interface DiskAck {
+  files: Record<string, string>
+  attempted?: string[]
+}
+const diskJournal = createSyncJournal<DiskAck, DiskLocal>()
+const diskJournalKey = (pid: string, scope: string) => 'tf-sync-intent:' + pid + ':' + fnv(scope)
+const resetIntents = new Set<string>()
 const S = () => useStore.getState()
 const KEY = (pid: string) => 'tf-sync:' + pid
 const baseline = new Map<string, Record<string, string>>()
@@ -54,12 +65,15 @@ const saveBase = (pid: string) => {
   try {
     localStorage.setItem(KEY(pid), JSON.stringify(baseline.get(pid) || {}))
   } catch {
-    /* квота */
+    throw new Error('Не удалось сохранить disk checkpoint: локальное хранилище недоступно')
   }
 }
 
+const generations = new Map<string, number>()
 /** Забыть, что было «одинаковым» на диске и в приложении (после смены папки или осознанного восстановления) */
 export function forgetBase(pid: string) {
+  resetIntents.add(pid)
+  generations.set(pid, (generations.get(pid) || 0) + 1)
   baseline.set(pid, {})
   saveBase(pid)
 }
@@ -90,6 +104,20 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
   }
   let proj = S().projects.find((p) => p.id === pid)
   if (!proj || !syncEnabled()) return null
+  const generation = generations.get(pid) || 0
+  const backend = useBackend.getState().base,
+    token = getToken()
+  let folder = proj.path
+  const current = () => S().projects.find((p) => p.id === pid)
+  const valid = () =>
+    current()?.path === folder &&
+    (generations.get(pid) || 0) === generation &&
+    useBackend.getState().base === backend &&
+    getToken() === token &&
+    syncEnabled()
+  const assertContext = () => {
+    if (!valid()) throw new Error('Контекст синхронизации изменился; checkpoint не продвинут')
+  }
   busy.add(pid)
   useBackend.setState({ syncing: true })
   let failed: { path: string; code: string; error: string }[] = []
@@ -98,18 +126,72 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     /* проект из версий до 2.0 не знает свою папку — спрашиваем у сервера и запоминаем */
     if (!isAbsPath(proj.path)) {
       const r = await bResolve(proj)
+      assertContext()
       S().up((p) => {
         p.path = r.dir
       }, pid)
       proj = S().projects.find((p) => p.id === pid)!
+      folder = proj.path
+    }
+    const scope = JSON.stringify([backend, folder, pid]),
+      journalKey = diskJournalKey(pid, scope)
+    const loaded = await diskJournal.load(journalKey)
+    assertContext()
+    let intent: SyncIntent<DiskAck, DiskLocal> | null = loaded.intent
+    if (resetIntents.has(pid)) {
+      if (intent) {
+        await diskJournal.save(journalKey + ':recovery:' + Date.now().toString(36), intent, true)
+        await diskJournal.save(journalKey, null)
+      }
+      resetIntents.delete(pid)
+      intent = null
+    }
+    if (intent && intent.scope !== scope)
+      throw new Error('Disk ack journal принадлежит другой папке/backend; требуется восстановление')
+    if (intent && journalReplayPolicy(intent, loaded.recovered) === 'ambiguous') {
+      if (!intent.recoveryBlocked) {
+        intent = { ...intent, recoveryBlocked: true }
+        await diskJournal.save(journalKey, intent, true)
+        assertContext()
+      }
+      const text = JSON.stringify(
+        {
+          reason: 'Возраст snapshot или новые runtime-правки не разрешают replay; live не заменён',
+          desired: intent.local,
+          prior: intent.prior,
+        },
+        null,
+        2,
+      )
+      S().up((p) => {
+        if (!Object.values(p.files).includes(text))
+          p.files[recoveryPath('files', 'journal-recovery.json', Object.keys(p.files), p.dirs)] = text
+      }, pid)
+      toast({
+        title: 'Требуется проверка disk journal',
+        desc: 'Обе версии сохранены: live и files.journal-recovery.json. Автоматический replay и clean checkpoint остановлены.',
+        icon: 'warn',
+        tone: 'warn',
+      })
+      await persistence.flushPersistence()
+      throw new Error('Неоднозначное disk journal recovery; требуется явное восстановление')
+    }
+    if (loaded.recovered && intent && journalReplayPolicy(intent, loaded.recovered) === 'replay') {
+      const desired = intent.local
+      S().up((p) => {
+        p.files = { ...desired }
+      }, pid)
+      proj = current()!
     }
     const { hashes: disk, truncated, ignore, skip } = await bHashes(proj)
+    assertContext()
     const ig = makeIgnore(ignore || '')
     const skipSet = new Set(skip || [])
     /* файлы, которые сервер не показывает (.gitignore, node_modules…): их отсутствие в списке диска не значит «удалён» */
     const hidden = (p: string) => p.split('/').some((x) => skipSet.has(x)) || ig(p, false)
     sum.truncated = !!truncated
-    const base = loadBase(pid)
+    const base = { ...(intent?.ack.files || loadBase(pid)) }
+    const uncertain = new Set(intent?.ack.attempted || [])
     if (folderLost(Object.keys(disk).length, Object.keys(base).length)) {
       useBackend.setState({ lastError: 'Папка проекта пуста или недоступна: ' + proj.path })
       if (!lostWarned.has(pid)) {
@@ -138,7 +220,8 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     const write: Record<string, string> = {},
       remove: string[] = [],
       pull: string[] = [],
-      dropLocal: string[] = []
+      dropLocal: string[] = [],
+      recover: string[] = []
     const next: Record<string, string> = {}
     const all = new Set([...Object.keys(disk), ...Object.keys(store), ...Object.keys(base)])
     all.forEach((path) => {
@@ -149,7 +232,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       /* эту версию уже пытались записать/удалить — не вышло; ждём, пока файл изменят (иначе повтор каждые 2,5 с) */
       const bad = badPaths.get(pid)?.[path]
       if (bad !== undefined && (bad === 'rm' ? s === undefined : bad === s)) {
-        if (bad === 'rm' && b !== undefined) next[path] = b
+        if (b !== undefined) next[path] = b
         return
       }
       /* папка слишком большая и прочитана не вся: отсутствие файла на диске ничего не значит */
@@ -161,18 +244,24 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
         if (d) next[path] = d
         return
       }
-      const storeSame = b !== undefined && s === b,
+      const storeSame = b !== undefined && s === b && !uncertain.has(path),
         diskSame = b !== undefined && d === b
       if (b === undefined) {
         if (d === undefined) {
           write[path] = files[path]
           next[path] = s
         } else if (s === undefined) {
-          pull.push(path)
+          if (uncertain.has(path)) {
+            // A prepared first creation was undone locally; remote-only is not proof of untouched local.
+            recover.push(path)
+            remove.push(path)
+            sum.conflicts++
+          } else pull.push(path)
         } else {
           write[path] = files[path]
           next[path] = s
           sum.conflicts++
+          recover.push(path)
         }
       } else if (storeSame) {
         // изменился диск
@@ -188,6 +277,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       } else {
         // оба
         sum.conflicts++
+        if (d !== undefined) recover.push(path)
         if (s === undefined) remove.push(path)
         else {
           write[path] = files[path]
@@ -195,6 +285,50 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
         }
       }
     })
+    if (recover.length) {
+      const r = await bRead(proj, recover)
+      assertContext()
+      const copies: Record<string, string> = {}
+      const occupied = [...Object.keys(current()!.files), ...Object.keys(disk), ...Object.keys(base)]
+      for (const path of recover) {
+        const text = r.files[path]
+        // Scan/read mismatch, oversized/unreadable file: defer rather than destroy unknown bytes.
+        if (typeof text !== 'string' || fnv(text) !== disk[path]) {
+          delete write[path]
+          const i = remove.indexOf(path)
+          if (i >= 0) remove.splice(i, 1)
+          delete next[path]
+          if (base[path] !== undefined) next[path] = base[path]
+          queued.add(pid)
+          continue
+        }
+        const prefix = (path + '.disk-conflict').toLowerCase()
+        const existing = Object.entries(current()!.files).find(([k, v]) => {
+          const name = k.toLowerCase(),
+            rest = name.slice(prefix.length)
+          return (
+            v === text &&
+            name.startsWith(prefix) &&
+            (!rest || /^\.\d+$/.test(rest)) &&
+            (!(k in write) || write[k] === text) &&
+            !remove.includes(k) &&
+            !pull.includes(k) &&
+            !dropLocal.includes(k)
+          )
+        })
+        // A failed checkpoint must not grow another identical recovery file on every poll.
+        if (existing) continue
+        const copy = recoveryPath(path, 'disk-conflict', occupied, current()!.dirs)
+        occupied.push(copy)
+        copies[copy] = text
+      }
+      if (Object.keys(copies).length) {
+        S().up((p) => Object.assign(p.files, copies), pid)
+        // A failed/unavailable checkpoint blocks overwrite/delete: recovery must survive restart first.
+        await persistence.flushPersistence()
+        assertContext()
+      }
+    }
     /* пустые папки из дерева приложения → на диск; убранные из дерева — удалить, если пусты */
     const pj = proj
     const hasFile = (d: string) => Object.keys(files).some((f) => f.startsWith(d + '/'))
@@ -203,53 +337,175 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     const mkdirs = emptyNow.filter((d) => !madeDirs.has(d))
     const rmdirs = [...madeDirs].filter((d) => !pj.dirs.includes(d))
     if (Object.keys(write).length || remove.length || mkdirs.length || rmdirs.length) {
-      const r = await bBatch(proj, write, remove, { make: mkdirs, drop: rmdirs })
+      await persistence.flushPersistence()
+      assertContext()
+      const expectedHashes = Object.fromEntries(
+        [...Object.keys(write), ...remove].map((k) => [k, disk[k] ?? null]),
+      )
+      const prior = { ...files }
+      intent = {
+        phase: 'prepared',
+        scope,
+        ack: { files: base, attempted: [...Object.keys(write), ...remove] },
+        prior,
+        local: { ...current()!.files },
+      }
+      await diskJournal.save(journalKey, intent)
+      assertContext()
+      const r = await bBatch(proj, write, remove, { make: mkdirs, drop: rmdirs }, expectedHashes).catch(
+        async (error: unknown) => {
+          if (valid() && intent) {
+            intent = { ...intent, local: { ...current()!.files } }
+            await diskJournal.save(journalKey, intent)
+          }
+          throw error
+        },
+      )
+      assertContext()
       failed = r.failed || []
+      const acknowledged = { ...base },
+        rejected = new Set(failed.map((f) => f.path))
+      for (const [k, v] of Object.entries(write)) if (!rejected.has(k)) acknowledged[k] = fnv(v)
+      for (const k of remove) if (!rejected.has(k)) delete acknowledged[k]
+      intent = {
+        ...intent,
+        phase: 'accepted',
+        ack: {
+          files: acknowledged,
+          attempted: failed.filter((f) => f.path in write || remove.includes(f.path)).map((f) => f.path),
+        },
+        local: { ...current()!.files },
+      }
+      await diskJournal.save(journalKey, intent)
+      assertContext()
       const bad: Record<string, string> = {}
       for (const f of failed) {
+        if (f.code === 'CONFLICT') {
+          delete next[f.path]
+          if (base[f.path] !== undefined) next[f.path] = base[f.path]
+          delete badPaths.get(pid)?.[f.path]
+          queued.add(pid)
+          continue
+        }
         if (f.path in write) {
           bad[f.path] = store[f.path]
           delete next[f.path]
+          if (base[f.path] !== undefined) next[f.path] = base[f.path]
         } else {
           bad[f.path] = 'rm'
           if (base[f.path] !== undefined) next[f.path] = base[f.path]
         }
       }
       badPaths.set(pid, { ...(badPaths.get(pid) || {}), ...bad })
-      saveDirs(pid, new Set(emptyNow))
-      sum.pushed = Object.keys(write).length
-      sum.removed += remove.length
+      const failedPaths = new Set(failed.map((f) => f.path))
+      const successfulDirs = new Set(madeDirs)
+      for (const d of mkdirs) if (!failedPaths.has(d)) successfulDirs.add(d)
+      for (const d of rmdirs) if (!failedPaths.has(d)) successfulDirs.delete(d)
+      saveDirs(pid, successfulDirs)
+      sum.pushed = Object.keys(write).filter((k) => !failedPaths.has(k)).length
+      sum.removed += remove.filter((k) => !failedPaths.has(k)).length
     } else if (madeDirs.size !== emptyNow.length || emptyNow.some((d) => !madeDirs.has(d)))
       saveDirs(pid, new Set(emptyNow))
+    const got: Record<string, string> = {}
     if (pull.length) {
       const r = await bRead(proj, pull)
-      const got: Record<string, string> = {}
-      /* пока читали диск, файл могли изменить в приложении — такую правку не затираем (разберёмся на следующем проходе) */
-      const nowFiles = S().projects.find((p) => p.id === pid)?.files ?? {}
-      const untouched = (k: string) => (nowFiles[k] === undefined ? undefined : fnv(nowFiles[k])) === store[k]
+      assertContext()
       for (const k of pull) {
         const v = r.files[k]
-        if (typeof v === 'string' && untouched(k)) {
-          got[k] = v
-          next[k] = disk[k]
-        } else if (base[k] !== undefined) next[k] = base[k]
-      }
-      for (let i = dropLocal.length - 1; i >= 0; i--)
-        if (!untouched(dropLocal[i])) {
-          next[dropLocal[i]] = base[dropLocal[i]]
-          dropLocal.splice(i, 1)
+        if (typeof v === 'string' && fnv(v) === disk[k]) got[k] = v
+        else {
+          if (base[k] !== undefined) next[k] = base[k]
+          queued.add(pid)
         }
-      if (Object.keys(got).length || dropLocal.length) {
-        importExternal(pid, got, dropLocal)
-        sum.pulled = Object.keys(got).length
-        sum.removed += dropLocal.length
       }
-    } else if (dropLocal.length) {
-      importExternal(pid, {}, dropLocal)
-      sum.removed += dropLocal.length
     }
+    // Always compare, including drop-only passes. Check inside the synchronous mutation too.
+    assertContext()
+    const beforeImport = current()!.files
+    let imported = 0,
+      dropped = 0
+    const acceptedNames: string[] = [],
+      droppedNames: string[] = []
+    const untouched = (now: Record<string, string>, k: string) => now[k] === files[k]
+    S().up((p) => {
+      const accepted: Record<string, string> = {},
+        drops: string[] = []
+      for (const [k, v] of Object.entries(got)) {
+        if (untouched(p.files, k)) {
+          accepted[k] = v
+          next[k] = fnv(v)
+          imported++
+          acceptedNames.push(k)
+        } else {
+          if (base[k] !== undefined) next[k] = base[k]
+          queued.add(pid)
+        }
+      }
+      for (const k of dropLocal) {
+        if (untouched(p.files, k)) {
+          drops.push(k)
+          dropped++
+          droppedNames.push(k)
+        } else {
+          next[k] = base[k]
+          queued.add(pid)
+        }
+      }
+      for (const [k, v] of Object.entries(accepted)) {
+        p.files[k] = v
+        const seg = k.split('/')
+        seg.pop()
+        for (let i = 1; i <= seg.length; i++) {
+          const d = seg.slice(0, i).join('/')
+          if (!p.dirs.includes(d)) p.dirs.push(d)
+        }
+      }
+      for (const k of drops) delete p.files[k]
+    }, pid)
+    if (imported || dropped) recordExternal(pid, acceptedNames, droppedNames)
+    sum.pulled = imported
+    sum.removed += dropped
+    const checkpointFiles = current()!.files
+    if (intent || JSON.stringify(next) !== JSON.stringify(base)) {
+      intent = {
+        phase: 'accepted',
+        scope,
+        ack: { files: next, attempted: intent?.ack.attempted },
+        prior: intent?.prior || (beforeImport !== files ? { ...files } : { ...checkpointFiles }),
+        local: { ...checkpointFiles },
+      }
+      await diskJournal.save(journalKey, intent)
+      assertContext()
+    }
+    try {
+      await persistence.flushPersistence()
+    } catch (error) {
+      if (intent && valid()) await diskJournal.save(journalKey, { ...intent, local: { ...current()!.files } })
+      throw error
+    }
+    assertContext()
+    if (current()!.files !== checkpointFiles) {
+      if (intent) await diskJournal.save(journalKey, { ...intent, local: { ...current()!.files } })
+      queued.add(pid)
+      throw new Error('Файлы изменились во время checkpoint; baseline не продвинут')
+    }
+    // Store updates racing a disk write remain unacknowledged; retry from the previous base.
+    for (const k of Object.keys(write))
+      if (!failed.some((f) => f.path === k) && current()!.files[k] !== write[k]) {
+        if (intent) await diskJournal.save(journalKey, { ...intent, local: { ...current()!.files } })
+        queued.add(pid)
+        throw new Error('Файлы изменились во время записи; ack сохранён отдельно от dirty local')
+      }
+    for (const k of remove)
+      if (!failed.some((f) => f.path === k) && current()!.files[k] !== undefined) {
+        if (intent) await diskJournal.save(journalKey, { ...intent, local: { ...current()!.files } })
+        queued.add(pid)
+        throw new Error('Удалённый файл восстановлен во время записи; ack сохранён отдельно от dirty local')
+      }
+    // Persist before replacing the in-memory baseline as well.
+    localStorage.setItem(KEY(pid), JSON.stringify(next))
     baseline.set(pid, next)
-    saveBase(pid)
+    if (intent && !intent.ack.attempted?.length) await diskJournal.save(journalKey, null)
     /* git: коммит на каждую новую версию */
     const vs = S().projects.find((p) => p.id === pid)?.versions || []
     const last = vs[vs.length - 1]
@@ -284,7 +540,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     if (sum.conflicts && !opts.quiet)
       toast({
         title: 'Файлы менялись и здесь, и на диске',
-        desc: 'Оставил версию из приложения. Старая — в Git и «Истории».',
+        desc: 'Чужой прочитанный текст сохранён в файлах .disk-conflict. Непрочитанные или изменившиеся файлы не перезаписывались. Git-восстановление не гарантируется.',
         icon: 'warn',
         tone: 'warn',
       })
@@ -327,21 +583,9 @@ async function mirrorPush(pid: string) {
   }
 }
 
-function importExternal(pid: string, got: Record<string, string>, drop: string[]) {
+function recordExternal(pid: string, changed: string[], drop: string[]) {
   const st = S()
-  st.up((p: Project) => {
-    for (const [k, v] of Object.entries(got)) {
-      p.files[k] = v
-      const seg = k.split('/')
-      seg.pop()
-      for (let i = 1; i <= seg.length; i++) {
-        const d = seg.slice(0, i).join('/')
-        if (!p.dirs.includes(d)) p.dirs.push(d)
-      }
-    }
-    for (const k of drop) delete p.files[k]
-  }, pid)
-  const names = [...Object.keys(got), ...drop]
+  const names = [...changed, ...drop]
   const n = st.commit(
     {
       title: 'Правки с диска',
@@ -349,7 +593,7 @@ function importExternal(pid: string, got: Record<string, string>, drop: string[]
       author: st.people.me.name,
       tag: 'build',
       feats: [],
-      changes: [...Object.keys(got).map((k) => 'Изменён ' + k), ...drop.map((k) => 'Удалён ' + k)],
+      changes: [...changed.map((k) => 'Изменён ' + k), ...drop.map((k) => 'Удалён ' + k)],
       fixes: [],
       details: ['Внешний редактор или команда в терминале изменили файлы в папке проекта'],
     },
@@ -425,6 +669,9 @@ export function syncProjectOpened(pid: string) {
   if (syncEnabled()) void reconcile(pid)
 }
 export const stopSync = () => {
+  for (const timer of timers.values()) clearTimeout(timer)
+  timers.clear()
+  queued.clear()
   if (poll) clearInterval(poll)
   poll = null
   started = false

@@ -8,6 +8,7 @@ import { useLayout } from '../lib/layout'
 import { HLine } from '../components/ui/Code'
 import { Icon } from '../components/ui/Icon'
 import { merge3, mapCaret } from '../lib/merge3'
+import { useScopedFile } from '../lib/useScopedFile'
 import { reportCaret, usePeers } from '../lib/team'
 import { ago } from '../lib/util'
 import { foldRanges, hiddenLines, unfoldAt, visibleIndex } from '../lib/folds'
@@ -99,14 +100,16 @@ export const CodeSurface = memo(function CodeSurface({
   lang,
   content,
   editing,
+  onFinish,
 }: {
   p: Project
   file: string
   lang: string
   content: string
   editing: boolean
+  onFinish: () => void
 }) {
-  const st = useStore.getState
+  const session = useScopedFile(p.id, file)
   const [text, setText] = useState(content)
   const textRef = useRef(content)
   textRef.current = text
@@ -145,11 +148,13 @@ export const CodeSurface = memo(function CodeSurface({
   const flush = useCallback(() => {
     window.clearTimeout(timer.current)
     if (textRef.current !== last.current) {
-      last.current = textRef.current
-      st().writeFile(file, textRef.current, p.id)
-      editSaved(file)
+      const saved = session.save(last.current, textRef.current)
+      last.current = textRef.current = saved.text
+      setText(saved.text)
+      if (saved.recovered) editIdle()
+      else editSaved(file)
     } else if (useEdit.getState().pending) editIdle()
-  }, [file, p.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [file, session])
 
   /* изменение пришло снаружи (облако, агент, диск, откат) */
   useEffect(() => {
@@ -158,7 +163,11 @@ export const CodeSurface = memo(function CodeSurface({
     let next = content
     if (ours !== last.current) {
       const m = merge3(last.current, ours, content, { ours: 'мои правки', theirs: 'коллега' })
-      next = m ? m.text : ours
+      if (m) next = m.text
+      else {
+        session.save(last.current, ours)
+        next = content
+      }
     }
     if (document.activeElement === ta.current && ta.current)
       sel.current = [
@@ -166,12 +175,13 @@ export const CodeSurface = memo(function CodeSurface({
         mapCaret(ours, next, ta.current.selectionEnd),
       ]
     last.current = content
+    textRef.current = next
     setText(next)
     if (next !== content) {
       window.clearTimeout(timer.current)
       timer.current = window.setTimeout(flush, 120)
     }
-  }, [content, flush])
+  }, [content, flush, session])
   useLayoutEffect(() => {
     if (sel.current && ta.current) {
       ta.current.setSelectionRange(sel.current[0], sel.current[1])
@@ -184,6 +194,7 @@ export const CodeSurface = memo(function CodeSurface({
   }, [editing, flush])
 
   const onChange = (v: string) => {
+    textRef.current = v
     setText(v)
     editPending(file)
     window.clearTimeout(timer.current)
@@ -203,17 +214,19 @@ export const CodeSurface = memo(function CodeSurface({
     const a = t.selectionStart,
       b = t.selectionEnd
     const mod = e.metaKey || e.ctrlKey
-    if (mod && e.key.toLowerCase() === 's') {
+    if (mod && e.code === 'KeyS') {
       e.preventDefault()
       flush()
-      st().toast({ title: 'Сохранено', desc: file, icon: 'check' })
       return
     }
     if (e.key === 'Escape') {
+      e.preventDefault()
+      flush()
+      onFinish()
       t.blur()
       return
     }
-    if (mod && e.key === '/') {
+    if (mod && e.code === 'Slash') {
       const s0 = a > 0 ? v.lastIndexOf('\n', a - 1) + 1 : 0
       let e0 = v.indexOf('\n', b > a && v[b - 1] === '\n' ? b - 1 : b)
       if (e0 < 0) e0 = v.length

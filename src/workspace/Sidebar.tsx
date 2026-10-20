@@ -266,12 +266,21 @@ export function Sidebar() {
             label="Переименовать"
             onClick={() => {
               const c = cm.st!.data
+              const pid = p.id
               cm.close()
               st().openModal({
                 type: 'rename',
                 title: 'Переименовать чат',
                 value: c.title,
-                run: (v) => st().renameChat(c.id, v),
+                run: (v) => {
+                  if (st().projectId === pid) st().renameChat(c.id, v)
+                  else
+                    st().toast({
+                      title: 'Переименование отменено',
+                      desc: 'Открой исходный проект',
+                      icon: 'warn',
+                    })
+                },
               })
             }}
           />
@@ -317,6 +326,7 @@ export function Sidebar() {
             danger
             onClick={() => {
               const c = cm.st!.data
+              const pid = p.id
               cm.close()
               st().openModal({
                 type: 'confirm',
@@ -325,6 +335,10 @@ export function Sidebar() {
                 body: 'Переписка исчезнет у всех участников. Решения агентов останутся в общей памяти проекта.',
                 confirm: 'Удалить',
                 run: () => {
+                  if (st().projectId !== pid) {
+                    st().toast({ title: 'Удаление отменено', desc: 'Открой исходный проект', icon: 'warn' })
+                    return
+                  }
                   stopTurn(c.id)
                   const p = getProject()!
                   const i = p.chats.findIndex((x) => x.id === c.id)
@@ -334,7 +348,20 @@ export function Sidebar() {
                     title: 'Чат удалён',
                     desc: c.title,
                     icon: 'trash',
-                    action: { label: 'Вернуть', run: () => st().restoreChat(copy, i) },
+                    action: {
+                      label: 'Вернуть',
+                      run: () => {
+                        if (!st().projects.some((p) => p.id === pid)) {
+                          st().toast({
+                            title: 'Чат не восстановлен',
+                            desc: 'Исходный проект удалён',
+                            icon: 'warn',
+                          })
+                          return
+                        }
+                        st().restoreChat(copy, i, pid)
+                      },
+                    },
                   })
                 },
               })
@@ -376,12 +403,27 @@ export function Sidebar() {
             label="Переименовать"
             onClick={() => {
               const d = dm.st!.data
+              const pid = p.id
               dm.close()
               st().openModal({
                 type: 'rename',
                 title: 'Переименовать документ',
                 value: d.title,
-                run: (v) => st().updateDoc(d.id, { title: v }),
+                run: (v) => {
+                  if (
+                    !st()
+                      .projects.find((p) => p.id === pid)
+                      ?.docs.some((doc) => doc.id === d.id)
+                  ) {
+                    st().toast({
+                      title: 'Документ не переименован',
+                      desc: 'Исходный документ или проект удалён',
+                      icon: 'warn',
+                    })
+                    return
+                  }
+                  st().updateDoc(d.id, { title: v }, pid)
+                },
               })
             }}
           />
@@ -392,6 +434,7 @@ export function Sidebar() {
             danger
             onClick={() => {
               const d = dm.st!.data
+              const pid = p.id
               dm.close()
               st().openModal({
                 type: 'confirm',
@@ -399,7 +442,13 @@ export function Sidebar() {
                 title: `Удалить «${d.title}»?`,
                 body: 'Документ будет удалён у всех участников.',
                 confirm: 'Удалить',
-                run: () => st().deleteDoc(d.id),
+                run: () => {
+                  if (!st().projects.some((p) => p.id === pid)) {
+                    st().toast({ title: 'Документ не удалён', desc: 'Исходный проект удалён', icon: 'warn' })
+                    return
+                  }
+                  st().deleteDoc(d.id, pid)
+                },
               })
             }}
           />

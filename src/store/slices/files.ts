@@ -1,8 +1,100 @@
 import { put as putTrash, freePath } from '../../lib/trash'
+import { checkPath } from '../../lib/paths'
+import { matchesFileTree, type FilePreimage } from '../../lib/filePreimage'
+import type { Project } from '../../types'
 import { ME } from '../../data/seed'
 import { uid } from '../../lib/util'
 import { tomb, find, pickFile } from '../helpers'
 import type { SetState, Actions } from '../types'
+
+export type FileMutation =
+  | { kind: 'create'; path: string; content?: string }
+  | { kind: 'mkdir'; path: string }
+  | { kind: 'rename'; from: string; to: string; before: FilePreimage }
+  | { kind: 'delete'; path: string; before: FilePreimage }
+  | { kind: 'replace'; path: string; content: string; before: FilePreimage }
+  | { kind: 'restore'; files: Record<string, string>; dirs: string[] }
+
+function parents(p: Pick<Project, 'dirs'>, path: string) {
+  const parts = path.split('/')
+  for (let i = 1; i < parts.length; i++) {
+    const dir = parts.slice(0, i).join('/')
+    if (!p.dirs.includes(dir)) p.dirs.push(dir)
+  }
+}
+function renameTree(p: Project, from: string, to: string) {
+  const exists =
+    from in p.files || p.dirs.includes(from) || Object.keys(p.files).some((f) => f.startsWith(from + '/'))
+  if (!exists) throw new Error('Исходный путь уже удалён или переименован')
+  if (from === to) return
+  const error = checkPath(p, to, from)
+  if (error) throw new Error(error)
+  const mv = (x: string) => (x === from ? to : x.startsWith(from + '/') ? to + x.slice(from.length) : x)
+  const changed = Object.entries(p.files).filter(([path]) => mv(path) !== path)
+  // Stage moves before writing: never overwrite a destination while still traversing sources.
+  for (const [path] of changed) delete p.files[path]
+  for (const [path, text] of changed) p.files[mv(path)] = text
+  p.dirs = [...new Set(p.dirs.map(mv))]
+  parents(p, to)
+}
+
+/** Atomic guarded UI mutations. Ordinary writeFile remains an explicit overwrite API. */
+export function mutateFileTree(set: SetState, pid: string, op: FileMutation) {
+  set((s) => {
+    const p = find(s, pid)
+    if (!p) throw new Error('Исходный проект уже удалён')
+    if (
+      'before' in op &&
+      (op.before.path !== (op.kind === 'rename' ? op.from : op.path) || !matchesFileTree(p, op.before))
+    )
+      throw new Error('Файлы изменились после открытия операции. Повтори действие на свежих данных.')
+    if (op.kind === 'create' || op.kind === 'mkdir') {
+      const error = checkPath(p, op.path)
+      if (error) throw new Error(error)
+      if (op.kind === 'create') p.files[op.path] = op.content ?? ''
+      else p.dirs.push(op.path)
+      parents(p, op.path)
+    } else if (op.kind === 'rename') {
+      renameTree(p, op.from, op.to)
+      if (s.projectId === pid) {
+        const mv = (x: string) =>
+          x === op.from ? op.to : x.startsWith(op.from + '/') ? op.to + x.slice(op.from.length) : x
+        if (s.activeFile) s.activeFile = mv(s.activeFile)
+        for (const [path, text] of Object.entries(s.dirty)) {
+          if (mv(path) !== path) {
+            delete s.dirty[path]
+            s.dirty[mv(path)] = text
+          }
+        }
+      }
+    } else if (op.kind === 'replace') {
+      if (!(op.path in p.files)) throw new Error('Исходный файл уже удалён')
+      p.files[op.path] = op.content
+    } else if (op.kind === 'delete') {
+      if (!Object.keys(op.before.files).length && !op.before.dirs.length)
+        throw new Error('Исходный путь уже удалён')
+      const under = (name: string) => name === op.path || name.startsWith(op.path + '/')
+      for (const [path, content] of Object.entries(p.files).filter(([name]) => under(name))) {
+        const trash = p.trash || []
+        const recovered = freePath((name) => trash.some((item) => item.path === name), path)
+        p.trash = [{ path: recovered, content, at: Date.now() }, ...trash]
+        delete p.files[path]
+        if (s.projectId === pid) delete s.dirty[path]
+      }
+      p.dirs = p.dirs.filter((name) => !under(name))
+      if (s.projectId === pid && s.activeFile && under(s.activeFile)) s.activeFile = pickFile(p)
+    } else {
+      // Validate the entire restoration before the first write: no partially restored tree.
+      for (const path of [...Object.keys(op.files), ...op.dirs]) {
+        const error = checkPath(p, path)
+        if (error) throw new Error(error)
+      }
+      Object.assign(p.files, op.files)
+      p.dirs = [...new Set([...p.dirs, ...op.dirs])]
+      for (const path of Object.keys(op.files)) parents(p, path)
+    }
+  })
+}
 
 export const filesActions = (
   set: SetState,
@@ -48,6 +140,10 @@ export const filesActions = (
     set((s) => {
       const p = find(s, pid)
       if (!p) return
+      if (!(path in p.files)) {
+        const error = checkPath(p, path)
+        if (error) throw new Error(error)
+      }
       p.files[path] = content
       const parts = path.split('/')
       parts.pop()
@@ -69,14 +165,19 @@ export const filesActions = (
     set((s) => {
       const p = find(s)
       if (!p || !(from in p.files)) return
-      p.files[to] = p.files[from]
-      delete p.files[from]
+      renameTree(p, from, to)
       if (s.activeFile === from) s.activeFile = to
     }),
   addDir: (path) =>
     set((s) => {
       const p = find(s)
       if (!p) return
+      if (p.dirs.includes(path)) return
+      const implicit = Object.keys(p.files).some((name) => name.startsWith(path + '/'))
+      if (!implicit) {
+        const error = checkPath(p, path)
+        if (error) throw new Error(error)
+      }
       const parts = path.split('/')
       for (let i = 1; i <= parts.length; i++) {
         const d = parts.slice(0, i).join('/')
@@ -128,27 +229,15 @@ export const filesActions = (
     set((s) => {
       const p = find(s)
       if (!p || from === to) return
+      renameTree(p, from, to)
       const mv = (x: string) => (x === from ? to : x.startsWith(from + '/') ? to + x.slice(from.length) : x)
-      const isDir = p.dirs.includes(from) || Object.keys(p.files).some((f) => f.startsWith(from + '/'))
-      for (const f of Object.keys(p.files)) {
-        const n = isDir ? mv(f) : f === from ? to : f
-        if (n !== f) {
-          p.files[n] = p.files[f]
-          delete p.files[f]
-          if (s.dirty[f] !== undefined) {
-            s.dirty[n] = s.dirty[f]
-            delete s.dirty[f]
-          }
+      for (const [path, text] of Object.entries(s.dirty)) {
+        if (mv(path) !== path) {
+          delete s.dirty[path]
+          s.dirty[mv(path)] = text
         }
       }
-      if (isDir) p.dirs = p.dirs.map(mv)
-      const parts = to.split('/')
-      parts.pop()
-      for (let i = 1; i <= parts.length; i++) {
-        const d = parts.slice(0, i).join('/')
-        if (!p.dirs.includes(d)) p.dirs.push(d)
-      }
-      if (s.activeFile) s.activeFile = isDir ? mv(s.activeFile) : s.activeFile === from ? to : s.activeFile
+      if (s.activeFile) s.activeFile = mv(s.activeFile)
     }),
   commit: (v, pid) => {
     let n = 0

@@ -1,6 +1,7 @@
 import { useStore } from '../store'
 import type { Project } from '../types'
 import { download, uid, localDay } from './util'
+import { detachProject } from './projectIO'
 import { packVersions, unpackVersions, type PackedVersion } from '../store/snapshots'
 
 /* Резервная копия: все проекты и настройки одним JSON. Ключи провайдеров и адрес бэкенда не попадают в файл. */
@@ -75,15 +76,14 @@ export async function importBackup(file: File): Promise<number> {
         n = 2
       while (names.has(name)) name = `${p.name}-${n++}`
       names.add(name)
-      const id = ids.has(p.id) ? 'p' + uid() : p.id
+      // Импорт — новая локальная identity: старые approvals не наследуются даже при свободном id.
+      let id = 'p' + uid()
+      while (ids.has(id)) id = 'p' + uid()
       ids.add(id)
       return {
-        ...p,
+        ...detachProject(p),
         id,
         name,
-        path: '',
-        cloud: undefined,
-        lanes: [],
         versions: unpackVersions(p.versions as unknown as PackedVersion[]),
       } as Project
     })

@@ -7,6 +7,8 @@ const MAX = 300,
 
 /** Выбор .md файлов (или папки) → документы текущего проекта */
 export function importMd(folder: boolean) {
+  const pid = useStore.getState().projectId
+  if (!pid) return
   const inp = document.createElement('input')
   inp.type = 'file'
   inp.multiple = true
@@ -26,10 +28,26 @@ export function importMd(folder: boolean) {
       return
     }
     const docs: { title: string; blocks: Block[] }[] = []
-    for (const f of files.sort((a, b) => a.name.localeCompare(b.name)))
-      docs.push(parseMd(await f.text(), f.name.replace(/\.[^.]+$/, '')))
-    useStore.getState().addDocs(docs)
+    try {
+      for (const f of files.sort((a, b) => a.name.localeCompare(b.name)))
+        docs.push(parseMd(await f.text(), f.name.replace(/\.[^.]+$/, '')))
+    } catch {
+      toast({
+        title: 'Импорт отменён',
+        desc: 'Не удалось прочитать файлы. Документы не изменены.',
+        icon: 'warn',
+        tone: 'err',
+      })
+      return
+    }
+    const project = useStore.getState().projects.find((p) => p.id === pid)
+    if (!project) {
+      toast({ title: 'Импорт отменён', desc: 'Исходный проект удалён', icon: 'warn', tone: 'warn' })
+      return
+    }
+    useStore.getState().addDocs(docs, pid)
     const note = [
+      `В проект «${project.name}»`,
       skipped ? `пропущено других файлов: ${skipped}` : '',
       all.length > files.length ? `слишком больших или сверх ${MAX}: ${all.length - files.length}` : '',
     ]
