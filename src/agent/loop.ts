@@ -1,6 +1,8 @@
 /* /loop — агент сам повторяет задачу проход за проходом. Состояние в памяти (после перезапуска приложения цикл не продолжается).
    Остановка: агент написал LOOP_DONE · набран лимит проходов · три одинаковых ответа подряд · ошибка модели ·
    «Стоп» · проект закрыт · кончился лимит расходов. */
+import { automationAllowed, automationEpoch, registerAutomationStopper } from './automationControl'
+import { useStore } from '../store'
 import { create } from 'zustand'
 import type { ID } from '../types'
 import { loopDone, loopPrompt, fmtGap, type LoopSpec } from './slash'
@@ -42,6 +44,7 @@ export interface LoopState {
 export const useLoops = create<{ loops: Record<ID, LoopState> }>(() => ({ loops: {} }))
 const timers = new Map<ID, ReturnType<typeof setTimeout>>()
 const hooks = new Map<ID, Hooks>()
+const sessions = new Map<ID, symbol>()
 const get = (chatId: ID) => useLoops.getState().loops[chatId]
 const set = (chatId: ID, patch: Partial<LoopState> | null) =>
   useLoops.setState((s) => {
@@ -92,7 +95,10 @@ export async function loopStart(
   h: Hooks = { title: 'Цикл' },
   kind: LoopKind = 'loop',
 ): Promise<boolean> {
-  if (!R || get(chatId)) return false
+  if (!R || get(chatId) || !automationAllowed() || !R.projectOpen(pid)) return false
+  const epoch = automationEpoch()
+  const session = Symbol()
+  sessions.set(chatId, session)
   hooks.set(chatId, h)
   useLoops.setState((s) => ({
     loops: {
@@ -113,8 +119,13 @@ export async function loopStart(
       },
     },
   }))
-  const pre: Pre = h.before ? await h.before(1, get(chatId)).catch((e: Error) => ({ stop: e.message })) : {}
-  if (!get(chatId)) return false /* остановили, пока готовили первый проход */
+  const started = get(chatId)
+  const pre: Pre = h.before ? await h.before(1, started).catch((e: Error) => ({ stop: e.message })) : {}
+  if (sessions.get(chatId) !== session || !get(chatId)) return false
+  if (!automationAllowed(epoch) || !R.projectOpen(pid)) {
+    loopStop(chatId)
+    return false
+  } /* остановили, пока готовили первый проход */
   if (pre.stop) {
     loopStop(chatId, pre.stop)
     return false
@@ -136,6 +147,7 @@ export function loopStop(chatId: ID, why?: string) {
   timers.delete(chatId)
   set(chatId, null)
   hooks.delete(chatId)
+  sessions.delete(chatId)
   if (why && R)
     R.say(
       chatId,
@@ -162,11 +174,14 @@ export function loopPassEnded(chatId: ID, text: string, failed: boolean) {
 }
 
 function schedule(chatId: ID, ms: number) {
+  const session = sessions.get(chatId)
   const old = timers.get(chatId)
   if (old) clearTimeout(old)
   timers.set(
     chatId,
-    setTimeout(() => fire(chatId), ms),
+    setTimeout(() => {
+      if (sessions.get(chatId) === session) void fire(chatId)
+    }, ms),
   )
 }
 
@@ -174,16 +189,20 @@ async function fire(chatId: ID) {
   timers.delete(chatId)
   const st = get(chatId)
   if (!st || !R) return
+  const epoch = automationEpoch()
+  if (!automationAllowed()) return void loopStop(chatId, 'автоматические запуски на паузе')
   if (!R.projectOpen(st.pid)) return void loopStop(chatId, 'проект закрыт')
   /* пользователь сам написал агенту — не перебиваем его, ждём конца хода */
   if (R.busy(chatId)) return schedule(chatId, 3000)
   const n = st.n + 1
   set(chatId, { n, phase: 'run', nextAt: undefined })
+  const session = sessions.get(chatId)
   const h = hooks.get(chatId)
   const pre: Pre = h?.before
     ? await h.before(n, get(chatId) || st).catch((e: Error) => ({ stop: e.message }))
     : {}
-  if (!get(chatId)) return
+  if (sessions.get(chatId) !== session || !get(chatId)) return
+  if (!automationAllowed(epoch) || !R.projectOpen(st.pid)) return void loopStop(chatId)
   if (pre.stop) return void loopStop(chatId, pre.stop)
   /* пока готовили проход, пользователь мог написать агенту */
   if (R.busy(chatId)) {
@@ -202,3 +221,15 @@ async function fire(chatId: ID) {
 
 export const loopLabel = (st: LoopState) =>
   `${st.title} · проход ${st.n}${st.max ? ' из ' + st.max : ' · без лимита'}${st.kind === 'loop' ? ' · пауза ' + fmtGap(st.gap) : ''}`
+
+registerAutomationStopper(() => {
+  for (const id of Object.keys(useLoops.getState().loops)) loopStop(id)
+})
+
+let selectedProject = useStore.getState().projectId
+useStore.subscribe((s) => {
+  if (s.projectId === selectedProject) return
+  selectedProject = s.projectId
+  for (const [id, loop] of Object.entries(useLoops.getState().loops))
+    if (loop.pid !== s.projectId) loopStop(id)
+})

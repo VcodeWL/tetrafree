@@ -1,5 +1,6 @@
 /* Пайплайны из .tetra/pipelines/*.yaml. Каждый шаг — настоящая команда, выполняемая shell-ом бэкенда
    в папке проекта; логи стримятся в панель запусков. Без запущенного бэкенда пайплайн не стартует. */
+import { automationAllowed, automationEpoch, registerAutomationStopper } from './automationControl'
 import { useStore, toast } from '../store'
 import type { DeployRun, ID } from '../types'
 import { uid } from '../lib/util'
@@ -52,15 +53,41 @@ export function pipelinesOf(files: Record<string, string>) {
 }
 
 let active: ID | null = null
+let activeCtl: AbortController | null = null
 let fireTimer = 0
+let selectedProject = S().projectId
+let projectGeneration = 0
+useStore.subscribe((s) => {
+  if (s.projectId !== selectedProject) {
+    selectedProject = s.projectId
+    projectGeneration++
+  }
+})
 /** Событие проекта → запуск подходящих пайплайнов, если включён «Автодеплой». Только при живом бэкенде: симуляции сами не стартуют. */
 export function fireTrigger(pid: ID, ev: TriggerEvent) {
   window.clearTimeout(fireTimer)
-  fireTimer = window.setTimeout(async () => {
-    const st = S()
-    const p = st.projects.find((x) => x.id === pid)
-    if (!p?.deploy.auto || !backendOnline()) return
-    for (const d of pipelinesFor(pipelinesOf(p.files), ev)) await runPipeline(d.name, pid)
+  if (!automationAllowed() || S().projectId !== pid) return
+  const epoch = automationEpoch()
+  const generation = projectGeneration
+  fireTimer = window.setTimeout(() => {
+    void (async () => {
+      const st = S()
+      const p = st.projects.find((x) => x.id === pid)
+      if (
+        !automationAllowed(epoch) ||
+        generation !== projectGeneration ||
+        S().projectId !== pid ||
+        !p?.deploy.auto ||
+        !backendOnline()
+      )
+        return
+      for (const d of pipelinesFor(pipelinesOf(p.files), ev)) {
+        if (!automationAllowed(epoch) || generation !== projectGeneration || S().projectId !== pid) return
+        await runPipeline(d.name, pid, true)
+      }
+    })().catch(() => {
+      /* Detached event callback is supervised. */
+    })
   }, 2500)
 }
 export const pipelineRunning = () => active !== null
@@ -90,6 +117,9 @@ export function scheduleStatus(
   now = Date.now(),
 ): { ok: true; at: number } | { ok: false; text: string } | null {
   if (!d.schedule) return null
+  if (!automationAllowed())
+    return { ok: false, text: 'автоматические запуски на паузе или хранилище недоступно' }
+  if (S().projectId !== pid) return { ok: false, text: 'работает только в выбранном проекте' }
   if (!d.steps.length) return { ok: false, text: 'в пайплайне нет шагов' }
   if (!autoOn) return { ok: false, text: 'не работает: «Автодеплой» выключен' }
   if (!backendOnline()) return { ok: false, text: 'не работает: сервер не запущен' }
@@ -97,8 +127,8 @@ export function scheduleStatus(
   return { ok: true, at }
 }
 export async function schedulerTick(now = Date.now()) {
-  if (active || !backendOnline()) return
-  for (const p of S().projects) {
+  if (!automationAllowed() || active || !backendOnline()) return
+  for (const p of S().projects.filter((p) => p.id === S().projectId)) {
     if (!p.deploy.auto) continue
     for (const d of pipelinesOf(p.files)) {
       if (!d.schedule || !d.steps.length) continue
@@ -107,7 +137,7 @@ export async function schedulerTick(now = Date.now()) {
       if (!last) writeLast(k, now)
       else if (scheduleDue(d.schedule, last, now)) {
         writeLast(k, now)
-        await runPipeline(d.name, p.id)
+        await runPipeline(d.name, p.id, true)
         return
       }
     }
@@ -116,19 +146,32 @@ export async function schedulerTick(now = Date.now()) {
 let schedTimer = 0
 export function startScheduler() {
   if (schedTimer) return
-  schedTimer = window.setInterval(() => void schedulerTick(), 30_000)
+  // Historical running entries have no surviving process/controller after restart.
+  for (const p of S().projects)
+    S().up((pp) => {
+      for (const run of pp.deploy.runs)
+        if (run.status === 'running') {
+          run.status = 'failed'
+          run.log.push('Прервано перезапуском приложения; автоматического продолжения нет')
+          for (const step of run.steps) if (step.state === 'run') step.state = 'fail'
+        }
+    }, p.id)
+  schedTimer = window.setInterval(() => {
+    void schedulerTick().catch(() => {})
+  }, 30_000)
 }
 
 /** pid — для какого проекта запуск; по умолчанию открытый (триггер мог сработать, пока пользователь уже переключился) */
-export async function runPipeline(name = 'release', forPid?: ID) {
+export async function runPipeline(name = 'release', forPid?: ID, background = false) {
   const st = S()
   const pid = forPid ?? st.projectId
-  if (!pid) return
+  if (!pid || st.projectId !== pid || (background && !automationAllowed())) return
   if (active) {
     toast({ title: 'Пайплайн уже идёт', desc: 'Дождись окончания текущего запуска', icon: 'clock' })
     return
   }
-  const p = st.projects.find((x) => x.id === pid)!
+  const p = st.projects.find((x) => x.id === pid)
+  if (!p) return
   const def = pipelinesOf(p.files).find((x) => x.name === name) || pipelinesOf(p.files)[0]
   if (!def) {
     toast({ title: 'Нет пайплайнов', desc: 'Добавь файл в .tetra/pipelines/', tone: 'warn', icon: 'warn' })
@@ -157,6 +200,23 @@ export async function runPipeline(name = 'release', forPid?: ID) {
     steps: def.steps.map((s) => ({ name: s.name, detail: s.run, state: 'wait' })),
   }
   active = run.id
+  const ctl = new AbortController()
+  activeCtl = ctl
+  const epoch = automationEpoch()
+  const unsubscribe = useStore.subscribe((s) => {
+    if (s.projectId !== pid) ctl.abort()
+  })
+  const guard = () => {
+    if (
+      ctl.signal.aborted ||
+      automationEpoch() !== epoch ||
+      S().projectId !== pid ||
+      (background && !automationAllowed())
+    ) {
+      ctl.abort()
+      throw new Error('Пайплайн остановлен пользователем или сменой проекта')
+    }
+  }
   const up = (fn: (r: DeployRun) => void) =>
     S().up((pp) => {
       const r = pp.deploy.runs.find((x) => x.id === run.id)
@@ -168,12 +228,14 @@ export async function runPipeline(name = 'release', forPid?: ID) {
   }, pid)
   try {
     for (let i = 0; i < def.steps.length; i++) {
+      guard()
       const step = def.steps[i]
       up((r) => {
         r.steps[i].state = 'run'
         r.log.push(`▸ ${step.name}`, `  $ ${step.run}`)
       })
       await reconcile(pid, { quiet: true })
+      guard()
       let buf = ''
       const flushLines = (final = false) => {
         const parts = buf.split('\n')
@@ -185,18 +247,23 @@ export async function runPipeline(name = 'release', forPid?: ID) {
       }
       const r = await bExec(p, step.run, {
         timeout: 900,
+        signal: ctl.signal,
         onOut: (d) => {
+          if (ctl.signal.aborted || automationEpoch() !== epoch || S().projectId !== pid) return
           buf += d
           flushLines()
         },
       })
+      guard()
       flushLines(true)
       await reconcile(pid, { quiet: true })
+      guard()
       if (r.code !== 0) throw new Error(`шаг «${step.name}» завершился с кодом ${r.code}`)
       up((r) => {
         r.steps[i].state = 'ok'
       })
     }
+    guard()
     up((r) => {
       r.status = 'ok'
       r.log.push(`✓ ${def.name} завершён`)
@@ -220,6 +287,14 @@ export async function runPipeline(name = 'release', forPid?: ID) {
       if (s) s.state = 'fail'
     })
   } finally {
-    active = null
+    unsubscribe()
+    if (activeCtl === ctl) activeCtl = null
+    if (active === run.id) active = null
   }
 }
+
+registerAutomationStopper(() => {
+  window.clearTimeout(fireTimer)
+  fireTimer = 0
+  activeCtl?.abort()
+})

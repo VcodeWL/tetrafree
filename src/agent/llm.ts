@@ -1,3 +1,5 @@
+import { vaultStartupBlocked } from '../lib/vault'
+import { tokenLimit } from './tokenLimit'
 /* Реальные модели: OpenAI-совместимый /chat/completions (OpenAI, Ollama, роутеры) и Anthropic /messages.
    Стрим читается побайтно; рассуждения (reasoning) показываются вживую отдельно от ответа.
    Если подключён локальный бэкенд — запрос идёт через него (нет проблем с CORS). */
@@ -39,6 +41,8 @@ export interface StreamOpts {
 const IDLE_MS = 90_000
 
 export async function streamChat(o: StreamOpts) {
+  if (vaultStartupBlocked())
+    throw new Error('Подтверди аккаунт и восстановление хранилища ключей перед запросом к модели.')
   const { provider: p, model, system, messages, signal, onDelta, onReasoning, onOpen } = o
   const base = p.baseUrl.replace(/\/+$/, '')
   const anthropic = p.kind === 'anthropic'
@@ -56,13 +60,14 @@ export async function streamChat(o: StreamOpts) {
         model,
         system,
         messages: messages.map((m) => wireMsg(m, true)),
-        max_tokens: o.maxTokens || 16000,
+        ...tokenLimit(p.kind, model, o.maxTokens),
         stream: true,
       }
     : {
         model,
         stream: true,
         messages: [{ role: 'system', content: system }, ...messages.map((m) => wireMsg(m, false))],
+        ...tokenLimit(p.kind, model, o.maxTokens),
       }
   const res = await backendFetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) })
   await ensureOk(res)
@@ -170,6 +175,7 @@ async function readSse(res: Response, signal: AbortSignal, on: (data: string) =>
 
 /** Список моделей провайдера (GET /models). Работает для Anthropic, OpenAI, Ollama и совместимых API. */
 export async function listModels(p: Pick<Provider, 'kind' | 'baseUrl' | 'apiKey'>, signal?: AbortSignal) {
+  if (vaultStartupBlocked()) throw new Error('Сначала подтверди восстановление хранилища ключей.')
   const base = p.baseUrl.replace(/\/+$/, '')
   const headers: Record<string, string> =
     p.kind === 'anthropic'

@@ -1,3 +1,5 @@
+import { AutomationControls } from '../agent/AutomationControls'
+import { openPalette } from '../lib/palette'
 import { useStore, useProject } from '../store'
 import { isDesktop, winClose, winMinimize, winToggleMax } from '../lib/desktop'
 import { Logo } from './ui/primitives'
@@ -142,7 +144,6 @@ function SyncPill() {
 export function TitleBar() {
   const screen = useStore((s) => s.screen)
   const p = useProject()
-  const setPalette = useStore((s) => s.setPalette)
   const dock = useStore((s) => s.dock)
   const setDock = useStore((s) => s.setDock)
   const sideHidden = useStore((s) => s.sideHidden)
@@ -177,7 +178,7 @@ export function TitleBar() {
       </div>
       <div className="tb-c" data-tauri-drag-region>
         {ws && (
-          <button className="tb-search" onClick={() => setPalette(true)}>
+          <button className="tb-search" onClick={() => openPalette()}>
             <Icon name="search" size={13} />
             Поиск и команды<span className="k">{modKey} K</span>
           </button>
@@ -185,6 +186,16 @@ export function TitleBar() {
       </div>
       <div className="tb-r">
         {ws && <SyncPill />}
+        {ws && <AutomationControls />}
+        {screen !== 'auth' && (
+          <button
+            className="tb-ic"
+            title="Центр восстановления"
+            onClick={() => useStore.getState().openModal({ type: 'recovery' })}
+          >
+            <Icon name="clock" size={15} />
+          </button>
+        )}
         {screen !== 'auth' && <Bell />}
         {ws && (
           <>

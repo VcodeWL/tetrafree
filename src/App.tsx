@@ -1,21 +1,21 @@
+import { Modal, MHead } from './components/ui/Modal'
+import { vaultRecoveryState, subscribeVaultRecovery, prepareVaultRecovery } from './lib/vault'
+import { startDesktopLifecycle } from './lib/desktopLifecycle'
+import { osNotify } from './lib/osnotify'
 import { StatusBar } from './components/StatusBar'
 import { actionFor, effective } from './lib/keymap'
 import { Ambient } from './components/Ambient'
 import { UpdateGate } from './components/UpdateGate'
 import { uiStack, codeStack } from './lib/fonts'
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect, useSyncExternalStore } from 'react'
 import { APP_VERSION, latestRelease } from './data/changelog'
 import { AnimatePresence, motion, MotionConfig } from 'framer-motion'
 import { useStore } from './store'
 import { TitleBar } from './components/TitleBar'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { Toasts } from './components/Toasts'
-import { Auth } from './screens/Auth'
-import { Launcher } from './screens/Launcher'
-import { Workspace } from './screens/Workspace'
-import { ModalRoot } from './modals/ModalRoot'
 import { InviteGate } from './modals/InviteGate'
-import { Palette, openPalette } from './modals/Palette'
+import { openPalette, startPaletteBridge } from './lib/palette'
 import { BuildSummaryOverlay } from './modals/BuildSummary'
 import { runPipeline } from './agent/ci'
 import { isRunning, stopTurn } from './agent/engine'
@@ -24,8 +24,66 @@ import { isDesktop, platform, onQuickCapture, updCheck, updInstall } from './lib
 import { useBackend } from './lib/backend'
 import { openInEditor } from './lib/editors'
 
+const Auth = lazy(() => import('./screens/Auth').then((m) => ({ default: m.Auth })))
+const Launcher = lazy(() => import('./screens/Launcher').then((m) => ({ default: m.Launcher })))
+const Workspace = lazy(() => import('./screens/Workspace').then((m) => ({ default: m.Workspace })))
+const ModalRoot = lazy(() => import('./modals/ModalRoot').then((m) => ({ default: m.ModalRoot })))
+const Palette = lazy(() => import('./modals/Palette').then((m) => ({ default: m.Palette })))
+
+function ScreenLoading() {
+  return (
+    <div className="route-loading" role="status">
+      Загружаю рабочее пространство…
+    </div>
+  )
+}
+function DialogLoading() {
+  const close = () => {
+    useStore.getState().closeModal()
+    useStore.getState().setPalette(false)
+  }
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        close()
+      }
+    }
+    window.addEventListener('keydown', key)
+    return () => window.removeEventListener('keydown', key)
+  }, [])
+  return (
+    <Modal label="Загрузка окна" onClose={close}>
+      <MHead icon="clock" title="Загрузка окна" onClose={close} />
+      <p role="status">Загружаю окно…</p>
+      <button className="btn sm" onClick={close}>
+        Отмена
+      </button>
+    </Modal>
+  )
+}
+
 export function App() {
+  const vaultRecovery = useSyncExternalStore(subscribeVaultRecovery, vaultRecoveryState, vaultRecoveryState)
   const screen = useStore((s) => s.screen)
+  const modal = useStore((s) => s.modal)
+  const palette = useStore((s) => s.palette)
+  useEffect(() => startPaletteBridge(), [])
+  useEffect(() => startDesktopLifecycle(), [])
+  useEffect(() => {
+    const on = (event: Event) => {
+      const outcome = (event as CustomEvent<{ outcome?: string }>).detail?.outcome
+      if (!['succeeded', 'failed', 'cancelled', 'interrupted', 'blocked'].includes(outcome || '')) return
+      osNotify(
+        outcome === 'failed' || outcome === 'blocked'
+          ? 'Автоматизация не выполнена'
+          : 'Автоматизация завершена',
+        'Подробности доступны в приложении.',
+      )
+    }
+    window.addEventListener('tetrafree:automation-notification', on)
+    return () => window.removeEventListener('tetrafree:automation-notification', on)
+  }, [])
   const settings = useStore((s) => s.settings)
 
   useEffect(() => {
@@ -231,7 +289,7 @@ export function App() {
     const off = () =>
       useStore.getState().toast({
         title: 'Нет подключения к сети',
-        desc: 'Агенты с API-ключом ответят, когда связь вернётся. Демо-режим работает офлайн.',
+        desc: 'Агенты с API-ключом ответят, когда связь вернётся. Локальные файлы и заметки доступны офлайн.',
         tone: 'warn',
         icon: 'warn',
       })
@@ -324,7 +382,34 @@ export function App() {
               transition={{ duration: 0.18 }}
             >
               <ErrorBoundary>
-                {screen === 'auth' ? <Auth /> : screen === 'launcher' ? <Launcher /> : <Workspace />}
+                <Suspense fallback={<ScreenLoading />}>
+                  {screen === 'auth' ? (
+                    <Auth />
+                  ) : vaultRecovery.blocked ? (
+                    <main className="route-loading">
+                      <h2>Нужно подтвердить хранилище ключей</h2>
+                      <p role="alert">
+                        {vaultRecovery.error || 'Удалённые ключи не будут использованы до проверки аккаунта.'}
+                      </p>
+                      <button
+                        className="btn"
+                        disabled={vaultRecovery.checking}
+                        onClick={() => {
+                          void prepareVaultRecovery().catch(() => {})
+                        }}
+                      >
+                        Повторить проверку
+                      </button>
+                      <button className="btn" onClick={() => useStore.setState({ screen: 'auth' })}>
+                        Подтвердить аккаунт
+                      </button>
+                    </main>
+                  ) : screen === 'launcher' ? (
+                    <Launcher />
+                  ) : (
+                    <Workspace />
+                  )}
+                </Suspense>
               </ErrorBoundary>
             </motion.div>
           </AnimatePresence>
@@ -332,12 +417,22 @@ export function App() {
         <StatusBar />
       </div>
       <ErrorBoundary>
-        <ModalRoot />
+        {modal && (
+          <Suspense fallback={<DialogLoading />}>
+            <ModalRoot />
+          </Suspense>
+        )}
       </ErrorBoundary>
       <ErrorBoundary>
         <InviteGate />
       </ErrorBoundary>
-      <Palette />
+      {palette && (
+        <ErrorBoundary>
+          <Suspense fallback={<DialogLoading />}>
+            <Palette />
+          </Suspense>
+        </ErrorBoundary>
+      )}
       <BuildSummaryOverlay />
       <Toasts />
     </MotionConfig>

@@ -30,11 +30,10 @@ export async function harness() {
     [join(root, 'agent/ci')]: `export const fireTrigger = () => {};`,
     [join(root, 'agent/loop')]:
       `export const loopStop = () => {}; export const loopPassEnded = () => {}; export const setLoopRunner = () => {};`,
-    [join(root, 'lib/osnotify')]: `export const osNotify = () => {};`,
+    [join(root, 'lib/osnotify')]:
+      `export const osNotify = (...args) => globalThis.__agentHarness.notices?.push(args);`,
     [join(root, 'lib/gitctx')]:
       `export const wantsGit = () => false; export const gitContext = async () => '';`,
-    [join(root, 'lib/usage')]:
-      `export const report = () => ({month:{cost:0}}); export const costOf = () => 0; export const fmtUsd = String;`,
     [join(root, 'lib/mcp')]:
       `export const loadMcp = async () => ({tools:{},notes:{}}); export const mcpSection = () => '';`,
     [join(root, 'agent/mcptool')]:
@@ -46,7 +45,7 @@ export async function harness() {
     const outfile = join(dir, 'unit.mjs')
     await build({
       stdin: {
-        contents: `export * from './src/agent/engine'; export {Turn} from './src/agent/turn'; export * from './src/agent/queue'; export * from './src/agent/autorun'; export * from './src/agent/automations'; export * from './src/lib/backend'; export {setToken} from './src/lib/token';`,
+        contents: `export * from './src/agent/automationControl'; export * from './src/agent/automationJournal'; export * from './src/agent/engine'; export {Turn} from './src/agent/turn'; export * from './src/agent/queue'; export * from './src/agent/autorun'; export * from './src/agent/automations'; export * from './src/lib/backend'; export {setToken} from './src/lib/token';`,
         resolveDir: resolve('.'),
       },
       outfile,

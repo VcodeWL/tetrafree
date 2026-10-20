@@ -29,6 +29,9 @@ export interface Auto {
   when: When
   do: Do
   enabled: boolean
+  /** Оценочные USD: максимум резерва на запуск и на месяц. */
+  costLimit?: number
+  monthlyLimit?: number
   /** исходный объект — для хэша разрешения и записи обратно */
   raw: unknown
 }
@@ -115,10 +118,26 @@ export function parseAutomations(text: string | undefined): { list: Auto[]; erro
       act = { notify: d.notify.trim().slice(0, 300) }
     else if (typeof d.task === 'string' && d.task.trim()) act = { task: d.task.trim().slice(0, 200) }
     if (!act) return out.errors.push(`${name}: в do нужно одно из agent, notify, task (непустой текст)`)
+    for (const field of ['costLimit', 'monthlyLimit']) {
+      if (
+        o[field] !== undefined &&
+        (typeof o[field] !== 'number' || !Number.isFinite(o[field]) || (o[field] as number) <= 0)
+      )
+        return out.errors.push(`${name}: ${field} — положительное число USD`)
+    }
     let id = slug(name)
     for (let n = 2; ids.has(id); n++) id = slug(name) + '-' + n
     ids.add(id)
-    out.list.push({ id, name, when, do: act, enabled: o.enabled !== false, raw: r })
+    out.list.push({
+      id,
+      name,
+      when,
+      do: act,
+      enabled: o.enabled !== false,
+      costLimit: o.costLimit as number | undefined,
+      monthlyLimit: o.monthlyLimit as number | undefined,
+      raw: r,
+    })
   })
   return out
 }

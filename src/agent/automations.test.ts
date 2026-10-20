@@ -175,3 +175,23 @@ test('примеры из интерфейса валидны', () => {
   assert.deepEqual(errors, [])
   assert.equal(list.length, EXAMPLES.length)
 })
+
+test('automation cost limits are positive finite numbers and part of approved raw specification', async () => {
+  const raw = {
+    name: 'Unit limit',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+    costLimit: 1,
+    monthlyLimit: 5,
+  }
+  const a = parseAutomations(JSON.stringify({ automations: [raw] })).list[0]
+  assert.equal(a.costLimit, 1)
+  assert.equal(a.monthlyLimit, 5)
+  for (const value of [0, -1, '1', null])
+    assert.equal(
+      parseAutomations(JSON.stringify({ automations: [{ ...raw, costLimit: value }] })).list.length,
+      0,
+    )
+  const b = parseAutomations(JSON.stringify({ automations: [{ ...raw, costLimit: 2 }] })).list[0]
+  assert.notEqual(await autoHash('A', a), await autoHash('A', b))
+})

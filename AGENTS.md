@@ -120,3 +120,12 @@ npm run build
 - `bBatch(..., expectedHashes)` возвращает частичный `failed[]` с `CONFLICT`; это не native atomic CAS относительно внешних процессов. После внешнего ACK отдельно учитывать dirty local, включая undo к старому ancestor.
 - Все новые portable regression suites должны входить в `npm test`, а не только в ручной отчёт. Проверки characterization, воспроизводящие плохой результат, не доказывают fix.
 - Windows native runtime, установленный sidecar/updater/signatures и реальные OAuth/SMTP/MCP требуют отдельной приёмки. Не выдавать Linux mocks или cross-target typecheck за Windows pass. Release остаётся draft до неё.
+
+## Восстановление и управляемый фон (3.2)
+
+- Recovery restore всегда создаёт отдельный `recovered/...`, не проигрывает JSON/удаления и не сбрасывает sync recoveryBlocked автоматически.
+- `confirmedAccountId()` — доказательство для exact backend/token/epoch, не просто `useAccount.user`. Vault delete outbox metadata-only; не очищать tombstones для обхода startup gate.
+- До `prepareVaultRecovery()` после hydration не запускать writable UI/фон. В recovery sign-in `setAccountRecoveryMode(true)` запрещает account-triggered disk resync.
+- Не заменять mount-safe navigation intent фиксированным setTimeout. Lazy consumers должны получить pid/target-bound initial intent.
+- `stopEverything()` оставляет автоматизации paused. History whitelist/стоимость — без prompt/file/key/URL. Ledger оценочный, не billing guarantee.
+- Native close/quit/update final checkpoint — до остановки backend/install. Forced kill/power-loss/native acceptance нельзя объявлять проверенными portable fixtures.

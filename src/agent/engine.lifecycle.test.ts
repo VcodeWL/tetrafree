@@ -42,8 +42,13 @@ const state = {
   projectId: 'A',
   projects: [project('A'), project('B')],
   model: 'local:unit',
-  providers: [{ id: 'local', on: true, kind: 'ollama', models: [{ id: 'unit', name: 'unit' }] }],
-  settings: { autoVerify: false, followAgent: false },
+  providers: [{ id: 'local', on: true, kind: 'ollama', apiKey: '', models: [{ id: 'unit', name: 'unit' }] }],
+  settings: {
+    autoVerify: false,
+    followAgent: false,
+    budget: 0,
+    priceCustom: {} as Record<string, { inp: number; out: number }>,
+  },
   people: { me: { name: 'Tester' } },
   mode: 'dev',
   screen: 'workspace',
@@ -110,6 +115,7 @@ const H = {
   },
   state,
   toasts: [] as unknown[],
+  notices: [] as unknown[],
   stream: async (_o: StreamOpts) => {},
   mcp: async (..._args: unknown[]) => ({ ok: true, text: 'benign MCP result' }),
   web: async (..._args: unknown[]) => ({ ok: true, text: 'benign web result', label: 'unit' }),
@@ -134,6 +140,12 @@ after(() => {
   globalThis.fetch = originalFetch
 })
 function reset(tier: Tier = 'Уведомить') {
+  api.resumeAutomations()
+  state.settings.budget = 0
+  state.settings.priceCustom = {}
+  state.providers[0].kind = 'ollama'
+  state.providers[0].apiKey = ''
+  H.notices = []
   state.projects = [project('A'), project('B')]
   state.projectId = 'A'
   state.model = 'local:unit'
@@ -1001,4 +1013,282 @@ test('F06 reporting failure cannot create a second rejected background promise',
     crypto.subtle.digest = digest
   }
   assert.equal((await api.fireAuto('A', a, {}, 'unit retry')).ok, true)
+})
+
+test('automation history reports actual model failure, not dispatch success, and does not notify raw error', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit history failure',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+  })
+  H.stream = async () => {
+    throw Error('benign private provider detail')
+  }
+  assert.equal((await api.fireAuto('A', a, {}, 'unit')).ok, true)
+  await tick()
+  const r = api.useAutomationJournal.getState().runs[0]
+  assert.equal(r.outcome, 'failed')
+  assert.equal(r.reason, 'error')
+  assert.equal(H.notices.length, 0)
+  assert.doesNotMatch(storage.get(api.JOURNAL_KEY)!, /benign private|Review greeting|Unit history failure/)
+})
+
+test('unknown paid automation model is fail-closed with configured per-run limit, not without one', async () => {
+  reset()
+  state.providers[0].kind = 'custom'
+  state.providers[0].apiKey = 'unit-key'
+  const limited = await approvedAuto({
+    name: 'Unit tariff limited',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+    costLimit: 1,
+  })
+  let calls = 0
+  H.stream = async () => {
+    calls++
+  }
+  await api.fireAuto('A', limited, {}, 'unit')
+  await tick()
+  assert.equal(calls, 0)
+  assert.equal(api.useAutomationJournal.getState().runs[0].reason, 'tariff')
+  const uncapped = await approvedAuto({
+    name: 'Unit tariff uncapped',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+  })
+  await api.fireAuto('A', uncapped, {}, 'unit')
+  await tick()
+  assert.equal(calls, 1)
+  assert.equal(api.useAutomationJournal.getState().runs[0].estimate, null)
+})
+
+test('known automatic model reserves before provider request and passes output token cap', async () => {
+  reset()
+  state.providers[0].kind = 'custom'
+  state.providers[0].apiKey = 'unit-key'
+  state.settings.priceCustom = { unit: { inp: 1, out: 10 } }
+  const limited = await approvedAuto({
+    name: 'Unit known budget',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+    costLimit: 0.01,
+  })
+  const calls: StreamOpts[] = []
+  H.stream = async (o) => {
+    calls.push(o)
+  }
+  await api.fireAuto('A', limited, {}, 'unit')
+  await tick()
+  assert.equal(calls.length, 0)
+  assert.equal(api.useAutomationJournal.getState().runs[0].reason, 'budget')
+  const allowed = await approvedAuto({
+    name: 'Unit known allowed',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+    costLimit: 1,
+  })
+  await api.fireAuto('A', allowed, {}, 'unit')
+  await tick()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].maxTokens, 16000)
+  assert.ok(api.useAutomationJournal.getState().runs[0].reserved > 0)
+})
+
+test('automation cannot weaken raw approved budget through normalized caller fields', async () => {
+  reset()
+  state.providers[0].kind = 'custom'
+  state.providers[0].apiKey = 'unit-key'
+  const a = await approvedAuto({
+    name: 'Unit raw budget',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+    costLimit: 1,
+  })
+  delete a.costLimit
+  let calls = 0
+  H.stream = async () => {
+    calls++
+  }
+  await api.fireAuto('A', a, {}, 'unit')
+  await tick()
+  assert.equal(calls, 0)
+  assert.equal(api.useAutomationJournal.getState().runs[0].reason, 'tariff')
+})
+
+test('stop-all aborts engine and clears queued dispatch even after immediate explicit resume', async () => {
+  reset()
+  const gate = deferred(),
+    started = deferred()
+  let signal: AbortSignal | undefined,
+    calls = 0
+  H.stream = async (o) => {
+    calls++
+    signal = o.signal
+    started.resolve()
+    await gate.promise
+    o.onDelta('<write path="greeting.txt">late text</write>')
+  }
+  const run = api.runTurn('A', 'c', 'Review greeting', 'Builder', 'Уведомить', [])
+  await started.promise
+  api.enqueue('c', 'queued review', [])
+  api.stopEverything()
+  assert.equal(signal?.aborted, true)
+  assert.equal(api.peekQueue('c'), undefined)
+  api.resumeAutomations()
+  gate.resolve()
+  await run
+  await new Promise((r) => setTimeout(r, 400))
+  assert.equal(calls, 1)
+  assert.equal(getProject().files['greeting.txt'], undefined)
+})
+
+test('project change cancels an active automatic model and late output cannot mutate either project', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit background project',
+    when: { manual: true },
+    do: { agent: 'Review greeting', tier: 'Уведомить' },
+  })
+  const gate = deferred(),
+    started = deferred()
+  let signal: AbortSignal | undefined
+  H.stream = async (o) => {
+    signal = o.signal
+    started.resolve()
+    await gate.promise
+    o.onDelta('<write path="greeting.txt">late text</write>')
+  }
+  await api.fireAuto('A', a, {}, 'unit')
+  await started.promise
+  state.projectId = 'B'
+  assert.equal(signal?.aborted, true)
+  gate.resolve()
+  await tick()
+  assert.equal(getProject('A').files['greeting.txt'], undefined)
+  assert.equal(getProject('B').files['greeting.txt'], undefined)
+  assert.equal(api.useAutomationJournal.getState().runs[0].outcome, 'cancelled')
+})
+
+test('manual retry reloads current approval, blocks changed configuration and never restores old event context', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit manual retry',
+    when: { manual: true },
+    do: { task: 'Review greeting' },
+  })
+  await api.fireAuto('A', a, {}, 'unit')
+  const r = api.useAutomationJournal.getState().runs[0]
+  assert.equal((await api.retryAutomation('A', r.id)).ok, true)
+  assert.equal(getProject().tasks.length, 2)
+  getProject().files[api.AUTO_FILE] = JSON.stringify({
+    automations: [{ ...a.raw, do: { task: 'Review changed greeting' } }],
+  })
+  assert.equal((await api.retryAutomation('A', r.id)).ok, false)
+  assert.equal(getProject().tasks.length, 2)
+  const event = await approvedAuto({
+    name: 'Unit event retry',
+    when: { files: 'src/*.ts' },
+    do: { task: 'Review {{files}}' },
+  })
+  await api.fireAuto('A', event, { files: ['src/greeting.ts'] }, 'unit')
+  const eventRun = api.useAutomationJournal.getState().runs[0]
+  assert.equal((await api.retryAutomation('A', eventRun.id)).ok, false)
+  assert.doesNotMatch(storage.get(api.JOURNAL_KEY)!, /src\/greeting.ts/)
+})
+
+test('pause plus resume during asynchronous approval never dispatches the old automatic run', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit pause digest',
+    when: { manual: true },
+    do: { task: 'Review greeting' },
+  })
+  const pending = api.fireAuto('A', a, {}, 'unit')
+  api.pauseAutomations()
+  api.resumeAutomations()
+  assert.equal((await pending).ok, false)
+  assert.equal(getProject().tasks.length, 0)
+})
+
+test('failed automatic run can be manually retried immediately without waiting for scheduler housekeeping', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit immediate retry',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+  })
+  H.stream = async () => {
+    throw Error('unit provider unavailable')
+  }
+  await api.fireAuto('A', a, {}, 'unit')
+  await tick()
+  const r = api.useAutomationJournal.getState().runs[0]
+  assert.equal(r.outcome, 'failed')
+  let calls = 0
+  H.stream = async (o) => {
+    calls++
+    o.onDelta('Greeting reviewed')
+  }
+  assert.equal((await api.retryAutomation('A', r.id)).ok, true)
+  await tick()
+  assert.equal(calls, 1)
+  assert.equal(api.useAutomationJournal.getState().runs[0].outcome, 'succeeded')
+})
+
+test('stop-all removes already parked queue timer; resume cannot revive its queued dispatch', async () => {
+  reset()
+  H.stream = async () => {}
+  api.enqueue('c', 'Review queued greeting', [])
+  await api.runTurn('A', 'c', 'Review greeting', 'Builder', 'Уведомить', [])
+  assert.equal(api.isRunning('c'), true)
+  api.stopEverything()
+  api.resumeAutomations()
+  await new Promise((r) => setTimeout(r, 400))
+  assert.equal(api.isRunning('c'), false)
+  assert.equal(getProject().chats[0].messages.filter((m) => m.kind === 'agent').length, 1)
+})
+
+test('manual retry catches approval infrastructure failure instead of rejecting a UI callback', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit retry digest',
+    when: { manual: true },
+    do: { task: 'Review greeting' },
+  })
+  await api.fireAuto('A', a, {}, 'unit')
+  const id = api.useAutomationJournal.getState().runs[0].id
+  const digest = crypto.subtle.digest
+  crypto.subtle.digest = async () => {
+    throw Error('unit unavailable')
+  }
+  try {
+    assert.equal((await api.retryAutomation('A', id)).ok, false)
+  } finally {
+    crypto.subtle.digest = digest
+  }
+})
+
+test('automatic tool continuation reserves again and stops before a second unaffordable request', async () => {
+  reset()
+  state.providers[0].kind = 'custom'
+  state.providers[0].apiKey = 'unit-key'
+  state.settings.priceCustom = { unit: { inp: 0, out: 10 } }
+  getProject().files['greeting.txt'] = 'Hello'
+  const a = await approvedAuto({
+    name: 'Unit continuation budget',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+    costLimit: 0.2,
+  })
+  let calls = 0
+  H.stream = async (o) => {
+    calls++
+    o.onDelta('<read path="greeting.txt"/>')
+  }
+  await api.fireAuto('A', a, {}, 'unit')
+  await tick()
+  assert.equal(calls, 1)
+  assert.equal(api.useAutomationJournal.getState().runs[0].reason, 'budget')
+  assert.equal(api.useAutomationJournal.getState().runs[0].reserved, 0.16)
 })

@@ -11,6 +11,14 @@ import {
   type FileImage,
   type GuardedFile,
 } from './fileguard'
+import {
+  automationEpoch,
+  registerAutomationStopper,
+  automationAllowed,
+  type AutomationOutcome,
+} from './automationControl'
+import { finishAutomation, reserveAutomation, type RunReason } from './automationJournal'
+import { priceFor } from '../lib/usage'
 import { dangerOf } from './danger'
 import { Turn, tally, commitFiles } from './turn'
 import { history, systemPrompt } from './prompt'
@@ -301,6 +309,15 @@ export function revertTurn(
   toast({ title: 'Правки отменены', desc: `Новая версия v${n}`, icon: 'check', tone: 'ok' })
 }
 
+export interface AutomationExecution {
+  id: string
+  costLimit?: number
+  monthlyLimit?: number
+  estimate?: number | null
+  reason?: RunReason
+  onDone?: (outcome: AutomationOutcome, reason: RunReason) => void
+}
+
 /* ------------------------------------------------------------------ отправка */
 
 export function sendMessage(
@@ -317,11 +334,13 @@ export function sendMessage(
     agent?: string
     tier?: Tier
     prompt?: string
+    automation?: AutomationExecution
   } = {},
 ): boolean {
   const st = S()
   const pid = opts.pid || st.projectId
   if (!pid || !getChat(pid, chatId)) return false
+  if (opts.automation && (!automationAllowed() || st.projectId !== pid)) return false
   const t = text.trim()
   /* silent — проход цикла /loop: в чате вместо «сообщения человека» короткая служебная строка */
   if (!t && !attachments.length && !opts.silent) return false
@@ -398,8 +417,10 @@ export function sendMessage(
     who.name,
     opts.tier ?? who.tier,
     attachments,
-    { ctx: opts.silent ? '' : extra, depth, loop: opts.loop, imgs: opts.imgs },
-  )
+    { ctx: opts.silent ? '' : extra, depth, loop: opts.loop, imgs: opts.imgs, automation: opts.automation },
+  ).catch(() => {
+    if (opts.automation) finishAutomation(opts.automation.id, 'failed', 'error')
+  })
   return true
 }
 
@@ -410,7 +431,14 @@ async function runTurn(
   agent: string,
   tier: Tier,
   attachments: Attachment[],
-  opts: { skipAsk?: boolean; ctx?: string; depth?: number; loop?: boolean; imgs?: string[] } = {},
+  opts: {
+    skipAsk?: boolean
+    ctx?: string
+    depth?: number
+    loop?: boolean
+    imgs?: string[]
+    automation?: AutomationExecution
+  } = {},
 ) {
   cancelQueuedTimer(chatId)
   controllers.get(chatId)?.abort()
@@ -457,18 +485,45 @@ async function runTurn(
     ],
     pid,
   )
+  const epoch = automationEpoch()
+  const unsubscribe =
+    opts.automation || opts.loop
+      ? useStore.subscribe((s) => {
+          if (s.projectId !== pid) ctl.abort()
+        })
+      : () => {}
   const current = () => controllers.get(chatId) === ctl
-  const T = new Turn(pid, chatId, msgId, agent, tier, laneId, ctl, current)
+  const valid = () =>
+    current() && (!(opts.automation || opts.loop) || (automationAllowed(epoch) && S().projectId === pid))
+  const T = new Turn(pid, chatId, msgId, agent, tier, laneId, ctl, valid)
   let summary = ''
   let failed = false
+  let review = false
   try {
-    summary = await liveLoop(T, prompt, attachments, provider!, model!.id, label, opts.ctx, opts.imgs)
-    if (backendOnline() && tier !== 'Эскалация' && S().settings.autoVerify !== false && !T.aborted)
+    summary = await liveLoop(
+      T,
+      prompt,
+      attachments,
+      provider!,
+      model!.id,
+      label,
+      opts.ctx,
+      opts.imgs,
+      opts.automation,
+    )
+    if (
+      !opts.automation &&
+      backendOnline() &&
+      tier !== 'Эскалация' &&
+      S().settings.autoVerify !== false &&
+      !T.aborted
+    )
       await verifyAfter(T, chatId, pid, opts.depth || 0)
     T.patch({ streaming: false, thinking: undefined, endedAt: Date.now() })
     T.guard()
     const ch = T.finish(summary)
-    if (!T.aborted && !(ch && (ch.state === 'proposed' || ch.state === 'partial')))
+    review = !!ch && (ch.state === 'proposed' || ch.state === 'partial')
+    if (!opts.automation && !T.aborted && !(ch && (ch.state === 'proposed' || ch.state === 'partial')))
       osNotify(
         `${agent} закончил`,
         (summary || 'Задача выполнена').replace(/[*`#]/g, '').slice(0, 140),
@@ -477,12 +532,12 @@ async function runTurn(
           S().setCenter({ kind: 'chat', id: chatId })
         },
       )
-    if (tier === 'Уведомить' && ch?.version)
+    if (!opts.automation && tier === 'Уведомить' && ch?.version)
       toast({ title: `${agent} уведомляет`, desc: `v${ch.version} · ${ch.files} файл.`, icon: 'bell' })
-    if (ch && (ch.state === 'proposed' || ch.state === 'partial'))
+    if (!opts.automation && ch && (ch.state === 'proposed' || ch.state === 'partial'))
       notifyEscalation(pid, chatId, agent, `${ch.files} правок ждут решения`)
   } catch (e) {
-    const aborted = ctl.signal.aborted
+    const aborted = T.aborted
     T.stop()
     if (current()) live.endChat(chatId)
     T.flush(true)
@@ -500,12 +555,26 @@ async function runTurn(
       T.upsert({ k: 'text', id: 'err', text: err })
       T.finish('')
       T.patch({ streaming: false, thinking: undefined, error: true, endedAt: Date.now() })
-      osNotify(`${agent}: ошибка`, (e as Error).message.slice(0, 140), () => {
-        S().openProject(pid)
-        S().setCenter({ kind: 'chat', id: chatId })
-      })
+      if (!opts.automation)
+        osNotify(`${agent}: ошибка`, (e as Error).message.slice(0, 140), () => {
+          S().openProject(pid)
+          S().setCenter({ kind: 'chat', id: chatId })
+        })
     }
   } finally {
+    unsubscribe()
+    if (opts.automation) {
+      const a = opts.automation
+      const cancelled = T.aborted
+      const outcome = cancelled ? 'cancelled' : a.reason ? 'blocked' : failed ? 'failed' : 'succeeded'
+      const reason = cancelled ? 'stopped' : a.reason || (failed ? 'error' : review ? 'review' : 'complete')
+      finishAutomation(a.id, outcome, reason, a.estimate)
+      try {
+        a.onDone?.(outcome, reason)
+      } catch {
+        /* Observers must not prevent controller cleanup. */
+      }
+    }
     T.stop()
     const owner = current()
     if (owner) {
@@ -592,11 +661,23 @@ async function liveLoop(
   label: string,
   ctx = '',
   imgs: string[] = [],
+  automation?: AutomationExecution,
 ): Promise<string> {
   const acct = { inChars: 0, steps: 0 }
   try {
-    return await liveLoopInner(T, prompt, attachments, provider, modelId, label, ctx, acct, imgs)
+    return await liveLoopInner(T, prompt, attachments, provider, modelId, label, ctx, acct, imgs, automation)
   } finally {
+    if (automation)
+      automation.estimate = costOf(
+        {
+          inTok: Math.round(acct.inChars / 3.2),
+          outTok: Math.round(T.chars / 3.2),
+          steps: acct.steps,
+          mid: modelId,
+          free: provider.kind === 'ollama',
+        },
+        S().settings.priceCustom,
+      )
     if (acct.steps)
       T.patch({
         usage: {
@@ -621,6 +702,7 @@ async function liveLoopInner(
   ctx: string,
   acct: { inChars: number; steps: number },
   imgs: string[] = [],
+  automation?: AutomationExecution,
 ): Promise<string> {
   const { pid, chatId, agent, msgId } = T
   const project = () => S().projects.find((p) => p.id === pid)!
@@ -678,13 +760,43 @@ async function liveLoopInner(
         id: 'budget',
         text: `\n\n_Остановлено: достигнут месячный лимит расходов ${fmtUsd(lim)}._`,
       })
+      if (automation) automation.reason = 'budget'
       break
     }
     T.patch({ thinking: step ? 'Анализирую результат' : 'Думаю' })
     T.lane({ act: step ? 'продолжает работу' : 'ждёт модель', pct: Math.min(90, 14 + step * 14) })
     let acc = ''
-    acct.steps++
     const sysPrompt = systemPrompt(project(), agent, attachments, mcpText)
+    if (automation) {
+      const prices = priceFor(modelId, S().settings.priceCustom)
+      // UTF-8 bytes + capped output: deliberately conservative reservation, not provider billing.
+      const bytes =
+        new TextEncoder().encode(sysPrompt + messages.map((m) => m.content).join('')).length +
+        messages.reduce((sum, m) => sum + (m.images?.length || 0), 0) * 12000
+      const priced =
+        prices &&
+        Number.isFinite(prices.inp) &&
+        prices.inp >= 0 &&
+        Number.isFinite(prices.out) &&
+        prices.out >= 0
+      const reserve =
+        provider.kind === 'ollama' ? 0 : priced ? (bytes * prices.inp + 16000 * prices.out) / 1e6 : null
+      const reason = reserveAutomation(automation.id, reserve, {
+        run: automation.costLimit,
+        month: automation.monthlyLimit,
+        global: S().settings.budget,
+        spent: monthSpent(),
+      })
+      if (reason) {
+        automation.reason = reason
+        throw new Error(
+          reason === 'tariff'
+            ? 'Тариф неизвестен: оценочный лимит нельзя проверить'
+            : 'Следующий запрос остановлен оценочным лимитом или журналом',
+        )
+      }
+    }
+    acct.steps++
     acct.inChars += sysPrompt.length + messages.reduce((a, m) => a + m.content.length, 0)
     const opIds = new Map<number, ID>()
     const applied = new Set<number>()
@@ -697,6 +809,7 @@ async function liveLoopInner(
         system: sysPrompt,
         messages,
         signal: T.ctl.signal,
+        maxTokens: automation ? 16000 : undefined,
         onOpen: () => {
           if (!T.aborted) T.patch({ thinking: 'Модель отвечает' })
         },
@@ -1131,4 +1244,13 @@ setLoopRunner({
   busy: (chatId) => isRunning(chatId) || (useQueue.getState().q[chatId] || []).length > 0,
   projectOpen: (pid) => S().projectId === pid,
   say: (chatId, pid, text) => S().pushMsg(chatId, { id: uid('m'), kind: 'sys', text, at: Date.now() }, pid),
+})
+
+// One cancellation hub; imports remain one-way (control does not import the engine).
+registerAutomationStopper(() => {
+  for (const ctl of controllers.values()) ctl.abort()
+  for (const ctl of retryCtl.values()) ctl.abort()
+  for (const id of [...queueTimers.keys()]) cancelQueuedTimer(id)
+  for (const id of Object.keys(useQueue.getState().q)) clearQueue(id)
+  autoFix.clear()
 })

@@ -1,7 +1,16 @@
 /* Исполнитель автоматизаций: следит за часами, файлами, задачами и открытием проекта (см. automations.ts). */
 import { useStore, toast } from '../store'
 import type { ID } from '../types'
-import { sendMessage, isRunning } from './engine'
+import { automationAllowed, automationEpoch, registerAutomationStopper } from './automationControl'
+import {
+  automationIdentity,
+  beginAutomation,
+  finishAutomation,
+  modelFamily,
+  useAutomationJournal,
+  runReasonText,
+} from './automationJournal'
+import { sendMessage, isRunning, resolveModel } from './engine'
 import {
   AUTO_FILE,
   parseAutomations,
@@ -79,8 +88,10 @@ useStore.subscribe((s) => {
 const firing = new Set<string>()
 // Identity belongs to the automation, never to an editable display title.
 const autoChats = new Map<string, ID>()
+const pendingRuns = new Map<string, string>()
 export async function fireAuto(pid: ID, a: Auto, ctx: Ctx, why: string) {
   const k = key(pid, a)
+  if (!automationAllowed()) return { ok: false, note: 'Автоматизации на паузе или хранилище недоступно' }
   if (firing.has(k)) return { ok: false, note: 'предыдущий запуск ещё проверяется' }
   firing.add(k)
   try {
@@ -92,7 +103,7 @@ export async function fireAuto(pid: ID, a: Auto, ctx: Ctx, why: string) {
       approvedAuto.name !== a.name
     )
       return { ok: false, note: 'спецификация не совпадает с разрешением' }
-    const copy = JSON.parse(JSON.stringify(a)) as Auto
+    const copy = { ...approvedAuto, id: a.id }
     return await fireAutoInner(pid, copy, { ...ctx, files: ctx.files?.slice() }, why)
   } catch {
     // All detached scheduler/event callers share this supervised boundary.
@@ -102,6 +113,8 @@ export async function fireAuto(pid: ID, a: Auto, ctx: Ctx, why: string) {
       note: 'Ошибка выполнения автоматизации. Проверь её настройки и состояние проекта.',
     }
     try {
+      const runId = pendingRuns.get(k)
+      if (runId) finishAutomation(runId, 'failed', 'error')
       const chatId = watching.get(k) || autoChats.get(k)
       setRunning(pid, a, !!chatId && isRunning(chatId))
       mark(pid, a, result, false)
@@ -110,6 +123,7 @@ export async function fireAuto(pid: ID, a: Auto, ctx: Ctx, why: string) {
     }
     return result
   } finally {
+    pendingRuns.delete(k)
     firing.delete(k)
   }
 }
@@ -131,9 +145,13 @@ async function fireAutoInner(
   if (!a.enabled) return fail('выключена', true)
   const fileText = p.files[AUTO_FILE]
   const generation = projectGeneration
+  const epoch = automationEpoch()
   const hash = await autoHash(pid, a)
+  const identity = await automationIdentity(pid, a.id)
+  const projectIdentity = await automationIdentity(pid, '')
   // Project or specification may change while the asynchronous digest is running.
   if (
+    !automationAllowed(epoch) ||
     generation !== projectGeneration ||
     S().projectId !== pid ||
     !project(pid) ||
@@ -146,15 +164,30 @@ async function fireAutoInner(
   const ok = useAutos.getState().approved[hash]
   if (!ok) return fail('не разрешена — откройте «Настройки → Автоматизации»', true)
   const info = useAutos.getState().runs[k]
-  if (info?.running) return fail('предыдущий запуск ещё идёт', true)
+  if (info?.running) {
+    const previousChat = watching.get(k) || autoChats.get(k)
+    if (!previousChat || isRunning(previousChat)) return fail('предыдущий запуск ещё идёт', true)
+    watching.delete(k)
+    setRunning(pid, a, false)
+  }
   if (!underLimit(info?.recent || [], Date.now()))
     return fail('слишком часто (лимит запусков в час) — остановлена до следующего часа')
+  const { provider, model } = resolveModel()
+  const journalId = beginAutomation(
+    projectIdentity,
+    identity,
+    hash,
+    'agent' in a.do ? modelFamily(model?.id || '', provider?.kind === 'ollama') : 'локальная',
+  )
+  if (!journalId) return fail('Журнал недоступен — запуск заблокирован для сохранности истории')
+  pendingRuns.set(k, journalId)
   const now = Date.now()
   const c = { ...ctx, name: a.name, project: p.name, now }
   lastRun.set(k, now)
   saveLast()
   if ('notify' in a.do) {
     toast({ title: a.name, desc: expand(a.do.notify, c), icon: 'bolt' })
+    finishAutomation(journalId, 'succeeded', 'complete', 0)
     mark(pid, a, { ok: true, note: why }, true)
     return { ok: true, note: why }
   }
@@ -169,6 +202,7 @@ async function fireAutoInner(
       },
       pid,
     )
+    finishAutomation(journalId, 'succeeded', 'complete', 0)
     mark(pid, a, { ok: true, note: 'задача создана' }, true)
     return { ok: true, note: 'задача создана' }
   }
@@ -186,16 +220,36 @@ async function fireAutoInner(
     autoChats.set(k, id)
     chat = project(pid)!.chats.find((x) => x.id === id)
   }
-  if (!chat) return fail('не удалось создать чат')
-  if (isRunning(chat.id)) return fail('агент в этом чате занят', true)
+  if (!chat) {
+    finishAutomation(journalId, 'failed', 'dispatch')
+    return fail('не удалось создать чат')
+  }
+  if (isRunning(chat.id)) {
+    finishAutomation(journalId, 'blocked', 'dispatch')
+    return fail('агент в этом чате занят', true)
+  }
   const sent = sendMessage(chat.id, expand(a.do.agent, c), [], '', 0, {
     silent: `⚙ Автоматизация «${a.name}» — ${why}`,
     pid,
     agent: 'Builder',
     tier: a.do.tier,
     prompt: expand(a.do.agent, c),
+    automation: {
+      id: journalId,
+      costLimit: a.costLimit,
+      monthlyLimit: a.monthlyLimit,
+      onDone: (outcome, reason) => {
+        watching.delete(k)
+        quietUntil.set(k, Date.now() + 20_000)
+        setRunning(pid, a, false)
+        mark(pid, a, { ok: outcome === 'succeeded', note: runReasonText[reason] }, false)
+      },
+    },
   })
-  if (!sent) return fail('агент не запустился (нет модели или лимит расходов)')
+  if (!sent) {
+    finishAutomation(journalId, 'blocked', 'dispatch')
+    return fail('агент не запустился (нет модели или лимит расходов)')
+  }
   setRunning(pid, a, true)
   watching.set(k, chat.id)
   mark(pid, a, { ok: true, note: why + ' · агент работает' }, true)
@@ -212,7 +266,7 @@ function flushFiles() {
   const pid = S().projectId
   const paths = [...pendingFiles]
   pendingFiles = new Set()
-  if (!pid || !paths.length) return
+  if (!automationAllowed() || !pid || !paths.length) return
   for (const a of autosOf(pid)) {
     if (!('files' in a.when)) continue
     if ((quietUntil.get(key(pid, a)) || 0) > Date.now()) continue
@@ -228,6 +282,7 @@ function flushFiles() {
 }
 
 function tick() {
+  if (!automationAllowed()) return
   const pid = S().projectId
   if (!pid) return
   const now = Date.now()
@@ -249,16 +304,66 @@ function tick() {
   }
 }
 
+const openTimers = new Set<ReturnType<typeof setTimeout>>()
+registerAutomationStopper(() => {
+  pendingFiles.clear()
+  if (flushTimer) clearTimeout(flushTimer)
+  flushTimer = undefined
+  for (const t of openTimers) clearTimeout(t)
+  openTimers.clear()
+})
+
+/** Manual retry uses only the currently approved specification, never a persisted prompt/context. */
+export async function retryAutomation(pid: ID, runId: string) {
+  try {
+    return await retryAutomationInner(pid, runId)
+  } catch {
+    return {
+      ok: false,
+      note: 'Не удалось проверить актуальные настройки. Повтори вручную после проверки проекта.',
+    }
+  }
+}
+async function retryAutomationInner(pid: ID, runId: string) {
+  const epoch = automationEpoch()
+  const generation = projectGeneration
+  const r = useAutomationJournal.getState().runs.find((x) => x.id === runId)
+  if (!r || r.outcome === 'running' || S().projectId !== pid || !automationAllowed())
+    return { ok: false, note: 'Открой проект и сними паузу. Рабочий запуск повторять нельзя.' }
+  for (const a of autosOf(pid)) {
+    if ((await automationIdentity(pid, a.id)) !== r.identity) continue
+    const hash = await autoHash(pid, a)
+    if (!automationAllowed(epoch) || generation !== projectGeneration || S().projectId !== pid)
+      return { ok: false, note: 'Проект или разрешение запуска изменились во время проверки' }
+    if (hash !== r.approval)
+      return { ok: false, note: 'Настройки изменились. Разреши и запусти актуальную автоматизацию вручную.' }
+    if ('files' in a.when || 'task' in a.when)
+      return {
+        ok: false,
+        note: 'Контекст файлов и задач не сохраняется. Воспроизведи событие или запусти вручную с новым контекстом.',
+      }
+    return fireAuto(pid, a, {}, 'ручной повтор')
+  }
+  return { ok: false, note: 'Исходная автоматизация удалена или недоступна в этом проекте' }
+}
+
 let started = false
 export function startAutomations() {
   if (started) return
   started = true
   setInterval(tick, 15_000)
   let prev = S()
-  const onOpen = (pid: ID) =>
-    setTimeout(() => {
+  const onOpen = (pid: ID) => {
+    if (!automationAllowed()) return
+    const epoch = automationEpoch()
+    const generation = projectGeneration
+    const t = setTimeout(() => {
+      openTimers.delete(t)
+      if (!automationAllowed(epoch) || generation !== projectGeneration || S().projectId !== pid) return
       for (const a of autosOf(pid)) if ('open' in a.when) void fireAuto(pid, a, {}, 'проект открыт')
     }, 2500)
+    openTimers.add(t)
+  }
   if (prev.projectId) onOpen(prev.projectId)
   useStore.subscribe((s) => {
     const was = prev
@@ -271,14 +376,24 @@ export function startAutomations() {
       if (pid) onOpen(pid)
       return
     }
-    if (!pid) return
+    if (!pid || !automationAllowed()) return
     const a = s.projects.find((p) => p.id === pid)
     const b = was.projects.find((p) => p.id === pid)
     if (!a || !b) return
     if (a.files !== b.files) {
       for (const f of Object.keys(a.files)) if (a.files[f] !== b.files[f]) pendingFiles.add(f)
       for (const f of Object.keys(b.files)) if (!(f in a.files)) pendingFiles.add(f)
-      if (!flushTimer) flushTimer = setTimeout(flushFiles, 8000)
+      if (!flushTimer) {
+        const epoch = automationEpoch()
+        flushTimer = setTimeout(() => {
+          if (!automationAllowed(epoch)) {
+            pendingFiles.clear()
+            flushTimer = undefined
+            return
+          }
+          flushFiles()
+        }, 8000)
+      }
     }
     if (a.tasks !== b.tasks) {
       const old = new Map(b.tasks.map((t) => [t.id, t.status]))
