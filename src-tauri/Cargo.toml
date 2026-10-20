@@ -1,6 +1,6 @@
 [package]
 name = "tetrafree"
-version = "3.1.4"
+version = "3.1.5"
 description = "TetraFree — совместная разработка с ИИ-агентами"
 edition = "2021"
 rust-version = "1.77"
@@ -27,6 +27,9 @@ default = []
 extras = ["dep:tauri-plugin-autostart", "dep:tauri-plugin-global-shortcut"]
 # Автообновление через GitHub Releases (нужен ключ подписи, см. .github/workflows/release.yml)
 updater = ["dep:tauri-plugin-updater"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [profile.release]
 codegen-units = 1

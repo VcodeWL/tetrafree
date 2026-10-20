@@ -20,6 +20,8 @@ pub async fn update_check(app: AppHandle) -> Result<serde_json::Value, String> {
 /// Скачать, остановить встроенный сервер (иначе он останется висеть и займёт порт), установить и перезапустить
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<crate::ServerChild>();
+    let _lease = state.1.acquire()?;
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater
         .check()
@@ -32,17 +34,30 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         .download(
             move |chunk, total| {
                 done += chunk as u64;
-                let _ = progress.emit("update-progress", serde_json::json!({ "done": done, "total": total }));
+                let _ = progress.emit(
+                    "update-progress",
+                    serde_json::json!({ "done": done, "total": total }),
+                );
             },
             || {},
         )
         .await
         .map_err(|e| e.to_string())?;
-    if let Some(st) = app.try_state::<crate::ServerChild>() {
-        if let Some(mut c) = st.0.lock().unwrap().take() {
-            let _ = c.kill();
-        }
+    let mut backend = state
+        .0
+        .lock()
+        .map_err(|_| "Ошибка состояния сервера".to_string())?;
+    if let Some(child) = backend.take() {
+        child.stop()?;
     }
-    update.install(bytes).map_err(|e| e.to_string())?;
+    if let Err(install_error) = update.install(bytes) {
+        let error = match crate::server::spawn(&app) {
+            Ok(child) => { *backend = Some(child); format!("Обновление не установлено: {install_error}. Сервер восстановлен.") }
+            Err(recovery) => format!("Обновление не установлено: {install_error}. Сервер восстановить не удалось: {recovery}"),
+        };
+        crate::server::note(&error);
+        return Err(error);
+    }
+    drop(backend);
     app.restart()
 }

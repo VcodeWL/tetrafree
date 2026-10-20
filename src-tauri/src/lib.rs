@@ -2,9 +2,11 @@ use tauri::Manager;
 
 #[cfg(feature = "extras")]
 mod extras;
+mod lifecycle;
+mod paths;
+mod server;
 #[cfg(feature = "updater")]
 mod updates;
-mod server;
 
 /// Версия и платформа — фронтенд показывает их в настройках.
 #[tauri::command]
@@ -71,7 +73,10 @@ pub fn run() {
             extras::setup(app)?;
             // Бэкенд (проекты на диске, shell, git): встроенный node-сервер (см. server.rs).
             // Состояние регистрируем всегда — даже если запуск не удался, команды server_* работают.
-            app.manage(server::ServerChild(std::sync::Mutex::new(None)));
+            app.manage(server::ServerChild(
+                std::sync::Mutex::new(None),
+                lifecycle::LifecycleGate::default(),
+            ));
             match server::spawn(app.handle()) {
                 Ok(child) => {
                     *app.state::<server::ServerChild>().0.lock().unwrap() = Some(child);
@@ -92,8 +97,10 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 if let Some(st) = app.try_state::<ServerChild>() {
-                    if let Some(mut c) = st.0.lock().unwrap().take() {
-                        let _ = c.kill();
+                    if let Some(c) = st.0.lock().unwrap().take() {
+                        if let Err(e) = c.stop() {
+                            server::note(&e);
+                        }
                     }
                 }
             }

@@ -15,7 +15,10 @@ pub const SHORTCUT: &str = "Ctrl+Alt+N";
 static TRAY_ON_CLOSE: AtomicBool = AtomicBool::new(false);
 
 fn flag_path(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("tray-on-close"))
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("tray-on-close"))
 }
 fn load_flag(app: &AppHandle) {
     let on = flag_path(app).map(|p| p.exists()).unwrap_or(false);
