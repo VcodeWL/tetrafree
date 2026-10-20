@@ -1,3 +1,4 @@
+import { DesktopSystemRows } from '../components/DesktopSystem'
 import { ServerHelp } from '../components/ServerHelp'
 import { markSeen } from '../lib/whatsnew'
 import { UsagePanel } from './UsagePanel'
@@ -24,16 +25,7 @@ import { storageInfo, storageLevel, fmtMb } from '../lib/storageUse'
 import { build as buildSettings, parse as parseSettings } from '../lib/settingsIO'
 import { UI_FONTS, CODE_FONTS } from '../lib/fonts'
 import { enableOsNotify } from '../lib/osnotify'
-import {
-  isDesktop,
-  sysInfo,
-  sysSetAutostart,
-  sysSetTray,
-  updCheck,
-  updInstall,
-  type SysInfo,
-  type UpdateInfo,
-} from '../lib/desktop'
+import { isDesktop, updCheck, updInstall, type UpdateInfo } from '../lib/desktop'
 import { backupNow, lastAutoBackup } from '../lib/autobackup'
 import { bBackup, bReveal, bCheckEditor, type BackupInfo } from '../lib/backend'
 import { useEditors, loadEditors, pickEditor } from '../lib/editors'
@@ -805,7 +797,7 @@ function Appearance() {
           }}
         />
       </div>
-      <SystemRows />
+      <DesktopSystemRows />
       <UpdateRow />
     </>
   )
@@ -872,71 +864,6 @@ function UpdateRow() {
           </button>
         )}
       </div>
-    </>
-  )
-}
-
-/** Автозапуск, трей и глобальная «быстрая задача» — только в десктопной сборке с фичей extras */
-function SystemRows() {
-  const [info, setInfo] = useState<SysInfo | null>(null)
-  useEffect(() => {
-    void sysInfo().then(setInfo)
-  }, [])
-  if (!info) return null
-  const fail = (e: unknown) =>
-    toast({
-      title: 'Не удалось изменить',
-      desc: String((e as Error)?.message ?? e),
-      icon: 'warn',
-      tone: 'warn',
-    })
-  return (
-    <>
-      <div className="srow">
-        <div className="sl">
-          <div className="t">Запускать вместе с Windows</div>
-          <div className="d">
-            TetraFree стартует при входе в систему; если включён значок в трее — сразу прячется в него.
-          </div>
-        </div>
-        <Switch
-          on={info.autostart}
-          label="Запускать вместе с Windows"
-          onChange={(v) =>
-            sysSetAutostart(v)
-              .then(() => setInfo({ ...info, autostart: v }))
-              .catch(fail)
-          }
-        />
-      </div>
-      <div className="srow">
-        <div className="sl">
-          <div className="t">Значок в трее</div>
-          <div className="d">
-            Закрытие окна прячет приложение в трей, агенты и сервер продолжают работать. Выход — в меню
-            значка.
-          </div>
-        </div>
-        <Switch
-          on={info.tray}
-          label="Значок в трее"
-          onChange={(v) =>
-            sysSetTray(v)
-              .then(() => setInfo({ ...info, tray: v }))
-              .catch(fail)
-          }
-        />
-      </div>
-      {info.shortcut && (
-        <div className="srow">
-          <div className="sl">
-            <div className="t">Быстрая задача из любого окна</div>
-            <div className="d">
-              <kbd>{info.shortcut}</kbd> показывает TetraFree и открывает форму новой задачи.
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 }

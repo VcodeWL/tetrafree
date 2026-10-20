@@ -17,7 +17,10 @@ import {
   parseEvery,
   type Auto,
 } from '../agent/automations'
-import { fireAuto } from '../agent/autorun'
+import { fireAuto, retryAutomation } from '../agent/autorun'
+import { AutomationControls } from '../agent/AutomationControls'
+import { useAutomationControl, setAutomationNotifications } from '../agent/automationControl'
+import { useAutomationJournal, automationIdentity, runReasonText } from '../agent/automationJournal'
 
 const ago = (t: number) => {
   const s = Math.round((Date.now() - t) / 1000)
@@ -36,15 +39,36 @@ export function Automations() {
   const { list, errors } = useMemo(() => parseAutomations(text), [text])
   const approved = useAutos((s) => s.approved)
   const runs = useAutos((s) => s.runs)
+  const journal = useAutomationJournal()
+  const notifications = useAutomationControl((s) => s.notifications)
+  const [projectIdentity, setProjectIdentity] = useState('')
+  const [identities, setIdentities] = useState<Record<string, string>>({})
   const [hashes, setHashes] = useState<Record<string, string>>({})
   const [confirm, setConfirm] = useState('')
   const [adding, setAdding] = useState(false)
 
   useEffect(() => {
     let live = true
-    void Promise.all(list.map(async (a) => [a.id, await autoHash(p.id, a)] as const)).then(
-      (x) => live && setHashes(Object.fromEntries(x)),
+    setHashes({})
+    setProjectIdentity('')
+    void automationIdentity(p.id, '')
+      .then((identity) => {
+        if (live) setProjectIdentity(identity)
+      })
+      .catch(() => {})
+    setIdentities({})
+    void Promise.all(
+      list.map(async (a) => [a.id, await autoHash(p.id, a), await automationIdentity(p.id, a.id)] as const),
     )
+      .then((rows) => {
+        if (live) {
+          setHashes(Object.fromEntries(rows.map(([id, hash]) => [id, hash])))
+          setIdentities(Object.fromEntries(rows.map(([id, , identity]) => [id, identity])))
+        }
+      })
+      .catch(() => {
+        if (live) setHashes({})
+      })
     return () => {
       live = false
     }
@@ -53,13 +77,20 @@ export function Automations() {
   const write = (t: string) => useStore.getState().writeFile(AUTO_FILE, t, p.id)
   const upd = (a: Auto, f: (r: Record<string, unknown>) => Record<string, unknown> | null) => {
     try {
-      write(updateAutomation(text!, a.id, f))
+      const st = useStore.getState()
+      const latest = st.projects.find((x) => x.id === p.id)?.files[AUTO_FILE]
+      if (st.projectId !== p.id || latest !== text)
+        throw new Error('Настройки изменились. Повтори действие с актуальной версией.')
+      write(updateAutomation(latest!, a.id, f))
     } catch (e) {
       toast({ title: 'Не получилось', desc: (e as Error).message, icon: 'warn', tone: 'warn' })
     }
   }
   const add = (rec: Record<string, unknown>) => {
     try {
+      const st = useStore.getState()
+      if (st.projectId !== p.id || st.projects.find((x) => x.id === p.id)?.files[AUTO_FILE] !== text)
+        throw new Error('Настройки изменились. Повтори действие с актуальной версией.')
       write(addAutomation(text, rec))
       setAdding(false)
       toast({
@@ -89,6 +120,26 @@ export function Automations() {
   return (
     <>
       <h2>Автоматизации</h2>
+      <AutomationControls />
+      <label className="dim">
+        <input
+          type="checkbox"
+          checked={notifications}
+          onChange={(e) => setAutomationNotifications(e.target.checked)}
+        />{' '}
+        Уведомлять об итогах автоматизаций (без содержимого проекта)
+      </label>
+      <p className="sd">
+        Расходы — оценка, не счёт провайдера. Лимиты используют консервативный резерв перед каждым запросом:
+        он может быть выше фактической оценки. Неизвестный тариф блокирует запрос только при настроенном
+        лимите. Без тарифа гарантировать расходы нельзя.
+      </p>
+      {journal.unavailable && (
+        <div className="ext-note bad" role="alert">
+          Журнал не удалось прочитать или сохранить. Новые запуски заблокированы; исходная запись не
+          заменяется.
+        </div>
+      )}
       <p className="sd">
         «Когда случилось X — сделай Y»: по расписанию, при изменении файлов, при смене статуса задачи, при
         открытии проекта. Хранятся в <code>.tetra/automations.json</code> и едут вместе с проектом. Работают,
@@ -99,6 +150,57 @@ export function Automations() {
           {e}
         </div>
       ))}
+      <section aria-label="История автоматизаций">
+        <h3>История запусков</h3>
+        <p className="dim">
+          До 100 последних запусков. Запросы, файлы и тексты ошибок в этот журнал не записываются. Повтор —
+          только вручную по неизменённой разрешённой конфигурации; события файлов и задач не воспроизводятся.
+        </p>
+        {journal.runs
+          .filter((r) => r.project === projectIdentity)
+          .slice(0, 30)
+          .map((r) => {
+            const a = list.find((x) => identities[x.id] === r.identity)
+            return (
+              <div className="ext-card" key={r.id}>
+                <b>{a?.name || 'Автоматизация'}</b> · {new Date(r.at).toLocaleString('ru-RU')} ·{' '}
+                {r.outcome === 'running' ? 'Работает' : runReasonText[r.reason]}
+                <div className="dim">
+                  Модель: {r.model}. Оценка:{' '}
+                  {r.estimate === null
+                    ? 'недостаточно данных — расходы неизвестны'
+                    : `$${r.estimate.toFixed(4)}`}
+                  . Консервативный резерв: ${r.reserved.toFixed(4)}.
+                </div>
+                {r.outcome !== 'running' && (
+                  <button
+                    className="btn sm"
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          'Повторить актуальную разрешённую автоматизацию? Это новый запуск: контекст и файлы из прежнего запуска не сохранялись.',
+                        )
+                      )
+                        return
+                      void retryAutomation(p.id, r.id).then((result) =>
+                        toast({
+                          title: result.ok ? 'Повтор запущен' : 'Повтор не запущен',
+                          desc: result.note,
+                          tone: result.ok ? undefined : 'warn',
+                        }),
+                      )
+                    }}
+                  >
+                    Повторить вручную…
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        {!journal.runs.some((r) => r.project === projectIdentity) && (
+          <p className="dim">В этом проекте ещё нет запусков текущих автоматизаций.</p>
+        )}
+      </section>
       {list.map((a) => {
         const h = hashes[a.id]
         const ok = !!h && !!approved[h]
@@ -122,6 +224,20 @@ export function Automations() {
             <div className="dim">
               <b>Что:</b> {describeDo(a.do)}
             </div>
+            {'agent' in a.do && (
+              <div className="ec-act">
+                <BudgetLimit
+                  label="Лимит на запуск, USD"
+                  value={a.costLimit}
+                  onCommit={(value) => upd(a, (r) => withLimit(r, 'costLimit', value))}
+                />
+                <BudgetLimit
+                  label="Лимит на месяц, USD"
+                  value={a.monthlyLimit}
+                  onCommit={(value) => upd(a, (r) => withLimit(r, 'monthlyLimit', value))}
+                />
+              </div>
+            )}
             {info?.last && (
               <div className="dim">
                 Последний раз: {ago(info.last.at)} — {info.last.note}
@@ -145,6 +261,14 @@ export function Automations() {
                   <button
                     className="btn sm pri"
                     onClick={() => {
+                      const st = useStore.getState()
+                      if (
+                        st.projectId !== p.id ||
+                        st.projects.find((x) => x.id === p.id)?.files[AUTO_FILE] !== text
+                      ) {
+                        setConfirm('')
+                        return toast({ title: 'Настройки изменились. Проверь их заново.', tone: 'warn' })
+                      }
                       setApproved(h, true)
                       setConfirm('')
                     }}
@@ -347,5 +471,45 @@ function AddForm({ onAdd, onCancel }: { onAdd: (r: Record<string, unknown>) => v
         </button>
       </div>
     </form>
+  )
+}
+
+function withLimit(raw: Record<string, unknown>, field: string, value: number | undefined) {
+  const next = { ...raw }
+  if (value === undefined) delete next[field]
+  else next[field] = value
+  return next
+}
+function BudgetLimit({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string
+  value?: number
+  onCommit: (value: number | undefined) => void
+}) {
+  return (
+    <label>
+      {label}{' '}
+      <input
+        className="inp"
+        type="number"
+        min="0.001"
+        step="0.01"
+        key={String(value)}
+        defaultValue={value ?? ''}
+        onBlur={(e) => {
+          const text = e.currentTarget.value
+          if (text === String(value ?? '')) return
+          const amount = Number(text)
+          if (text && (!Number.isFinite(amount) || amount <= 0)) {
+            toast({ title: 'Нужен положительный лимит USD', tone: 'warn' })
+            return
+          }
+          onCommit(text ? amount : undefined)
+        }}
+      />
+    </label>
   )
 }

@@ -97,6 +97,7 @@ export function Composer({
   running: boolean
   placeholder?: string
 }) {
+  const pid = useStore((s) => s.projectId)
   const draft = useStore((s) => s.drafts[chatId] || '')
   const setDraft = useStore((s) => s.setDraft)
   const enterToSend = useStore((s) => s.settings.enterToSend)
@@ -138,19 +139,45 @@ export function Composer({
     ta.current?.focus()
   }, [chatId])
   useEffect(() => {
+    const valid = () => {
+      const s = useStore.getState()
+      return (
+        s.projectId === pid &&
+        s.screen === 'workspace' &&
+        s.center.kind === 'chat' &&
+        s.center.id === chatId &&
+        s.projects.find((p) => p.id === s.projectId)?.chats.some((c) => c.id === chatId)
+      )
+    }
+    const focus = () => {
+      if (!valid()) return
+      const length = (useStore.getState().drafts[chatId] || '').length
+      ta.current?.focus()
+      ta.current?.setSelectionRange(length, length)
+    }
     const h = (e: Event) => {
       const d = (e as CustomEvent).detail
-      if (d?.chatId === chatId) {
-        setDraft(chatId, d.text)
-        setTimeout(() => {
-          ta.current?.focus()
-          ta.current?.setSelectionRange(d.text.length, d.text.length)
-        })
-      }
+      if (
+        !valid() ||
+        d?.chatId !== chatId ||
+        typeof d.text !== 'string' ||
+        (d.pid && d.pid !== useStore.getState().projectId)
+      )
+        return
+      setDraft(chatId, d.text)
+      focus()
+    }
+    const onFocus = (e: Event) => {
+      const d = (e as CustomEvent).detail
+      if (d?.pid === useStore.getState().projectId && d.chatId === chatId) focus()
     }
     window.addEventListener('tf:compose', h)
-    return () => window.removeEventListener('tf:compose', h)
-  }, [chatId, setDraft])
+    window.addEventListener('tf:compose-focus', onFocus)
+    return () => {
+      window.removeEventListener('tf:compose', h)
+      window.removeEventListener('tf:compose-focus', onFocus)
+    }
+  }, [pid, chatId, setDraft])
 
   const add = (files: FileList | File[]) => {
     Array.from(files).forEach((f) => {

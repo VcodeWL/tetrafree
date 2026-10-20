@@ -1,3 +1,4 @@
+import { Modal, MHead } from '../components/ui/Modal'
 import { lazy, Suspense } from 'react'
 import { useStore } from '../store'
 import { ProviderModal, NewChatModal, ConfirmModal, RenameModal, ShortcutsModal, TaskModal } from './Forms'
@@ -5,6 +6,7 @@ import { NewProjectModal, ProjectFolderModal } from './NewProject'
 
 /* Тяжёлые окна грузятся при первом открытии — запуск приложения от этого быстрее */
 const BlameModal = lazy(() => import('./BlameModal').then((m) => ({ default: m.BlameModal })))
+const RecoveryModal = lazy(() => import('./RecoveryModal').then((m) => ({ default: m.RecoveryModal })))
 const TrashModal = lazy(() => import('./TrashModal').then((m) => ({ default: m.TrashModal })))
 const SettingsModal = lazy(() => import('./Settings').then((m) => ({ default: m.SettingsModal })))
 const VersionsModal = lazy(() => import('./Versions').then((m) => ({ default: m.VersionsModal })))
@@ -19,7 +21,20 @@ const ReplayModal = lazy(() => import('./Replay').then((m) => ({ default: m.Repl
 
 export function ModalRoot() {
   const body = useModalBody()
-  return <Suspense fallback={null}>{body}</Suspense>
+  return <Suspense fallback={<ModalLoading />}>{body}</Suspense>
+}
+
+function ModalLoading() {
+  const close = useStore((s) => s.closeModal)
+  return (
+    <Modal label="Загрузка окна">
+      <MHead icon="clock" title="Загрузка окна" />
+      <p role="status">Загружаю окно…</p>
+      <button type="button" className="btn sm" onClick={close}>
+        Отмена
+      </button>
+    </Modal>
+  )
 }
 
 function useModalBody() {
@@ -78,6 +93,8 @@ function useModalBody() {
       return <TodayModal />
     case 'blame':
       return <BlameModal path={m.path} />
+    case 'recovery':
+      return <RecoveryModal />
     case 'trash':
       return <TrashModal />
     case 'compare':

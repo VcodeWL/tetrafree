@@ -1,3 +1,4 @@
+import { gotoFile } from '../store/navigation'
 /* Поиск по содержимому проекта: код, документы, задачи, переписка, память агентов. Без индекса — проект целиком в памяти. */
 import { useStore } from '../store'
 import type { Project } from '../types'
@@ -44,8 +45,7 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
         label: clip(text.slice(ls, le), i - ls, q.length),
         sub: `${file}:${line}`,
         run: () => {
-          st().openFile(file)
-          setTimeout(() => window.dispatchEvent(new CustomEvent('tf:goto', { detail: { file, line } })), 60)
+          gotoFile(p.id, file, line)
         },
       })
       from = le + 1

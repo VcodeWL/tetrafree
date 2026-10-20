@@ -4,6 +4,23 @@ import { initialsOf } from '../../lib/util'
 import { find } from '../helpers'
 import type { SetState, Actions } from '../types'
 
+// Throw before mutation so synchronous callers cannot announce a successful save.
+function keyIntent(set: SetState, id: string, clear: boolean) {
+  try {
+    recordVaultKeyIntent(id, clear, true)
+  } catch (error) {
+    set((s) => {
+      s.toasts.push({
+        id: 'vault-durability-' + Date.now(),
+        title: 'Ключ не изменён',
+        desc: error instanceof Error ? error.message : 'Хранилище устройства недоступно.',
+        tone: 'err',
+        icon: 'warn',
+      })
+    })
+    throw error
+  }
+}
 export const settingsActions = (
   set: SetState,
 ): Pick<
@@ -27,7 +44,7 @@ export const settingsActions = (
       if (patch.name) s.people[ME].initials = initialsOf(patch.name)
     }),
   saveProvider: (pr) => {
-    recordVaultKeyIntent(pr.id, !pr.apiKey)
+    keyIntent(set, pr.id, !pr.apiKey)
     set((s) => {
       const i = s.providers.findIndex((x) => x.id === pr.id)
       if (i >= 0) s.providers[i] = pr
@@ -35,7 +52,7 @@ export const settingsActions = (
     })
   },
   deleteProvider: (id) => {
-    recordVaultKeyIntent(id, true)
+    keyIntent(set, id, true)
     set((s) => {
       s.providers = s.providers.filter((p) => p.id !== id)
       if (s.model.startsWith(id + ':')) {

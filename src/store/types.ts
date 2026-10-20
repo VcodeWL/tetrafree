@@ -48,6 +48,7 @@ export type ModalState =
   | { type: 'compare'; a?: string; b?: string }
   | { type: 'uilib' }
   | { type: 'trash' }
+  | { type: 'recovery' }
   | { type: 'replay'; chatId: ID; msgId: ID }
   | { type: 'blame'; path: string }
   | { type: 'confirm'; title: string; body: string; danger?: boolean; confirm: string; run: () => void }

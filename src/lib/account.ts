@@ -65,7 +65,13 @@ export class ApiError extends Error {
   }
 }
 
+let recoveryMode = false
+/** Startup recovery may permit sign-in, but never start disk/cloud work yet. */
+export function setAccountRecoveryMode(on: boolean) {
+  recoveryMode = on
+}
 let sessionEpoch = 0
+let identityProof: { context: SessionContext; id: string } | null = null
 export type SessionContext = { epoch: number; token: string | null; base: string }
 /** OAuth/MFA callers may capture this before starting a flow and pass it to applySession. */
 export const captureSession = (): SessionContext => ({
@@ -77,10 +83,17 @@ export const sessionIsCurrent = (context: SessionContext) =>
   context.epoch === sessionEpoch &&
   context.token === getToken() &&
   context.base === useBackend.getState().base
+/** Identity is trusted only for the exact server and token verified by the server. */
+export function confirmedAccountId(): string | null {
+  const proof = identityProof
+  return proof && sessionIsCurrent(proof.context) && U().user?.id === proof.id ? proof.id : null
+}
 const responseSessions = new WeakMap<object, SessionContext>()
 useBackend.subscribe((next, prev) => {
   if (next.base !== prev.base) {
+    identityProof = null
     sessionEpoch++
+    useAccount.setState({ user: null, config: null, invites: [], checked: false })
   }
 })
 
@@ -113,7 +126,9 @@ export async function api<T = Record<string, unknown>>(
 
 /** сессия истекла или отозвана на другом устройстве */
 function expireSession() {
+  identityProof = null
   if (!getToken()) return
+  identityProof = null
   sessionEpoch++
   setToken(null)
   useAccount.setState({ user: null, invites: [], checked: true })
@@ -133,16 +148,18 @@ export function applySession(res: { token: string; user: Acc }, context = respon
   if (context && !sessionIsCurrent(context)) throw new ApiError('Результат входа устарел', 0)
   sessionEpoch++
   setToken(res.token)
+  identityProof = { context: captureSession(), id: res.user.id }
   useAccount.setState({ user: res.user })
   const s = useStore.getState()
   s.signIn(res.user.name, res.user.email, res.user.hue)
-  void resyncNow()
+  if (!recoveryMode) void resyncNow()
 }
 
 export async function logout() {
   // Dispatch with the old token, then invalidate locally immediately; a slow logout cannot erase a new login.
   const request =
     getToken() && serverOnline() ? api('POST', '/api/auth/logout').catch(() => {}) : Promise.resolve()
+  identityProof = null
   sessionEpoch++
   setToken(null)
   useAccount.setState({ user: null, invites: [], checked: true })
@@ -173,6 +190,8 @@ export async function verifySession() {
   if (!sessionIsCurrent(context)) return
   const s = useStore.getState()
   if (!getToken()) {
+    identityProof = null
+    useAccount.setState({ user: null, invites: [] })
     /* сервер есть, а входа нет — локальный профиль без токена больше не считаем входом, если на сервере уже есть аккаунты */
     if (s.authed && !s.settings.localMode && U().config?.hasUsers) {
       s.signOut()
@@ -183,6 +202,7 @@ export async function verifySession() {
   try {
     const m = await api<{ user: Acc }>('GET', '/api/auth/me')
     if (!sessionIsCurrent(context)) return
+    identityProof = { context, id: m.user.id }
     useAccount.setState({ user: m.user, checked: true })
     const me = s.people.me
     if (me.email !== m.user.email || me.name !== m.user.name) s.signIn(m.user.name, m.user.email, m.user.hue)

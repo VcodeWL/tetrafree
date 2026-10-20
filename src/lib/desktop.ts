@@ -11,19 +11,7 @@ export const winToggleMax = async () => {
   if (isDesktop) (await win()).toggleMaximize()
 }
 export const winClose = async () => {
-  if (!isDesktop) return
-  try {
-    await (await import('../store/persistence')).flushPersistence()
-    await (await win()).close()
-  } catch {
-    const { useStore } = await import('../store')
-    useStore.getState().toast({
-      title: 'Не удалось подтвердить сохранение',
-      desc: 'Окно оставлено открытым. Освободи место или экспортируй данные перед закрытием.',
-      icon: 'warn',
-      tone: 'err',
-    })
-  }
+  if (isDesktop) await (await win()).close() // Native gate covers titlebar, Alt+F4 and tray exit.
 }
 export async function openExternal(url: string) {
   if (isDesktop) {
@@ -47,6 +35,8 @@ export const platform =
 export interface SysInfo {
   autostart: boolean
   tray: boolean
+  notifications: boolean
+  notificationSupported: boolean
   /** сочетание глобальной «быстрой задачи» */
   shortcut: string
 }
@@ -64,6 +54,13 @@ export async function sysInfo(): Promise<SysInfo | null> {
 }
 export const sysSetAutostart = (on: boolean) => call<void>('sys_set_autostart', { on })
 export const sysSetTray = (on: boolean) => call<void>('sys_set_tray', { on })
+export const sysSetNotifications = (on: boolean) => call<void>('sys_set_notifications', { on })
+export const desktopQuit = () => call<void>('desktop_quit')
+export const desktopFeatures = () =>
+  call<{ checkpoint: boolean; extras: boolean; notifications: boolean }>('desktop_features')
+/** true means submitted to the native plugin, NOT observed OS delivery. */
+export const notifyDesktop = (kind: 'agent-done' | 'automation-error', label?: string) =>
+  isDesktop ? call<boolean>('desktop_notify', { kind, label: label || null }) : Promise.resolve(false)
 /** Глобальная горячая клавиша нажата — окно уже показано Rust-ом; вызываем обработчик */
 export async function onQuickCapture(fn: () => void): Promise<() => void> {
   if (!isDesktop) return () => {}
@@ -81,7 +78,7 @@ export interface UpdateInfo {
 export const updCheck = () => call<UpdateInfo | null>('update_check')
 /** Скачивает, ставит и перезапускает приложение */
 export const updInstall = async () => {
-  await (await import('../store/persistence')).flushPersistence()
+  // Rust asks for a durable checkpoint after the download, just before installation.
   return call<void>('update_install')
 }
 /** Прогресс загрузки обновления: done/total в байтах (total может быть неизвестен) */

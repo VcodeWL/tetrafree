@@ -235,8 +235,23 @@ test('UI06/07: actual workspace key handlers save and finish; Russian layout com
   const store = Object.assign((select: (s: unknown) => unknown) => select({ people: {} }), {
     getState: () => ({}),
   })
+  // Keep the real mount-consumption/cleanup contract; this keyboard fixture has no pending goto.
+  const navigation = { exports: {} }
+  const navigationCode = ts.transpileModule(
+    readFileSync(new URL('../store/navigation.ts', import.meta.url), 'utf8'),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
+  ).outputText
+  new Function('require', 'module', 'exports', navigationCode)(
+    (name: string) => {
+      assert.equal(name, './index', 'unexpected navigation dependency')
+      return { useStore: store }
+    },
+    navigation,
+    navigation.exports,
+  )
   const editState = { pending: false }
   const editor = harness('../workspace/CodeEditor.tsx', 'CodeSurface', {
+    '../store/navigation': navigation.exports,
     '../lib/useScopedFile': { useScopedFile: () => session },
     '../lib/merge3': merge,
     '../lib/folds': folds,

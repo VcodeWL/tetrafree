@@ -11,6 +11,39 @@ import {
 import { initialPersisted } from './defaults'
 import { idbAvailable } from './idb'
 
+async function confirmVaultSession() {
+  const { verifySession } = await import('../lib/account')
+  const original = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const path = String(input)
+    if (path.endsWith('/api/auth/config'))
+      return new Response(JSON.stringify({ mail: 'dev', oauth: [], hasUsers: true }))
+    if (path.endsWith('/api/auth/me'))
+      return new Response(
+        JSON.stringify({
+          user: {
+            id: 'vault-fixture-account',
+            name: 'Fixture',
+            email: 'fixture@invalid.test',
+            verified: true,
+            twofa: false,
+            createdAt: 0,
+            hue: 0,
+            providers: [],
+            hasPassword: true,
+          },
+        }),
+      )
+    if (path.endsWith('/api/invites')) return new Response(JSON.stringify({ invites: [] }))
+    return original(input, init)
+  }
+  try {
+    await verifySession()
+  } finally {
+    globalThis.fetch = original
+  }
+}
+
 class MemoryStorage implements Storage {
   data = new Map<string, string>()
   failWrite = false
@@ -388,6 +421,7 @@ test('S16 vault ack and delayed responses are backend scoped; S17 stabilized idl
   const { stripSecrets } = await import('../lib/vaultState')
   setToken('vault-session')
   useBackend.setState({ base: 'A', status: 'online', info: { local: true } as never })
+  await confirmVaultSession()
   useStore.setState({ providers: [{ id: 'p', apiKey: '' }] as never })
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
   const respond = (body: unknown) => new Response(JSON.stringify(body))
@@ -416,13 +450,16 @@ test('S16 vault ack and delayed responses are backend scoped; S17 stabilized idl
   assert.equal(requests, beforeRequests)
   assert.equal(transactions, beforeTransactions)
   useBackend.setState({ base: 'B' })
+  await confirmVaultSession()
   assert.equal(isVaulted(useStore.getState().providers[0]), false)
   assert.equal(stripSecrets(useStore.getState().providers)[0].apiKey, 'KEY')
   await sleep(650)
   assert.equal(isVaulted(useStore.getState().providers[0]), true)
   useBackend.setState({ base: 'C' })
+  await confirmVaultSession()
   await sleep(10)
   useBackend.setState({ base: 'D' })
+  await confirmVaultSession()
   await sleep(650)
   oldRelease(respond({ mode: 'file', items: { p: 'OLD-BACKEND-KEY' } }))
   await sleep(20)
@@ -534,6 +571,7 @@ test('R07 delayed vault GET cannot restore a key locally cleared and persisted d
   useStore.setState({ providers: [provider] })
   setToken('clear-session')
   useBackend.setState({ base: 'CLEAR:', status: 'online', info: { local: true } as never })
+  await confirmVaultSession()
   startVault()
   await started
   useStore.getState().saveProvider({ ...useStore.getState().providers[0], apiKey: '' })
@@ -612,6 +650,7 @@ test('R07 delayed vault GET preserves a replacement key and deletes a provider r
     }
     useStore.setState({ providers: [{ id: 'edited-provider', apiKey: 'OLD-REMOTE' }] as never })
     useBackend.setState({ base })
+    await confirmVaultSession()
     await started
     if (action === 'replace')
       useStore.getState().saveProvider({ ...useStore.getState().providers[0], apiKey: 'LOCAL-NEW' })
@@ -687,6 +726,7 @@ test('R07 ABA: placeholder -> temporary key -> cleared while GET pending never r
   useStore.setState({ providers: [provider] })
   setToken('aba-session')
   useBackend.setState({ base: 'ABA:', status: 'online', info: { local: true } as never })
+  await confirmVaultSession()
   startVault()
   await beganGet
   // All three values and both real actions matter: a before/after value comparison sees equality.
@@ -753,6 +793,7 @@ test('R07 explicit same-empty save is not a hydration placeholder; failed delete
     throw new Error('Unexpected same-empty test request: ' + input)
   }
   useBackend.setState({ base: 'SAME:' })
+  await confirmVaultSession()
   await beganGet
   useStore.getState().saveProvider({ ...useStore.getState().providers[0], apiKey: '' })
   await flushPersistence()

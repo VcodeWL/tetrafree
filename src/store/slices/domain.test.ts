@@ -290,6 +290,7 @@ function uiHarness(h: ReturnType<typeof domainStore>) {
       '../lib/taskrel': rel,
       '../types': model,
       '../workspace/TasksView': { COLS: [], PRIO: { med: 'средний' } },
+      '../lib/taskConstants': { COLS: [], PRIO: { med: 'средний' } },
       '../components/ui/Menu': { useMenu: () => ({ st: null }) },
       '../lib/team': { usePeers: () => false },
       '../lib/backlinks': links,

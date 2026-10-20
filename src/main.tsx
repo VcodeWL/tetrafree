@@ -8,11 +8,12 @@ import { useStore, hydrateStore } from './store'
 import { recoverySnapshots } from './store/persistence'
 import { startSync } from './lib/sync'
 import { startDocSync } from './lib/docsync'
-import { initAccount } from './lib/account'
+import { initAccount, setAccountRecoveryMode } from './lib/account'
 import { startCloud } from './lib/team'
 import { startScheduler } from './agent/ci'
 import { startAutoBackup } from './lib/autobackup'
-import { startVault } from './lib/vault'
+import { startVault, prepareVaultRecovery } from './lib/vault'
+import { detectBackend } from './lib/backend'
 
 /* в dev-сборке стор доступен из консоли: __tf.getState() */
 if (import.meta.env.DEV) {
@@ -25,7 +26,10 @@ if (import.meta.env.DEV) {
 /* До окончания hydration не монтируем write-capable UI и не запускаем фоновые писатели. */
 const root = ReactDOM.createRoot(document.getElementById('root')!)
 let disposed = false
+const RecoveryAuth = React.lazy(() => import('./screens/Auth').then((m) => ({ default: m.Auth })))
+let vaultRecoveryFailed = false
 function Recovery({ message }: { message: string }) {
+  const [login, setLogin] = React.useState(false)
   const [exportError, setExportError] = React.useState('')
   const exportRaw = () => {
     try {
@@ -66,6 +70,22 @@ function Recovery({ message }: { message: string }) {
       <p>Файл восстановления может содержать личные данные и резервные API-ключи. Храни его безопасно.</p>
       <button onClick={exportRaw}>Скачать доступные исходные снимки</button>{' '}
       <button onClick={() => location.reload()}>Повторить загрузку</button>
+      {vaultRecoveryFailed && (
+        <button
+          onClick={() => {
+            useStore.setState({ screen: 'auth' })
+            setLogin(true)
+          }}
+        >
+          Подтвердить аккаунт
+        </button>
+      )}
+      {login && (
+        <React.Suspense fallback={<p role="status">Загружаю вход…</p>}>
+          <RecoveryAuth />
+        </React.Suspense>
+      )}
+      {login && <p>После входа нажми «Повторить загрузку». Фоновые записи пока не запущены.</p>}
       {exportError && <p role="status">{exportError}</p>}
     </main>
   )
@@ -77,7 +97,16 @@ const t = setTimeout(() => {
   )
 }, 10000)
 void hydrateStore()
-  .then(() => {
+  .then(async () => {
+    if (disposed) return
+    await detectBackend()
+    try {
+      await prepareVaultRecovery()
+    } catch (error) {
+      vaultRecoveryFailed = true
+      setAccountRecoveryMode(true)
+      throw error
+    }
     if (disposed) return
     clearTimeout(t)
     startSync()

@@ -1,3 +1,5 @@
+import { composeToChat, gotoFile } from '../store/navigation'
+import { palettePrefix, openPalette } from '../lib/palette'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useLayout } from '../lib/layout'
 import { useReturnFocus } from '../hooks/useFocus'
@@ -16,7 +18,7 @@ import { openInEditor, openOsTerminal } from '../lib/editors'
 import { DOC_TEMPLATES, buildBlocks } from '../data/docTemplates'
 import { exportChat } from '../lib/chatExport'
 import { exportBackup } from '../lib/backup'
-import { COLS } from '../workspace/TasksView'
+import { COLS } from '../lib/taskConstants'
 import { searchProject } from '../lib/search'
 import { AGENT_TEMPLATES, fillTemplate } from '../data/agentTemplates'
 import { sendMessage } from '../agent/engine'
@@ -65,13 +67,12 @@ useStore.subscribe((s, prev) => {
   recent.length = Math.min(recent.length, 12)
 })
 
-export const openPalette = (prefix = '') =>
-  window.dispatchEvent(new CustomEvent('tf:palette', { detail: prefix }))
+export { openPalette } from '../lib/palette'
 
 export function Palette() {
   const open = useStore((s) => s.palette)
   const setOpen = useStore((s) => s.setPalette)
-  const [q, setQ] = useState('')
+  const [q, setQ] = useState(palettePrefix)
   const [sel, setSel] = useState(0)
   const inp = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
@@ -120,7 +121,7 @@ export function Palette() {
           label: `Перейти к строке ${line}`,
           sub: f + (n > total ? ` · в файле всего ${total}` : ''),
           icon: 'code',
-          run: () => window.dispatchEvent(new CustomEvent('tf:goto', { detail: { file: f, line } })),
+          run: () => gotoFile(st.projectId!, f, line),
         },
       ]
     }
@@ -140,6 +141,7 @@ export function Palette() {
             hint: ex ? '#' + ex.key + ' · открыть' : '↵ создать задачу',
             run: () => {
               const s = useStore.getState()
+              if (s.projectId !== pr.id || s.screen !== 'workspace') return
               if (ex) {
                 s.openModal({ type: 'task', id: ex.id })
                 return
@@ -158,10 +160,7 @@ export function Palette() {
                 tone: 'ok',
                 action: {
                   label: 'К коду',
-                  run: () =>
-                    window.dispatchEvent(
-                      new CustomEvent('tf:goto', { detail: { file: t.file, line: t.line } }),
-                    ),
+                  run: () => gotoFile(pr.id, t.file, t.line),
                 },
               })
             },
@@ -189,7 +188,7 @@ export function Palette() {
           run: () => {
             const st = useStore.getState()
             if (st.projectId !== pr.id || st.screen !== 'workspace') st.openProject(pr.id)
-            setTimeout(h.run, 350)
+            if (useStore.getState().projectId === pr.id && useStore.getState().screen === 'workspace') h.run()
           },
         })),
       )
@@ -689,17 +688,15 @@ function build(): Item[] {
       node: <AgentAvatar name={a.name} size={18} />,
       hint: chatId ? 'упомянуть' : undefined,
       run: () => {
-        if (chatId)
-          window.dispatchEvent(
-            new CustomEvent('tf:compose', { detail: { chatId, text: '@' + a.name + ' ' } }),
-          )
+        if (!p || st().projectId !== p.id || st().screen !== 'workspace') return
+        if (chatId) composeToChat(p.id, chatId, '@' + a.name + ' ')
         else {
           const id = st().createChat({
             title: 'Чат с ' + a.name,
             creator: { kind: 'human', id: 'me' },
             agents: [{ name: a.name, tier: 'Спросить', sub: [] }],
           })
-          st().setCenter({ kind: 'chat', id })
+          composeToChat(p.id, id, '@' + a.name + ' ')
         }
       },
     }),

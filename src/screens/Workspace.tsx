@@ -3,10 +3,10 @@ import { useLayout } from '../lib/layout'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useStore, useProject } from '../store'
 import { Sidebar } from '../workspace/Sidebar'
-import { ChatView } from '../workspace/ChatView'
-import { DocView } from '../workspace/DocView'
-import { TasksView } from '../workspace/TasksView'
-import { RightPane } from '../workspace/RightPane'
+const ChatView = lazy(() => import('../workspace/ChatView').then((m) => ({ default: m.ChatView })))
+const DocView = lazy(() => import('../workspace/DocView').then((m) => ({ default: m.DocView })))
+const TasksView = lazy(() => import('../workspace/TasksView').then((m) => ({ default: m.TasksView })))
+const RightPane = lazy(() => import('../workspace/RightPane').then((m) => ({ default: m.RightPane })))
 import { Hero } from '../workspace/Hero'
 import { Boot } from './Boot'
 
@@ -88,11 +88,29 @@ export function Workspace() {
                   exit={{ opacity: 0, transition: { duration: 0.08 } }}
                   transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
                 >
-                  {main}
+                  <Suspense
+                    fallback={
+                      <div className="route-loading" role="status">
+                        Загружаю раздел…
+                      </div>
+                    }
+                  >
+                    {main}
+                  </Suspense>
                 </motion.div>
               </AnimatePresence>
             </div>
-            {rightOpen && <RightPane />}
+            {rightOpen && (
+              <Suspense
+                fallback={
+                  <div className="route-loading" role="status">
+                    Загружаю файлы…
+                  </div>
+                }
+              >
+                <RightPane />
+              </Suspense>
+            )}
           </div>
         )}
         {dock && mode === 'dev' && (

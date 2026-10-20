@@ -12100,3 +12100,188 @@ html .ul-card input.inp:focus {
 html .ul-card input.inp::placeholder {
   color: var(--t4);
 }
+
+/* Центр восстановления: текстовые копии, без встроенного исполнения HTML. */
+html .recovery-toolbar {
+  display: flex;
+  gap: 14px;
+  align-items: end;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+html .recovery-toolbar label,
+html .recovery-detail > label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 160px;
+}
+html .recovery-toolbar input,
+html .recovery-toolbar select,
+html .recovery-detail select {
+  background: var(--bg);
+  color: var(--t1);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  min-width: 0;
+}
+html .recovery-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 30%) minmax(0, 1fr);
+  height: min(64vh, 660px);
+}
+html .recovery-list {
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  padding: 8px;
+}
+html .recovery-list > p {
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+html .recovery-item {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  padding: 11px 12px;
+  gap: 6px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  color: inherit;
+  background: transparent;
+}
+html .recovery-item b {
+  font: 12px var(--mono);
+  overflow-wrap: anywhere;
+}
+html .recovery-item span {
+  font-size: 11px;
+  opacity: 0.6;
+}
+html .recovery-item:hover,
+html .recovery-item.on {
+  background: var(--bg);
+  border-color: var(--line);
+}
+html .recovery-detail {
+  padding: 16px 18px;
+  overflow: auto;
+  min-width: 0;
+}
+html .recovery-detail > h3 {
+  font: 13px var(--mono);
+  overflow-wrap: anywhere;
+  margin: 0 0 14px;
+}
+html .recovery-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+html .recovery-compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+html .recovery-compare section {
+  min-width: 0;
+}
+html .recovery-compare h4 {
+  font-size: 11px;
+  opacity: 0.7;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+html .recovery-compare pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.7 var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 12px;
+  max-height: 350px;
+  overflow: auto;
+}
+html .recovery-notice {
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+@media (max-width: 700px) {
+  html .recovery-layout {
+    grid-template-columns: 1fr;
+    height: 65vh;
+    overflow: auto;
+  }
+  html .recovery-list {
+    max-height: 180px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+html .route-loading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  padding: 30px;
+  color: var(--t3);
+  font-size: 13px;
+}
+html .modal-wrap > .route-loading {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+/* Header automation controls stay one line; narrow windows keep labelled icon buttons. */
+html .automation-controls {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+html .automation-controls .btn {
+  height: 26px;
+  white-space: nowrap;
+  padding: 0 7px;
+}
+html .automation-control-error {
+  display: inline-flex;
+  color: var(--warn);
+}
+@media (max-width: 1500px) {
+  html .automation-control-label {
+    display: none;
+  }
+  html .automation-controls .btn {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+}
+
+html .automation-control-error .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

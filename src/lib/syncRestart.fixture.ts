@@ -37,13 +37,13 @@ async function run() {
     { setToken } = await import('./token'),
     persistence = await import('../store/persistence')
   const { useAccount } = await import('./account')
-  useAccount.setState({ user: { id: 'uid', name: 'tester' } as never })
   setToken('test-only-token')
   backend.useBackend.setState({
     status: 'online',
     base: input.kind === 'cloud' ? 'http://cloud.invalid' : 'http://sync.invalid',
     info: { local: true } as never,
   })
+  useAccount.setState({ user: { id: 'uid', name: 'tester' } as never })
   persistence.registerPersistenceCheckpoint(async () => {})
   const p = store.useStore.getState().projects[0]
   if (input.runtimeHuman)

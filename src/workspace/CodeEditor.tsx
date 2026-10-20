@@ -1,3 +1,4 @@
+import { consumeGoto } from '../store/navigation'
 /* Редактор кода: textarea поверх подсвеченного <pre>. Правки уходят в проект с небольшой задержкой; чужие правки из облака
    вливаются без потери набранного (diff3), курсор остаётся на месте. Коллеги видны на своих строках, к строкам можно оставлять комментарии. */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -128,9 +129,8 @@ export const CodeSurface = memo(function CodeSurface({
   useEffect(() => setFolded(new Set()), [file, editing])
   useEffect(() => {
     let t = 0
-    const h = (e: Event) => {
-      const d = (e as CustomEvent<{ file: string; line: number }>).detail
-      if (d.file !== file) return
+    const receive = (line: number) => {
+      const d = { line }
       setFlash(d.line)
       setFolded((f) => unfoldAt(rangesRef.current, f, d.line - 1))
       const sc = stack.current?.parentElement
@@ -138,12 +138,29 @@ export const CodeSurface = memo(function CodeSurface({
       window.clearTimeout(t)
       t = window.setTimeout(() => setFlash(0), 2200)
     }
+    const off = consumeGoto(p.id, file, receive)
+    const h = (e: Event) => {
+      const d = (e as CustomEvent).detail
+      const s = useStore.getState()
+      if (
+        s.projectId !== p.id ||
+        s.activeFile !== file ||
+        s.screen !== 'workspace' ||
+        d?.file !== file ||
+        (d.pid && d.pid !== p.id) ||
+        !Number.isSafeInteger(d.line) ||
+        d.line < 1
+      )
+        return
+      receive(d.line)
+    }
     window.addEventListener('tf:goto', h)
     return () => {
+      off()
       window.removeEventListener('tf:goto', h)
       window.clearTimeout(t)
     }
-  }, [file])
+  }, [p.id, file])
 
   const flush = useCallback(() => {
     window.clearTimeout(timer.current)

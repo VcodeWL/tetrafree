@@ -1,3 +1,4 @@
+import { assertProviderDraft } from '../lib/providerDraft'
 import { clone } from '../lib/clone'
 import { isVaulted, vaultMode } from '../lib/vault'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
@@ -12,7 +13,7 @@ import { cleanApiBase } from '../lib/paths'
 import { REPEAT_LABEL, canBlock, type Repeat } from '../lib/taskrel'
 import { streamChat, listModels } from '../agent/llm'
 import { sendMessage } from '../agent/engine'
-import { COLS, PRIO } from '../workspace/TasksView'
+import { COLS, PRIO } from '../lib/taskConstants'
 /* Settings — тяжёлый, грузим отдельным чанком, а не в главный бандл */
 const Shortcuts = lazy(() => import('./Settings').then((m) => ({ default: m.Shortcuts })))
 import {
@@ -36,6 +37,12 @@ const KINDS: { k: ProviderKind; t: string; url: string }[] = [
 export function ProviderModal({ id }: { id?: string }) {
   const orig = useStore((s) => s.providers.find((p) => p.id === id))
   const st = useStore.getState
+  const initial = useRef(orig ? clone(orig) : null)
+  const [saveError, setSaveError] = useState('')
+  const assertFresh = () => {
+    const current = st().providers.find((item) => item.id === p.id)
+    assertProviderDraft(current, initial.current)
+  }
   const [p, setP] = useState<Provider>(() =>
     orig
       ? clone(orig)
@@ -63,23 +70,35 @@ export function ProviderModal({ id }: { id?: string }) {
   const back = () => st().openModal({ type: 'settings', section: 'providers' })
   const save = () => {
     if (err) return
-    st().saveProvider({
-      ...p,
-      baseUrl: cleanApiBase(p.baseUrl),
-      name: p.name.trim(),
-      models: models.map((m) => ({ id: m.id.trim(), name: m.name.trim() || m.id.trim() })),
-    })
-    if (!st().model) st().setModel(p.id + ':' + models[0].id.trim())
-    toast({
-      title: orig ? 'Провайдер обновлён' : 'Провайдер добавлен',
-      desc: p.name,
-      icon: 'key',
-      tone: 'ok',
-    })
-    back()
+    try {
+      assertFresh()
+      setSaveError('')
+      st().saveProvider({
+        ...p,
+        baseUrl: cleanApiBase(p.baseUrl),
+        name: p.name.trim(),
+        models: models.map((m) => ({ id: m.id.trim(), name: m.name.trim() || m.id.trim() })),
+      })
+      if (!st().model) st().setModel(p.id + ':' + models[0].id.trim())
+      toast({
+        title: orig ? 'Провайдер обновлён' : 'Провайдер добавлен',
+        desc: p.name,
+        icon: 'key',
+        tone: 'ok',
+      })
+      back()
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Не удалось безопасно сохранить ключ')
+    }
   }
   const [loadingModels, setLM] = useState(false)
   const fetchModels = async () => {
+    try {
+      assertFresh()
+    } catch (error) {
+      setSaveError((error as Error).message)
+      return
+    }
     setLM(true)
     setTest({ state: 'run' })
     try {
@@ -98,6 +117,12 @@ export function ProviderModal({ id }: { id?: string }) {
   }
   const runTest = async () => {
     if (!models.length) return
+    try {
+      assertFresh()
+    } catch (error) {
+      setSaveError((error as Error).message)
+      return
+    }
     setTest({ state: 'run' })
     const ac = new AbortController()
     let got = ''
@@ -268,6 +293,11 @@ export function ProviderModal({ id }: { id?: string }) {
         </div>
       )}
       {err && <div className="ferr">{err}</div>}
+      {saveError && (
+        <div className="ferr" role="alert">
+          {saveError}
+        </div>
+      )}
       <div className="mfoot">
         {orig && (
           <button
@@ -277,11 +307,22 @@ export function ProviderModal({ id }: { id?: string }) {
                 type: 'confirm',
                 danger: true,
                 title: `Удалить ${orig.name}?`,
-                body: 'Модели этого провайдера пропадут из выбора. Ключ будет стёрт с устройства.',
+                body: 'Модели пропадут из выбора. Намерение удаления ключа будет сохранено; серверное удаление повторится при подключении.',
                 confirm: 'Удалить',
                 run: () => {
-                  st().deleteProvider(orig.id)
-                  back()
+                  try {
+                    assertFresh()
+                    st().deleteProvider(orig.id)
+                    back()
+                  } catch {
+                    toast({
+                      title: 'Ключ не удалён',
+                      desc: 'Открой настройки провайдера заново и повтори удаление.',
+                      icon: 'warn',
+                      tone: 'err',
+                    })
+                    st().openModal({ type: 'provider', id: orig.id })
+                  }
                 },
               })
             }

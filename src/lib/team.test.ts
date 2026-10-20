@@ -91,13 +91,14 @@ before(async () => {
   persistence = await import('../store/persistence')
   const { useAccount } = await import('./account'),
     { setToken } = await import('./token')
-  useAccount.setState({ user: { id: 'uid', name: 'tester' } as never })
   setToken('test-only-token')
   backend.useBackend.setState({
     status: 'online',
     base: 'http://cloud.invalid',
     info: { local: true } as never,
   })
+  // Backend changes intentionally invalidate account state; install this synthetic cloud principal afterwards.
+  useAccount.setState({ user: { id: 'uid', name: 'tester' } as never })
   flush = async () => {
     ls.setItem('test-durable', JSON.stringify(store.useStore.getState().projects))
   }
