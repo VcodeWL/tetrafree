@@ -21,7 +21,31 @@ export type Seg =
 const KINDS: OpKind[] = ['write', 'edit', 'delete', 'rename', 'run', 'read', 'fetch', 'search', 'shot', 'mcp']
 const OPEN =
   /<(write|edit|delete|rename|run|read|fetch|search|shot|mcp)\b((?:\s+[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/)?>/g
-const FENCE = /```([\w+#.-]*)[ \t]+((?:\.?[\w@-]+\/)*\.?[\w@-]+\.[\w]+)[ \t]*\n/g
+const FENCE = /^([ \t]*(?:(?:>[ \t]*|(?:[-+*]|\d+[.)])[ \t]+)[ \t]*)*)(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/gm
+const FILE_HEADER = /^[\w+#.-]*[ \t]+((?:\.?[\w@-]+\/)*\.?[\w@-]+\.[\w]+)[ \t]*$/
+
+// Inspect container prefixes only; never strip them from the source or file bodies.
+const quoteDepth = (prefix: string) => (prefix.match(/>/g) || []).length
+const listPrefix = (prefix: string) => /(?:^|[>\s])(?:[-+*]|\d+[.)])[ \t]+/.test(prefix)
+const containerIndent = (prefix: string) => prefix.replace(/>[ \t]?/g, '').replace(/\t/g, '    ').length
+function closingFence(src: string, from: number, opening: RegExpExecArray) {
+  const candidates = new RegExp(FENCE.source, 'gm')
+  candidates.lastIndex = from
+  const depth = quoteDepth(opening[1])
+  const indent = containerIndent(opening[1])
+  // Continuations of list containers replace their bullet with indentation.
+  // Ambiguous/unclosed fences stay literal through EOF (including during streaming).
+  const minimum = listPrefix(opening[1]) || indent > 3 ? Math.max(0, indent - 3) : 0
+  let candidate: RegExpExecArray | null
+  while ((candidate = candidates.exec(src))) {
+    if (candidate[2][0] !== opening[2][0] || candidate[2].length < opening[2].length || candidate[3].trim())
+      continue
+    if (quoteDepth(candidate[1]) !== depth || listPrefix(candidate[1])) continue
+    const width = containerIndent(candidate[1])
+    if (width >= minimum && width <= indent + 3) return candidate
+  }
+  return null
+}
 
 function attrsOf(s: string) {
   const out: Record<string, string> = {}
@@ -57,16 +81,25 @@ export function parseStream(src: string, streaming: boolean): Seg[] {
     pushText(src.slice(i, m.index))
     const start = m.index + m[0].length
     if (useFence) {
-      const end = src.indexOf('\n```', start)
-      const closed = end >= 0
-      segs.push({
-        t: 'op',
-        kind: 'write',
-        attrs: { path: m[2] },
-        body: src.slice(start, closed ? end : src.length),
-        closed,
-      })
-      i = closed ? end + 4 : src.length
+      const closing = closingFence(src, start, m)
+      const closed = !!closing
+      const end = closing?.index ?? src.length
+      const next = closing ? end + closing[0].length : src.length
+      // File-header fallback is explicit top-level syntax, never a container example.
+      const file = /^[ ]{0,3}$/.test(m[1]) && m[2] === '```' ? FILE_HEADER.exec(m[3]) : null
+      if (file) {
+        segs.push({
+          t: 'op',
+          kind: 'write',
+          attrs: { path: file[1] },
+          body: src.slice(start, end).replace(/\r?\n$/, ''),
+          closed,
+        })
+      } else {
+        // Documentation fences (including nested longer fences) are literal text.
+        pushText(src.slice(m.index, next))
+      }
+      i = next
       continue
     }
     const kind = m[1] as OpKind

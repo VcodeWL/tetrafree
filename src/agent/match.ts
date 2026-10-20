@@ -1,6 +1,7 @@
 /* /match — подгонка вёрстки под скриншот. Приложи эталон и напиши `/match`: цикл снимает страницу проекта настоящим
    браузером, считает сходство с эталоном, показывает агенту эталон, текущий вид и карту различий — и повторяет,
    пока страница не совпадёт (или прогресс не остановится / не нажмут «Стоп»). */
+import type { ProjRef } from '../lib/backend'
 import { bShot } from '../lib/backend'
 import { compareImages, shrinkForModel, pct } from '../lib/imgdiff'
 import { shotTarget } from './webtools'
@@ -60,7 +61,7 @@ async function size(url: string) {
 export interface MatchCtx {
   ref: string
   spec: MatchSpec
-  project: () => { name: string; files: Record<string, string> } | undefined
+  project: () => (ProjRef & { files: Record<string, string> }) | undefined
 }
 
 export function matchHooks(c: MatchCtx): Hooks {
@@ -71,12 +72,12 @@ export function matchHooks(c: MatchCtx): Hooks {
       const p = c.project()
       if (!p) return { stop: 'проект закрыт' }
       const page = c.spec.path || (c.spec.url ? '' : defaultPage(p.files))
-      const t = shotTarget(p, { path: page, url: c.spec.url })
       const { w, h } = await size(c.ref)
       const W = Math.min(2560, Math.max(320, w)),
         H = Math.min(6000, Math.max(240, h))
       let shot: string
       try {
+        const t = await shotTarget(p, { path: page, url: c.spec.url })
         shot = (await bShot(t.url, W, H)).image
       } catch (e) {
         return { stop: 'не удалось снять страницу — ' + (e as Error).message }
@@ -97,7 +98,7 @@ export function matchHooks(c: MatchCtx): Hooks {
         Math.abs(d.cur.h - d.ref.h) > 0 && d.cur.h !== d.ref.h
           ? `Размер снимка ${d.cur.w}×${d.cur.h}, эталона ${d.ref.w}×${d.ref.h}.`
           : ''
-      const extra = `[/match · проход ${n}] Задача: страница ${t.title} должна выглядеть ТОЧЬ-В-ТОЧЬ как эталон.
+      const extra = `[/match · проход ${n}] Задача: страница ${c.spec.url || page || 'страница проекта'} должна выглядеть ТОЧЬ-В-ТОЧЬ как эталон.
 
 К сообщению приложены 3 картинки по порядку: 1) ЭТАЛОН — как должно быть; 2) ТЕКУЩИЙ результат (снимок окна ${W}×${H}); 3) КАРТА РАЗЛИЧИЙ — красным пиксели, которые не совпадают.
 Сходство сейчас: ${pct(d.score)} (цель — не меньше ${pct(c.spec.threshold)})${prev !== undefined ? `; на прошлом проходе было ${pct(prev)}${d.score < prev - 0.002 ? ' — стало ХУЖЕ, исправь или откати неудачную правку' : ''}` : ''}.

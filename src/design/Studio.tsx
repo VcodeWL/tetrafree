@@ -29,9 +29,9 @@ import type { IconName } from '../components/ui/iconData'
 import { Logo } from '../components/ui/primitives'
 import { Menu, MenuHead, MenuItem, useMenu } from '../components/ui/Menu'
 import { SECTION_HTML, blankSite } from '../data/site'
-import { backendOnline, previewUrl } from '../lib/backend'
+import { backendOnline } from '../lib/backend'
+import { openProjectPreview } from '../lib/preview'
 import { ago, clamp, modKey } from '../lib/util'
-import { openExternal } from '../lib/desktop'
 
 /* блоки в левой панели: иконка, подпись, горячая клавиша */
 const RAIL_BLOCKS: { key: string; icon: IconName; label: string; hot: string; shift?: boolean }[] = [
@@ -82,6 +82,7 @@ export function Studio() {
     flushVersion()
     prev.current = { page, pid: p.id }
     useDesign.setState({
+      pid: p.id,
       page,
       sel: null,
       hover: null,
@@ -289,7 +290,7 @@ export function Studio() {
           <button
             className="iconbtn sm"
             title="Открыть страницу из папки проекта в браузере"
-            onClick={() => openExternal(previewUrl(p, page))}
+            onClick={() => void openProjectPreview(p, page)}
           >
             <Icon name="external" size={15} />
           </button>
@@ -334,13 +335,7 @@ export function Studio() {
               </div>
               {d.sub === 'code' && (
                 <div className="st-code">
-                  <CodeEditor
-                    value={html}
-                    path={page}
-                    onChange={(v) => {
-                      if (v !== p.files[page]) useStore.getState().writeFile(page, v)
-                    }}
-                  />
+                  <CodeEditor key={JSON.stringify([p.id, page])} pid={p.id} value={html} path={page} />
                 </div>
               )}
             </div>

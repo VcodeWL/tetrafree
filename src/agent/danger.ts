@@ -1,5 +1,5 @@
 /* Уровень автономности «Спросить»: опасные действия — удаление, установка пакетов, деплой — только после «да».
-   Файловые правки такого уровня и так идут карточками на подтверждение; здесь — то же для команд. */
+   Это эвристика, не песочница: известные опасные и неразобранные формы требуют подтверждения. */
 
 const PKG = new Set(['npm', 'pnpm', 'yarn', 'bun', 'npx', 'pnpx', 'bunx'])
 const PKG_BAD = new Set([
@@ -113,6 +113,25 @@ export function dangerOf(cmd: string): string | null {
       )
         return `git ${rest.split(/\s+/)[0]} — может потерять данные или отправить код наружу`
     }
+  }
+  // Only a deliberately small, plain grammar is auto-approved. Shell wrappers,
+  // executable quoting, variable expansion and unknown forms need a human decision.
+  // Project-defined npm scripts can still have effects: this is not OS isolation.
+  for (const seg of cmd.split(/&&|\r?\n/)) {
+    const plain = seg.trim()
+    if (!plain || !/^[\w \t./\\:@*?=+'"-]+$/.test(plain)) return 'неразобранная форма команды'
+    const safePath = '(?:[\\w./\\\\:@-]+|"[\\w ./\\\\:@-]+"|\'[\\w ./\\\\:@-]+\')'
+    if (/^npm(?:\.cmd)?\s+(?:run\s+[\w:-]+(?:\s+--silent)?|test(?:\s+--silent)?)$/i.test(plain)) continue
+    if (
+      /^git\s+(?:status|diff|log)(?:\s+(?:--stat|--name-only|--oneline|--short|--porcelain|--no-pager))*$/i.test(
+        plain,
+      )
+    )
+      continue
+    if (new RegExp(`^node\\s+--check\\s+${safePath}$`, 'i').test(plain)) continue
+    if (new RegExp(`^(?:python3?|py)\\s+-m\\s+py_compile(?:\\s+${safePath})+$`, 'i').test(plain)) continue
+    if (/^(?:ls|dir|pwd|cd|echo|cat|type)(?:\s+[\w ./\\:@*?='"-]+)*$/i.test(plain)) continue
+    return 'команда вне списка простых проверок — требуется подтверждение'
   }
   return null
 }

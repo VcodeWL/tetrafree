@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useDesign } from './store'
 import { Icon } from '../components/ui/Icon'
 import {
@@ -535,12 +535,11 @@ function Props({ el }: { el: HTMLElement }) {
 
 function TextBox({ el, initial, multi }: { el: HTMLElement; initial: string; multi: boolean }) {
   const [v, setV] = useState(initial)
-  const t = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => setV(initial), [initial, el])
   const push = (s: string) => {
     setV(s)
-    if (t.current) clearTimeout(t.current)
-    t.current = setTimeout(() => setText(el, s), 220)
+    // Commit while the element still belongs to the active document. No detached-DOM timer.
+    if (useDesign.getState().doc === el.ownerDocument) setText(el, s)
   }
   return multi ? (
     <textarea

@@ -95,11 +95,11 @@ test('локальные функции требуют входа', async () => 
   assert.equal((await call('POST', '/api/exec', { cmd: 'echo hi' })).status, 401)
   assert.equal((await call('POST', '/api/proxy', { url: 'http://x' })).status, 401)
   assert.equal((await call('GET', '/api/fs/hashes?id=x&name=x')).status, 401)
-  assert.equal((await call('GET', '/preview/00000000000000000000000000000000/x/')).status, 401)
+  assert.equal((await call('GET', '/preview/00000000000000000000000000000000/x/')).status, 410)
 })
 
 test('2FA: настройка, вход по коду и по резервному коду', async () => {
-  const s = await call('POST', '/api/auth/2fa/setup', {}, tokenA)
+  const s = await call('POST', '/api/auth/2fa/setup', { password: A.password }, tokenA)
   assert.equal((await call('POST', '/api/auth/2fa/enable', { code: '123456' }, tokenA)).status, 400)
   const en = await call('POST', '/api/auth/2fa/enable', { code: totp(s.body.secret) }, tokenA)
   assert.equal(en.status, 200)
@@ -125,7 +125,7 @@ test('2FA: настройка, вход по коду и по резервном
     400,
     'резервный код одноразовый',
   )
-  const off = await call('POST', '/api/auth/2fa/disable', { password: A.password }, ok.body.token)
+  const off = await call('POST', '/api/auth/2fa/disable', { code: en.body.recovery[1] }, ok.body.token)
   assert.equal(off.body.user.twofa, false)
 })
 

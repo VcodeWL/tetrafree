@@ -1,7 +1,11 @@
 /* Все правки макета проходят здесь: меняем живой DOM → сериализуем → пишем файл проекта.
    Файл — единственный источник правды: холст, код и агент всегда видят одно и то же. */
 import { useStore, toast } from '../store'
-import { useDesign } from './store'
+import { useDesign, type DesignHistoryEntry } from './store'
+import { captureFileTree, type FilePreimage } from '../lib/filePreimage'
+import { mutateFileTree } from '../store/slices/files'
+import { freePath } from '../lib/trash'
+import { download } from '../lib/util'
 import { serialize, elAt, pathOf, kids, fromHtml, isBody, type Path } from './dom'
 
 const D = () => useDesign.getState()
@@ -14,65 +18,165 @@ export const setLastWritten = (h: string) => {
 }
 
 let lastKey = '',
-  lastAt = 0
-let labels: string[] = []
-let vTimer: ReturnType<typeof setTimeout> | null = null
+  lastAt = 0,
+  lastOwner = ''
+interface VersionBatch {
+  pid: string
+  page: string
+  labels: Set<string>
+  timer: ReturnType<typeof setTimeout>
+}
+const batches = new Map<string, VersionBatch>()
 const VERSION_IDLE = 6000
+const ownerKey = (pid: string, page: string) => JSON.stringify([pid, page])
+const resetCoalescing = () => {
+  lastKey = ''
+  lastAt = 0
+  lastOwner = ''
+}
 
-export function flushVersion() {
-  if (vTimer) clearTimeout(vTimer)
-  vTimer = null
-  if (!labels.length) return
+function flushBatch(owner: string) {
+  const batch = batches.get(owner)
+  if (!batch) return
+  clearTimeout(batch.timer)
+  batches.delete(owner)
+  resetCoalescing()
   const st = S()
-  const pid = st.projectId
-  const page = D().page
-  const uniq = Array.from(new Set(labels))
-  labels = []
-  if (!pid) return
-  const n = st.commit(
+  if (!st.projects.some((p) => p.id === batch.pid)) return
+  const labels = [...batch.labels]
+  st.commit(
     {
-      title: 'Дизайн: ' + uniq[0].toLowerCase() + (uniq.length > 1 ? ` и ещё ${uniq.length - 1}` : ''),
+      title: 'Дизайн: ' + labels[0].toLowerCase() + (labels.length > 1 ? ` и ещё ${labels.length - 1}` : ''),
       by: 'human',
       author: st.people.me.name,
       tag: 'build',
       feats: [],
-      changes: uniq.map((l) => `${l} в ${page}`),
+      changes: labels.map((label) => `${label} в ${batch.page}`),
       fixes: [],
       details: ['Правки на холсте режима «Дизайн»'],
     },
-    pid,
+    batch.pid,
   )
-  useDesign.setState({ saved: Date.now() })
-  void n
+  if (D().pid === batch.pid && D().page === batch.page) useDesign.setState({ saved: Date.now() })
+}
+export function flushVersion() {
+  for (const owner of [...batches.keys()]) flushBatch(owner)
+  resetCoalescing()
+}
+function queueVersion(pid: string, page: string, label: string) {
+  const owner = ownerKey(pid, page)
+  const previous = batches.get(owner)
+  if (previous) clearTimeout(previous.timer)
+  const labels = previous?.labels || new Set<string>()
+  labels.add(label)
+  batches.set(owner, { pid, page, labels, timer: setTimeout(() => flushBatch(owner), VERSION_IDLE) })
 }
 
-/** Применить текущее состояние DOM к файлу. key — для склейки частых правок (набор текста, ползунки). */
-export function commitDoc(label: string, key = '') {
+// Capture the document's provenance when Canvas connects it, not at a later blur/undo.
+interface DocumentOwner {
+  pid: string
+  page: string
+  expected: FilePreimage
+}
+const documents = new WeakMap<Document, DocumentOwner>()
+function bindDocument(doc: Document, pid: string, page: string) {
+  if (!documents.has(doc)) documents.set(doc, { pid, page, expected: captureFileTree(useStore, pid, page) })
+  return documents.get(doc)!
+}
+useDesign.subscribe((state, previous) => {
+  if (state.doc && state.doc !== previous.doc && state.pid && state.page)
+    bindDocument(state.doc, state.pid, state.page)
+})
+
+/** A failed stale DOM save keeps all local HTML durably in the source project's trash. */
+function recoverDocument(pid: string, page: string, html: string) {
+  let recovered = ''
+  useStore.setState((s) => {
+    const p = s.projects.find((project) => project.id === pid)
+    if (!p) return
+    const trash = p.trash || []
+    const existing = trash.find(
+      (item) => item.content === html && (item.path === page || item.path.startsWith(page + ' (')),
+    )
+    if (existing) {
+      recovered = existing.path
+      return
+    }
+    recovered = freePath((name) => name in p.files || trash.some((item) => item.path === name), page)
+    p.trash = [{ path: recovered, content: html, at: Date.now() }, ...trash]
+  })
+  toast({
+    title: recovered
+      ? 'Холст устарел — правки сохранены в корзине'
+      : 'Исходный проект удалён — сохрани правки холста',
+    desc: recovered || page,
+    tone: 'warn',
+    icon: 'warn',
+    action: {
+      label: 'Скачать HTML',
+      run: () => download(page.split('/').pop() || 'правки.html', html, 'text/html'),
+    },
+  })
+}
+
+/** Commit with document-bound identity and a transaction-time preimage check. */
+export function commitDoc(label: string, key = '', doc = D().doc) {
   const d = D()
-  const doc = d.doc
-  const page = d.page
-  if (!doc || !page) return
-  const p = S().projects.find((x) => x.id === S().projectId)
-  if (!p) return
+  const pid = d.pid || S().projectId
+  if (!doc || !pid || !d.page) return
+  const source = documents.get(doc) || bindDocument(doc, pid, d.page)
+  const { page } = source
+  const project = S().projects.find((p) => p.id === source.pid)
   const html = serialize(doc)
-  const cur = p.files[page]
-  if (html === cur) {
+  const cur = project?.files[page]
+  if (html === cur && source.expected.unchanged()) {
     d.bump()
     return
   }
-  const now = Date.now()
-  if (!(key && key === lastKey && now - lastAt < 1500))
-    useDesign.setState((s) => ({ undo: [...s.undo.slice(-99), cur ?? ''] }))
+  const active = d.doc === doc && d.pid === source.pid && d.page === page
+  const top = d.undo[d.undo.length - 1]
+  const adjacent = top?.pid === source.pid && top.page === page && top.expected.unchanged()
+  try {
+    mutateFileTree(useStore.setState, source.pid, {
+      kind: 'replace',
+      path: page,
+      content: html,
+      before: source.expected,
+    })
+  } catch {
+    recoverDocument(source.pid, page, html)
+    resetCoalescing()
+    return
+  }
+  const expected = captureFileTree(useStore, source.pid, page)
+  source.expected = expected
+  const now = Date.now(),
+    owner = ownerKey(source.pid, page)
+  if (active) {
+    const coalesce =
+      adjacent &&
+      key &&
+      key === lastKey &&
+      owner === lastOwner &&
+      now - lastAt < 1500 &&
+      top?.pid === source.pid &&
+      top.page === page &&
+      top.after === cur
+    const entry: DesignHistoryEntry = coalesce
+      ? { ...top, after: html, expected }
+      : { pid: source.pid, page, before: cur!, after: html, expected, lineage: adjacent ? top.lineage : {} }
+    useDesign.setState({
+      undo: [...(coalesce ? d.undo.slice(0, -1) : d.undo.slice(-99)), entry],
+      redo: [],
+      saved: now,
+    })
+    lastWritten = html
+  }
   lastKey = key
   lastAt = now
-  useDesign.setState({ redo: [] })
-  lastWritten = html
-  S().writeFile(page, html)
-  labels.push(label)
-  if (vTimer) clearTimeout(vTimer)
-  vTimer = setTimeout(flushVersion, VERSION_IDLE)
-  useDesign.setState({ saved: now })
-  d.bump()
+  lastOwner = owner
+  queueVersion(source.pid, page, label)
+  if (active) d.bump()
 }
 
 export const getEl = (path: Path | null) => {
@@ -83,23 +187,23 @@ export const getEl = (path: Path | null) => {
 export function setStyle(el: HTMLElement, prop: string, val: string, key?: string) {
   if (val === '' || val == null) el.style.removeProperty(prop)
   else el.style.setProperty(prop, val)
-  commitDoc('Стили', key ?? 'style:' + prop)
+  commitDoc('Стили', key ?? 'style:' + prop, el.ownerDocument)
 }
 export function setStyles(el: HTMLElement, map: Record<string, string>, label = 'Стили') {
   for (const [k, v] of Object.entries(map)) {
     if (v === '') el.style.removeProperty(k)
     else el.style.setProperty(k, v)
   }
-  commitDoc(label)
+  commitDoc(label, '', el.ownerDocument)
 }
 export function setText(el: HTMLElement, text: string) {
   el.textContent = text
-  commitDoc('Текст', 'text')
+  commitDoc('Текст', 'text', el.ownerDocument)
 }
 export function setAttr(el: HTMLElement, name: string, val: string) {
   if (val === '') el.removeAttribute(name)
   else el.setAttribute(name, val)
-  commitDoc('Атрибут ' + name, 'attr:' + name)
+  commitDoc('Атрибут ' + name, 'attr:' + name, el.ownerDocument)
 }
 
 function select(path: Path | null) {
@@ -167,25 +271,54 @@ export function selectParent() {
 }
 
 /* ---------- история ---------- */
+function traverseHistory(direction: 'undo' | 'redo') {
+  const d = D(),
+    entries = d[direction]
+  const entry = entries[entries.length - 1]
+  if (!entry) return
+  const pid = d.pid || S().projectId
+  if (entry.pid !== pid || entry.page !== d.page || S().projectId !== pid) {
+    toast({ title: 'История относится к другой странице или проекту', tone: 'warn', icon: 'warn' })
+    return
+  }
+  const output = direction === 'undo' ? entry.before : entry.after
+  try {
+    mutateFileTree(useStore.setState, pid, {
+      kind: 'replace',
+      path: entry.page,
+      content: output,
+      before: entry.expected,
+    })
+  } catch {
+    toast({
+      title: 'Нельзя отменить или повторить: файл изменён снаружи или удалён',
+      tone: 'warn',
+      icon: 'warn',
+    })
+    return
+  }
+  const expected = captureFileTree(useStore, pid, entry.page)
+  const remaining = entries.slice(0, -1)
+  const next = remaining[remaining.length - 1]
+  // A known inverse operation creates a fresh revision; rebase only the adjacent local step.
+  if (
+    next?.pid === pid &&
+    next.page === entry.page &&
+    next.lineage === entry.lineage &&
+    (direction === 'undo' ? next.after : next.before) === output
+  )
+    remaining[remaining.length - 1] = { ...next, expected }
+  const other = direction === 'undo' ? 'redo' : 'undo'
+  useDesign.setState({ [direction]: remaining, [other]: [...d[other], { ...entry, expected }] })
+  resetCoalescing()
+  // Let Studio reload the DOM; the old document's preimage is intentionally not advanced.
+  queueVersion(pid, entry.page, direction === 'undo' ? 'Отмена правки' : 'Повтор правки')
+}
 export function undo() {
-  const d = D()
-  const page = d.page
-  if (!page || !d.undo.length) return
-  const cur = S().projects.find((x) => x.id === S().projectId)?.files[page] ?? ''
-  const prev = d.undo[d.undo.length - 1]
-  useDesign.setState({ undo: d.undo.slice(0, -1), redo: [...d.redo, cur] })
-  lastKey = ''
-  S().writeFile(page, prev)
+  traverseHistory('undo')
 }
 export function redo() {
-  const d = D()
-  const page = d.page
-  if (!page || !d.redo.length) return
-  const cur = S().projects.find((x) => x.id === S().projectId)?.files[page] ?? ''
-  const next = d.redo[d.redo.length - 1]
-  useDesign.setState({ redo: d.redo.slice(0, -1), undo: [...d.undo, cur] })
-  lastKey = ''
-  S().writeFile(page, next)
+  traverseHistory('redo')
 }
 
 export function createPage(name: string) {

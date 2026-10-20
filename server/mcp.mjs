@@ -10,6 +10,9 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { childEnv, killTree, serverProcesses } from './process-safety.mjs'
+import { realInsideSync } from './fs-safety.mjs'
+import { publicError, publicFailure } from './public-errors.mjs'
 
 const PROTOCOL = '2025-06-18'
 export const CONFIG_FILES = ['.tetra/mcp.json', '.mcp.json']
@@ -17,6 +20,27 @@ const NAME = /^[\w.-]{1,40}$/
 const IDLE_MS = 5 * 60 * 1000
 const MAX_CLIENTS = 8
 const MAX_RESULT = 60000
+const MAX_INBOUND = 2 * 1024 * 1024
+const MAX_OUTBOUND = 256 * 1024
+const MAX_PENDING = 32
+export function rpcResult(reply, id) {
+  if (
+    !reply ||
+    Array.isArray(reply) ||
+    reply.jsonrpc !== '2.0' ||
+    reply.id !== id ||
+    Object.hasOwn(reply, 'result') === Object.hasOwn(reply, 'error')
+  )
+    throw new Error('Некорректный ответ MCP или несовпадающий ID')
+  if (Object.hasOwn(reply, 'error')) {
+    if (!reply.error || !Number.isInteger(reply.error.code) || typeof reply.error.message !== 'string')
+      throw new Error('Некорректная ошибка MCP')
+    throw new Error(reply.error.message)
+  }
+  if (!reply.result || typeof reply.result !== 'object' || Array.isArray(reply.result))
+    throw new Error('Некорректный результат MCP')
+  return reply.result
+}
 
 /* ------------------------------------------------------------------ конфиг */
 
@@ -32,7 +56,7 @@ export function parseConfig(text) {
   try {
     j = JSON.parse(text)
   } catch (e) {
-    out.errors.push('Файл не разобрать как JSON: ' + e.message)
+    out.errors.push('Файл MCP не разобрать: проверь синтаксис JSON')
     return out
   }
   const list = j && typeof j === 'object' ? j.mcpServers || j.servers : null
@@ -92,9 +116,11 @@ export function readConfig(dir) {
   for (const f of CONFIG_FILES) {
     const p = path.join(dir, f)
     try {
+      realInsideSync(dir, p)
       if (fs.statSync(p).isFile()) return { file: f, ...parseConfig(fs.readFileSync(p, 'utf8')) }
-    } catch {
-      /* нет такого файла */
+    } catch (e) {
+      if (e.code !== 'ENOENT')
+        return { file: f, servers: {}, errors: ['Конфигурация MCP недоступна или находится вне проекта'] }
     }
   }
   return { file: null, servers: {}, errors: [] }
@@ -107,10 +133,44 @@ export const configHash = (dir, name, cfg) =>
     .digest('hex')
 
 /** Одна строка для показа пользователю: что именно будет запущено */
-export const describe = (cfg) => (cfg.type === 'stdio' ? [cfg.command, ...cfg.args].join(' ') : cfg.url)
+const safeDisplay = (value) =>
+  String(value)
+    .replace(/[\r\n\x00-\x1f]/g, ' ')
+    .slice(0, 1200)
+export const describe = (cfg) => {
+  if (cfg.type === 'http') {
+    try {
+      const u = new URL(cfg.url)
+      u.username = ''
+      u.password = ''
+      for (const k of u.searchParams.keys()) u.searchParams.set(k, '[скрыто]')
+      return safeDisplay(u.href)
+    } catch {
+      return 'HTTP MCP'
+    }
+  }
+  let secretNext = false
+  return [cfg.command, ...(cfg.args || [])]
+    .map((v) => {
+      if (secretNext) {
+        secretNext = false
+        return '[скрыто]'
+      }
+      if (/^--?(?:token|password|secret|api[-_]?key|authorization)(?:=|$)/i.test(v)) {
+        secretNext = !v.includes('=')
+        return v.split('=')[0] + (v.includes('=') ? '=[скрыто]' : '')
+      }
+      return safeDisplay(v)
+    })
+    .join(' ')
+}
+export const overrideSummary = (cfg) =>
+  Object.entries(cfg.type === 'stdio' ? cfg.env || {} : cfg.headers || {}).map(
+    ([key, value]) => safeDisplay(key) + '=' + (/^\$\{[\w]+\}$/.test(value) ? value : '[скрыто]'),
+  )
 
 /** Подставляет ${VAR} из окружения сервера — уже после того, как пользователь одобрил конфиг как есть */
-export function resolve(cfg, env = process.env) {
+export function resolve(cfg, env = childEnv()) {
   return cfg.type === 'stdio'
     ? {
         ...cfg,
@@ -160,17 +220,26 @@ export function winCommandLine(command, args) {
 }
 
 export class McpClient {
-  constructor(cfg, { cwd, name = 'mcp', platform = process.platform } = {}) {
+  constructor(
+    cfg,
+    { cwd, name = 'mcp', platform = process.platform, launch = spawn, processes = serverProcesses } = {},
+  ) {
     this.cfg = cfg
     this.cwd = cwd
     this.name = name
     this.platform = platform
+    this.launch = launch
+    this.processes = processes
     this.id = 0
     this.waits = new Map()
     this.stderr = ''
     this.closed = false
     this.session = null
+    this.abort = new AbortController()
     this.lastUse = Date.now()
+    this.outgoing = []
+    this.outgoingBytes = 0
+    this.activeRequests = 0
   }
 
   async start() {
@@ -184,6 +253,7 @@ export class McpClient {
       },
       60000,
     )
+    if (this.closed) throw new Error('Соединение MCP закрыто')
     this.server = r.serverInfo || {}
     this.protocol = r.protocolVersion || PROTOCOL
     await this.notify('notifications/initialized')
@@ -191,26 +261,37 @@ export class McpClient {
   }
 
   #spawn() {
+    if (!this.processes.available('mcp')) throw publicError(503, 'Достигнут лимит фоновых процессов')
     const { command, args, env } = this.cfg
     const win = this.platform === 'win32'
     const child = win
-      ? spawn('cmd.exe', ['/d', '/s', '/c', winCommandLine(command, args)], {
+      ? this.launch('cmd.exe', ['/d', '/s', '/c', winCommandLine(command, args)], {
           cwd: this.cwd,
-          env: { ...process.env, ...env },
+          env: childEnv(env),
           windowsHide: true,
           windowsVerbatimArguments: true,
           stdio: ['pipe', 'pipe', 'pipe'],
+          detached: !win,
         })
-      : spawn(command, args, {
+      : this.launch(command, args, {
           cwd: this.cwd,
-          env: { ...process.env, ...env },
+          env: childEnv(env),
           stdio: ['pipe', 'pipe', 'pipe'],
+          detached: !win,
         })
     this.child = child
+    this.owned = this.processes.own(child, 'mcp', () => {
+      this.stderr = ''
+    })
     let buf = ''
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (d) => {
       buf += d
+      if (Buffer.byteLength(buf) > MAX_INBOUND) {
+        this.#fail(new Error('Ответ MCP слишком большой'))
+        this.close()
+        return
+      }
       let i
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i).trim()
@@ -222,15 +303,18 @@ export class McpClient {
     child.stderr.on('data', (d) => {
       this.stderr = (this.stderr + d).slice(-4000)
     })
-    child.on('error', (e) => this.#fail(new Error(`Не удалось запустить «${command}»: ${e.message}`)))
-    child.on('exit', (code) => {
-      this.closed = true
-      this.#fail(
-        new Error(
-          `Сервер завершился (код ${code})${this.stderr.trim() ? ': ' + this.stderr.trim().slice(-600) : ''}`,
-        ),
-      )
+    child.stdin.on('error', (e) => this.#transportFailed(e))
+    child.on('error', (e) => this.#transportFailed(e))
+    child.on('exit', () => {
+      this.#fail(new Error('Сервер MCP завершился'))
+      void this.close()
     })
+  }
+
+  #transportFailed(error) {
+    publicFailure(error, 'Связь с сервером MCP прервана', 502, 'mcp-stdio')
+    this.#fail(new Error('Связь с сервером MCP прервана'))
+    void this.close()
   }
 
   #fail(err) {
@@ -248,38 +332,123 @@ export class McpClient {
     if (m && m.id !== undefined && (m.result !== undefined || m.error) && this.waits.has(m.id)) {
       const w = this.waits.get(m.id)
       this.waits.delete(m.id)
-      m.error ? w.reject(new Error(m.error.message || 'ошибка сервера MCP')) : w.resolve(m.result)
+      try {
+        w.resolve(rpcResult(m, m.id))
+      } catch (e) {
+        w.reject(e)
+      }
     } else if (m && m.method && m.id !== undefined) {
       /* запрос от сервера к нам */
-      if (m.method === 'ping') this.#send({ jsonrpc: '2.0', id: m.id, result: {} })
+      if (m.method === 'ping')
+        void this.#send({ jsonrpc: '2.0', id: m.id, result: {} }).catch((e) => this.#transportFailed(e))
       else if (m.method === 'roots/list')
-        this.#send({
+        void this.#send({
           jsonrpc: '2.0',
           id: m.id,
           result: { roots: [{ uri: pathToFileURL(this.cwd || process.cwd()).href, name: 'project' }] },
-        })
+        }).catch((e) => this.#transportFailed(e))
       else
-        this.#send({
+        void this.#send({
           jsonrpc: '2.0',
           id: m.id,
-          error: { code: -32601, message: 'Не поддерживается: ' + m.method },
-        })
+          error: { code: -32601, message: 'Метод MCP не поддерживается' },
+        }).catch((e) => this.#transportFailed(e))
     }
   }
 
   #send(obj) {
-    if (this.cfg.type === 'stdio') {
-      if (this.child?.stdin.writable) this.child.stdin.write(JSON.stringify(obj) + '\n')
+    if (this.closed || !this.child?.stdin?.writable)
+      return Promise.reject(new Error('Соединение MCP закрыто'))
+    let line
+    try {
+      line = JSON.stringify(obj) + '\n'
+    } catch {
+      return Promise.reject(new Error('Некорректный запрос MCP'))
+    }
+    const bytes = Buffer.byteLength(line)
+    if (
+      bytes > MAX_OUTBOUND ||
+      this.outgoingBytes + bytes + (this.child.stdin.writableLength || 0) > MAX_OUTBOUND
+    )
+      return Promise.reject(new Error('Исходящая очередь MCP переполнена'))
+    return new Promise((resolve, reject) => {
+      this.outgoing.push({ line, bytes, resolve, reject })
+      this.outgoingBytes += bytes
+      this.#pump()
+    })
+  }
+
+  #pump() {
+    if (this.writing || this.closed) return
+    const entry = this.outgoing.shift()
+    if (!entry) return
+    this.writing = entry
+    const stream = this.child.stdin
+    let callbackDone = false,
+      drained = false,
+      returnKnown = false,
+      settled = false
+    const cleanup = () => stream.removeListener('drain', onDrain)
+    entry.cancel = () => {
+      if (!settled) {
+        settled = true
+        cleanup()
+        entry.reject(new Error('Соединение MCP закрыто'))
+      }
+    }
+    const complete = (error) => {
+      if (settled) return
+      if (error) {
+        settled = true
+        cleanup()
+        entry.reject(new Error('Ошибка отправки MCP'))
+        this.#transportFailed(error)
+        return
+      }
+      if (!returnKnown || !callbackDone || !drained) return
+      settled = true
+      cleanup()
+      this.writing = null
+      this.outgoingBytes -= entry.bytes
+      entry.resolve()
+      this.#pump()
+    }
+    const onDrain = () => {
+      drained = true
+      complete()
+    }
+    stream.once('drain', onDrain)
+    try {
+      const ok = stream.write(entry.line, (error) => {
+        callbackDone = true
+        complete(error)
+      })
+      returnKnown = true
+      drained = drained || ok !== false
+      complete()
+    } catch (error) {
+      complete(error)
     }
   }
 
   async notify(method, params) {
+    if (this.closed) throw new Error('Соединение MCP закрыто')
     const msg = { jsonrpc: '2.0', method, ...(params ? { params } : {}) }
     if (this.cfg.type === 'stdio') return this.#send(msg)
     await this.#post(msg, 15000)
   }
 
   request(method, params, timeout = 30000) {
+    if (this.activeRequests >= MAX_PENDING)
+      return Promise.reject(new Error('Слишком много ожидающих запросов MCP'))
+    this.activeRequests++
+    return this.#request(method, params, timeout).finally(() => {
+      this.activeRequests--
+    })
+  }
+
+  #request(method, params, timeout) {
+    if (this.closed) return Promise.reject(new Error('Соединение MCP закрыто'))
     this.lastUse = Date.now()
     const id = ++this.id
     const msg = { jsonrpc: '2.0', id, method, ...(params ? { params } : {}) }
@@ -287,17 +456,19 @@ export class McpClient {
     return new Promise((resolve, reject) => {
       const t = setTimeout(() => {
         this.waits.delete(id)
-        reject(
-          new Error(
-            `Сервер MCP не ответил на ${method} за ${timeout / 1000} с${this.stderr.trim() ? ': ' + this.stderr.trim().slice(-400) : ''}`,
-          ),
-        )
+        reject(new Error('Сервер MCP не ответил вовремя'))
       }, timeout)
       this.waits.set(id, {
         resolve: (v) => (clearTimeout(t), resolve(v)),
         reject: (e) => (clearTimeout(t), reject(e)),
       })
-      this.#send(msg)
+      this.#send(msg).catch((e) => {
+        const wait = this.waits.get(id)
+        if (wait) {
+          this.waits.delete(id)
+          wait.reject(e)
+        }
+      })
     })
   }
 
@@ -310,31 +481,37 @@ export class McpClient {
       ...this.cfg.headers,
       ...(this.session ? { 'mcp-session-id': this.session } : {}),
     }
+    const encoded = JSON.stringify(msg)
+    if (Buffer.byteLength(encoded) > MAX_OUTBOUND) throw new Error('Запрос MCP слишком большой')
     const res = await fetch(this.cfg.url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(msg),
-      signal: AbortSignal.timeout(timeout),
+      body: encoded,
+      signal: AbortSignal.any([AbortSignal.timeout(timeout), this.abort.signal]),
     }).catch((e) => {
-      throw new Error('Нет связи с ' + this.cfg.url + ': ' + (e.cause?.code || e.message))
+      const failure = publicFailure(e, 'Нет связи с сервером MCP', 502, 'mcp-http')
+      throw publicError(502, failure.error.message, { correlationId: failure.error.correlationId })
     })
     const sid = res.headers.get('mcp-session-id')
     if (sid) this.session = sid
-    if (res.status === 202 || msg.id === undefined) {
+    if (msg.id === undefined) {
       await res.body?.cancel().catch(() => {})
       if (!res.ok) throw new Error('HTTP ' + res.status)
       return null
     }
     if (!res.ok) {
-      const t = (await res.text().catch(() => '')).slice(0, 300)
-      throw new Error(`Сервер MCP ответил ${res.status}${t ? ': ' + t : ''}`)
+      await res.body?.cancel().catch(() => {})
+      throw new Error(`Сервер MCP ответил ${res.status}`)
     }
     const ct = res.headers.get('content-type') || ''
     let reply = null
     if (ct.includes('text/event-stream')) {
       const dec = new TextDecoder()
-      let buf = ''
+      let buf = '',
+        bytes = 0
       for await (const chunk of res.body) {
+        bytes += chunk.byteLength
+        if (bytes > MAX_INBOUND) throw new Error('Ответ MCP слишком большой')
         buf += dec.decode(chunk, { stream: true })
         let i
         while ((i = buf.search(/\r?\n\r?\n/)) >= 0) {
@@ -358,10 +535,21 @@ export class McpClient {
         }
         if (reply) break
       }
-    } else reply = await res.json().catch(() => null)
-    if (!reply) throw new Error('Сервер MCP не прислал ответ')
-    if (reply.error) throw new Error(reply.error.message || 'ошибка сервера MCP')
-    return reply.result
+    } else {
+      const chunks = []
+      let bytes = 0
+      for await (const chunk of res.body || []) {
+        bytes += chunk.byteLength
+        if (bytes > MAX_INBOUND) throw new Error('Ответ MCP слишком большой')
+        chunks.push(Buffer.from(chunk))
+      }
+      try {
+        reply = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      } catch {
+        /* rejected below */
+      }
+    }
+    return rpcResult(reply, msg.id)
   }
 
   async listTools() {
@@ -382,23 +570,38 @@ export class McpClient {
   }
 
   close() {
-    if (this.closed) return
+    if (this.closePromise) return this.closePromise
     this.closed = true
+    this.abort.abort()
     this.#fail(new Error('Соединение закрыто'))
-    if (this.child) {
-      try {
-        this.child.stdin.end()
-        setTimeout(() => this.child.kill(), 300).unref?.()
-      } catch {
-        /* уже закрыт */
+    this.writing?.cancel?.()
+    for (const entry of this.outgoing) entry.reject(new Error('Соединение закрыто'))
+    this.outgoing = []
+    this.outgoingBytes = 0
+    const cleanup = async () => {
+      if (this.child) {
+        try {
+          this.child.stdin.end()
+        } catch {
+          /* closed */
+        }
+        return this.owned ? this.owned.stop() : killTree(this.child, 'SIGTERM', this.platform)
+      }
+      if (this.cfg.type === 'http' && this.session) {
+        await fetch(this.cfg.url, {
+          method: 'DELETE',
+          headers: { 'mcp-session-id': this.session, ...this.cfg.headers },
+          signal: AbortSignal.timeout(3000),
+        }).catch(() => {})
       }
     }
-    if (this.cfg.type === 'http' && this.session)
-      fetch(this.cfg.url, {
-        method: 'DELETE',
-        headers: { 'mcp-session-id': this.session, ...this.cfg.headers },
-        signal: AbortSignal.timeout(3000),
-      }).catch(() => {})
+    this.closePromise = Promise.resolve()
+      .then(cleanup)
+      .then((result) => {
+        if (result?.stopped === false) this.closePromise = null
+        return result
+      })
+    return this.closePromise
   }
 }
 
@@ -423,38 +626,71 @@ export function flattenResult(r) {
 
 export function createPool({ idleMs = IDLE_MS } = {}) {
   const pool = new Map()
+  const close = (c) => {
+    c.cancelReady?.()
+    c.close()
+  }
   const sweep = setInterval(() => {
-    for (const [k, c] of pool) if (Date.now() - c.lastUse > idleMs || c.closed) (c.close(), pool.delete(k))
+    for (const [k, c] of pool) if (Date.now() - c.lastUse > idleMs || c.closed) (close(c), pool.delete(k))
   }, 30000)
   sweep.unref?.()
   return {
     pool,
-    async get(key, make) {
+    getOwner(owner) {
+      const found = [...pool].find(([, c]) => c.owner === owner)
+      return found ? { hash: found[0], client: found[1] } : null
+    },
+    async get(key, make, owner) {
+      if (owner)
+        for (const [oldKey, c] of pool)
+          if (c.owner === owner && oldKey !== key) {
+            close(c)
+            pool.delete(oldKey)
+          }
       const old = pool.get(key)
-      if (old && !old.closed) return old
+      if (old && !old.closed) {
+        await old.ready
+        if (pool.get(key) !== old || old.closed) throw new Error('Соединение MCP закрыто')
+        return old
+      }
       if (pool.size >= MAX_CLIENTS) {
         const [k, c] = [...pool].sort((a, b) => a[1].lastUse - b[1].lastUse)[0]
-        c.close()
+        close(c)
         pool.delete(k)
       }
       const c = make()
+      c.owner = owner
       pool.set(key, c)
+      c.ready = Promise.race([
+        Promise.resolve().then(() => {
+          if (c.closed) throw new Error('Соединение MCP закрыто')
+          return c.start()
+        }),
+        new Promise((_, reject) => {
+          c.cancelReady = () => reject(new Error('Соединение MCP закрыто'))
+        }),
+      ])
       try {
-        await c.start()
+        await c.ready
+        if (pool.get(key) !== c || c.closed) throw new Error('Соединение MCP закрыто')
       } catch (e) {
         c.close()
-        pool.delete(key)
+        if (pool.get(key) === c) pool.delete(key)
         throw e
       }
       return c
     },
     stop(key) {
       const c = pool.get(key)
-      if (c) (c.close(), pool.delete(key))
+      if (c) (close(c), pool.delete(key))
     },
     closeAll() {
-      for (const c of pool.values()) c.close()
+      const pending = [...pool.values()].map((c) => {
+        c.cancelReady?.()
+        return c.close()
+      })
       pool.clear()
+      return Promise.allSettled(pending)
     },
   }
 }
@@ -463,45 +699,75 @@ export async function mcpRoutes(req, res, u, io, { approvalsFile, pool }) {
   if (!u.pathname.startsWith('/api/mcp/') || req.method !== 'POST') return false
   const b = await io.readBody(req)
   const out = (c, o) => io.json(res, c, o)
-  const ap = approvals(approvalsFile)
-  const dir = await io.projectDir(b.id, b.name, b.folder)
-  const conf = readConfig(dir)
-  const item = (n) => {
-    const cfg = conf.servers[n]
-    return cfg ? { cfg, hash: configHash(dir, n, cfg) } : null
-  }
   try {
+    const ap = approvals(approvalsFile)
+    const dir = fs.realpathSync(await io.projectDir(b.id, b.name, b.folder))
+    const conf = readConfig(dir)
+    const item = (n) => {
+      const cfg = conf.servers[n]
+      return cfg ? { cfg, hash: configHash(dir, n, cfg) } : null
+    }
+    const owner = (name) => JSON.stringify([dir, name])
     if (u.pathname === '/api/mcp/status') {
       const servers = Object.entries(conf.servers).map(([n, cfg]) => {
         const hash = configHash(dir, n, cfg)
         return {
           name: n,
+          hash,
+          runningHash: pool.getOwner(owner(n))?.hash || null,
+          overrides: overrideSummary(cfg),
           type: cfg.type,
           desc: describe(cfg),
           disabled: !!cfg.disabled,
           approved: ap.has(hash),
-          running: pool.pool.has(hash) && !pool.pool.get(hash).closed,
+          running: !!pool.getOwner(owner(n)) && !pool.getOwner(owner(n)).client.closed,
         }
       })
+      for (const [hash, client] of pool.pool) {
+        if (!client.owner || client.closed) continue
+        let slot
+        try {
+          slot = JSON.parse(client.owner)
+        } catch {
+          continue
+        }
+        if (slot[0] !== dir || conf.servers[slot[1]]) continue
+        servers.push({
+          name: slot[1],
+          hash,
+          runningHash: hash,
+          overrides: client.display?.overrides || [],
+          type: client.display?.type || 'stdio',
+          desc: client.display?.desc || 'Удалённая из файла версия MCP',
+          disabled: true,
+          approved: ap.has(hash),
+          running: true,
+          missing: true,
+        })
+      }
       return (out(200, { file: conf.file, servers, errors: conf.errors }), true)
     }
-    const it = item(String(b.server || ''))
-    if (!it)
-      return (
-        out(404, {
-          error: { message: `Сервер «${b.server}» не найден в ${conf.file || '.tetra/mcp.json'}` },
-        }),
-        true
-      )
-    if (u.pathname === '/api/mcp/approve') {
-      b.approved === false ? ap.remove(it.hash) : ap.add(it.hash)
-      if (b.approved === false) pool.stop(it.hash)
+    const name = String(b.server || '')
+    if (!NAME.test(name)) throw publicError(400, 'Неверное имя сервера MCP')
+    const it = item(name),
+      active = pool.getOwner(owner(name))
+    if (['/api/mcp/approve', '/api/mcp/stop'].includes(u.pathname)) {
+      const expected = b.expectedHash
+      if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected))
+        throw publicError(409, 'Обнови список MCP и подтверди показанную версию')
+      if (u.pathname === '/api/mcp/approve' && b.approved !== false) {
+        if (!it || expected !== it.hash)
+          throw publicError(409, 'Конфигурация MCP изменилась — проверь новую версию и подтверди ещё раз')
+        ap.add(expected)
+      } else {
+        if (expected !== it?.hash && expected !== active?.hash && !ap.has(expected))
+          throw publicError(409, 'Версия MCP изменилась — обнови список')
+        if (u.pathname === '/api/mcp/approve') ap.remove(expected)
+        if (active?.hash === expected) pool.stop(expected)
+      }
       return (out(200, { ok: true }), true)
     }
-    if (u.pathname === '/api/mcp/stop') {
-      pool.stop(it.hash)
-      return (out(200, { ok: true }), true)
-    }
+    if (!it) throw publicError(404, 'Сервер MCP не найден в конфигурации проекта')
     if (it.cfg.disabled)
       return (out(409, { error: { message: `Сервер «${b.server}» выключен ("disabled": true)` } }), true)
     if (!ap.has(it.hash))
@@ -513,7 +779,15 @@ export async function mcpRoutes(req, res, u, io, { approvalsFile, pool }) {
         }),
         true
       )
-    const client = await pool.get(it.hash, () => new McpClient(resolve(it.cfg), { cwd: dir, name: b.server }))
+    const client = await pool.get(
+      it.hash,
+      () => {
+        const c = new McpClient(resolve(it.cfg), { cwd: dir, name: b.server })
+        c.display = { type: it.cfg.type, desc: describe(it.cfg), overrides: overrideSummary(it.cfg) }
+        return c
+      },
+      owner(name),
+    )
     if (u.pathname === '/api/mcp/tools')
       return (
         out(200, {
@@ -536,7 +810,8 @@ export async function mcpRoutes(req, res, u, io, { approvalsFile, pool }) {
       )
     }
   } catch (e) {
-    return (out(502, { error: { message: String(e.message || e) } }), true)
+    const failure = publicFailure(e, 'Не удалось выполнить запрос MCP', 502, 'mcp')
+    return (out(failure.status, { error: failure.error }), true)
   }
   return false
 }

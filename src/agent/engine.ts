@@ -1,7 +1,16 @@
 /* Движок агента. Один ход (Turn) = одно сообщение агента, внутри которого живые части:
    текст, шаги, карточки файлов (создаёт / правит / удаляет), команды. Всё применяется к проекту
    по мере того, как модель пишет, и в конце собирается в одну версию. */
-import { shiftQueue, enqueue, useQueue } from './queue'
+import { dequeue, peekQueue, enqueue, useQueue, clearQueue, queueGeneration } from './queue'
+import {
+  currentImage,
+  image,
+  pathsOf,
+  recover,
+  sameImage,
+  type FileImage,
+  type GuardedFile,
+} from './fileguard'
 import { dangerOf } from './danger'
 import { Turn, tally, commitFiles } from './turn'
 import { history, systemPrompt } from './prompt'
@@ -25,9 +34,18 @@ import { mcpAction } from './mcptool'
 
 const S = () => useStore.getState()
 const controllers = new Map<ID, AbortController>()
-export const isRunning = (chatId: ID) => controllers.has(chatId)
+const queueTimers = new Map<ID, ReturnType<typeof setTimeout>>()
+function cancelQueuedTimer(chatId: ID) {
+  const timer = queueTimers.get(chatId)
+  if (timer !== undefined) clearTimeout(timer)
+  queueTimers.delete(chatId)
+}
+export const isRunning = (chatId: ID) => controllers.has(chatId) || queueTimers.has(chatId)
 export function stopTurn(chatId: ID) {
   loopStop(chatId, 'остановлено вручную')
+  cancelQueuedTimer(chatId)
+  clearQueue(chatId)
+  autoFix.delete(chatId)
   controllers.get(chatId)?.abort()
 }
 
@@ -81,7 +99,14 @@ function refreshTurn(pid: ID, chatId: ID, msgId: ID, version?: number) {
 }
 
 /** Применить предложенные правки (все или одну карточку) */
-export function applyProposed(chatId: ID, msgId: ID, partId?: ID, pickedText?: string, force = false) {
+export function applyProposed(
+  chatId: ID,
+  msgId: ID,
+  partId?: ID,
+  pickedText?: string,
+  force = false,
+  approval?: { pid: ID; snapshots: Record<ID, FileImage> },
+) {
   const pid = S().projectId!
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
@@ -89,34 +114,41 @@ export function applyProposed(chatId: ID, msgId: ID, partId?: ID, pickedText?: s
     (p): p is FilePart => p.k === 'file' && p.state === 'proposed' && (!partId || p.id === partId),
   )
   if (!targets.length) return
-  /* файл поменяли после того, как агент его предложил: запись затрёт чужие правки — спросим, а не перезапишем молча */
-  if (!force) {
-    const stale = targets.filter((t) => {
-      if (t.op !== 'edit' && t.op !== 'create') return false
-      const cur = fileOf(pid, t.path)
-      if (cur === undefined) return false
-      /* у больших файлов «до» в карточке не хранится (before = null) — сверить нечего */
-      return t.op === 'create' ? true : t.before != null && cur !== t.before
+  const snapshots = Object.fromEntries(
+    targets.map((t) => [t.id, currentImage(pid, t, (t as GuardedFile).agentGuard?.before)]),
+  )
+  const stale = targets.filter((t) => {
+    const expected = (t as GuardedFile).agentGuard?.before
+    return !expected || !sameImage(expected, snapshots[t.id])
+  })
+  if (
+    stale.length &&
+    (!force ||
+      !approval ||
+      approval.pid !== pid ||
+      targets.some((t) => !approval.snapshots[t.id] || !sameImage(approval.snapshots[t.id], snapshots[t.id])))
+  ) {
+    S().openModal({
+      type: 'confirm',
+      title: 'Файлы изменились после предложения',
+      body: `${stale.map((t) => t.path).join(', ')} — новые данные будут сохранены в .tetra/recovery перед применением.`,
+      danger: true,
+      confirm: 'Сохранить копию и применить',
+      run: () => {
+        if (S().projectId !== pid) return
+        applyProposed(chatId, msgId, partId, pickedText, true, { pid, snapshots })
+      },
     })
-    if (stale.length) {
-      S().openModal({
-        type: 'confirm',
-        title: 'Файл изменился после предложения',
-        body: `${stale.map((t) => t.path).join(', ')} — с тех пор файл поменяли. Применение перезапишет текущее содержимое версией агента.`,
-        danger: true,
-        confirm: 'Перезаписать',
-        run: () => applyProposed(chatId, msgId, partId, pickedText, true),
-      })
-      return
-    }
+    return
   }
+  if (stale.length) recover(pid, Object.assign({}, ...stale.map((t) => snapshots[t.id])))
   const applied: FilePart[] = []
   const parts = m.parts.map((p) => ({ ...p }))
   for (const t of targets) {
     const mine = parts.find((x) => x.id === t.id) as FilePart
     if (t.op === 'delete') {
-      for (const f of expandDelete(pid, t.path)) putFile(pid, f, null)
-      if (fileOf(pid, t.path) !== undefined) putFile(pid, t.path, null)
+      // Use the confirmed member set; never sweep in the just-created recovery copy.
+      for (const f of Object.keys(snapshots[t.id])) putFile(pid, f, null)
     } else if (t.op === 'rename' && t.to) {
       const src = fileOf(pid, t.path)
       if (src === undefined) {
@@ -141,6 +173,10 @@ export function applyProposed(chatId: ID, msgId: ID, partId?: ID, pickedText?: s
       mine.error = 'Содержимое слишком большое, чтобы сохранить в чате — попроси агента повторить'
       continue
     }
+    ;(mine as GuardedFile).agentGuard = {
+      before: snapshots[t.id],
+      after: currentImage(pid, mine, snapshots[t.id]),
+    }
     mine.state = 'done'
     applied.push(mine)
   }
@@ -161,7 +197,12 @@ export function rejectProposed(chatId: ID, msgId: ID, partId?: ID) {
   refreshTurn(pid, chatId, msgId)
 }
 /** Вернуть файлы к состоянию «до» этого хода агента */
-export function revertTurn(chatId: ID, msgId: ID, force = false) {
+export function revertTurn(
+  chatId: ID,
+  msgId: ID,
+  force = false,
+  approval?: { pid: ID; snapshot: FileImage },
+) {
   const pid = S().projectId!
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
@@ -169,38 +210,70 @@ export function revertTurn(chatId: ID, msgId: ID, force = false) {
   if (!files.length) return
   const p = S().projects.find((x) => x.id === pid)!
   const prev = p.versions.find((v) => v.n === (m.turn?.version ?? 0) - 1)?.snapshot
-  const changed = files.filter(
-    (f) => f.op !== 'delete' && f.op !== 'rename' && f.after != null && p.files[f.path] !== f.after,
-  )
-  if (changed.length && !force) {
+  const allPaths = [
+    ...new Set(
+      files.flatMap((f) => [
+        ...pathsOf(pid, f),
+        ...Object.keys((f as GuardedFile).agentGuard?.before || {}),
+        ...Object.keys((f as GuardedFile).agentGuard?.after || {}),
+      ]),
+    ),
+  ]
+  const snapshot = image(pid, allPaths)
+  const expected: FileImage = {}
+  let unknown = false
+  for (const f of files) {
+    const guard = (f as GuardedFile).agentGuard
+    if (!guard) unknown = true
+    else Object.assign(expected, guard.after)
+  }
+  const changed = unknown || !sameImage(expected, snapshot)
+  if (changed && (!force || !approval || approval.pid !== pid || !sameImage(approval.snapshot, snapshot))) {
     S().openModal({
       type: 'confirm',
       title: 'Откатить правки агента?',
-      body: `С тех пор вы или другой агент меняли: ${changed.map((f) => f.path).join(', ')}. Откат перезапишет эти правки.`,
+      body: 'Файлы изменились или старая карточка не содержит точного состояния. Текущие данные будут сохранены в .tetra/recovery перед откатом.',
       danger: true,
-      confirm: 'Откатить',
-      run: () => revertTurn(chatId, msgId, true),
+      confirm: 'Сохранить копию и откатить',
+      run: () => {
+        if (S().projectId !== pid) return
+        revertTurn(chatId, msgId, true, { pid, snapshot })
+      },
     })
     return
   }
+  if (changed) recover(pid, snapshot)
   const reverted: FilePart[] = []
   for (const f of [...files].reverse()) {
-    const orig =
-      f.before !== undefined && f.before !== null
-        ? f.before
-        : f.op === 'create'
-          ? null
-          : (prev?.[f.path] ?? null)
-    if (f.op === 'rename' && f.to) {
-      const cur = p.files[f.to] ?? fileOf(pid, f.to)
-      if (cur !== undefined) putFile(pid, f.path, cur)
-      putFile(pid, f.to, null)
-    } else if (f.op === 'delete') {
-      if (orig === null) continue
-      putFile(pid, f.path, orig)
-    } else putFile(pid, f.path, orig)
+    const guard = (f as GuardedFile).agentGuard
+    if (guard) {
+      for (const [path, value] of Object.entries(guard.before)) putFile(pid, path, value)
+    } else {
+      const orig = f.before ?? (f.op === 'create' ? null : (prev?.[f.path] ?? null))
+      // Legacy cards are only restored after explicit confirmation plus recovery.
+      if (f.op === 'edit' && orig === null) {
+        toast({
+          title: 'Исходный файл не сохранён',
+          desc: f.path + ' — попроси агента повторить правку',
+          icon: 'warn',
+        })
+        continue
+      }
+      if (f.op === 'rename' && f.to) {
+        if (orig === null) continue
+        putFile(pid, f.path, orig)
+        putFile(pid, f.to, prev?.[f.to] ?? null)
+      } else if (f.op === 'delete' && orig === null) {
+        const entries = Object.entries(prev || {}).filter(([path]) =>
+          path.startsWith(f.path.replace(/\/+$/, '') + '/'),
+        )
+        if (!entries.length) continue
+        for (const [path, content] of entries) putFile(pid, path, content)
+      } else putFile(pid, f.path, orig)
+    }
     reverted.push(f)
   }
+  if (!reverted.length) return
   S().patchMsg(
     chatId,
     msgId,
@@ -236,10 +309,19 @@ export function sendMessage(
   attachments: Attachment[] = [],
   extra = '',
   depth = 0,
-  opts: { silent?: string; loop?: boolean; imgs?: string[] } = {},
+  opts: {
+    silent?: string
+    loop?: boolean
+    imgs?: string[]
+    pid?: ID
+    agent?: string
+    tier?: Tier
+    prompt?: string
+  } = {},
 ): boolean {
   const st = S()
-  const pid = st.projectId!
+  const pid = opts.pid || st.projectId
+  if (!pid || !getChat(pid, chatId)) return false
   const t = text.trim()
   /* silent — проход цикла /loop: в чате вместо «сообщения человека» короткая служебная строка */
   if (!t && !attachments.length && !opts.silent) return false
@@ -267,7 +349,7 @@ export function sendMessage(
         },
     pid,
   )
-  st.setDraft(chatId, '')
+  if (st.projectId === pid) st.setDraft(chatId, '')
   const chat = getChat(pid, chatId)
   const agent = chat?.agents[0]
   if (!agent) {
@@ -304,13 +386,17 @@ export function sendMessage(
     return false
   }
   const mention = t.match(/@([\w-]+)/)?.[1]
-  const who = chat!.agents.find((a) => a.name === mention) || agent
+  const who = opts.agent
+    ? chat!.agents.find((a) => a.name === opts.agent)
+    : chat!.agents.find((a) => a.name === mention) || agent
+  if (!who) return false
   void runTurn(
     pid,
     chatId,
-    opts.silent ? extra : t || `Посмотри вложения: ${attachments.map((a) => a.name).join(', ')}`,
+    opts.prompt ??
+      (opts.silent ? extra : t || `Посмотри вложения: ${attachments.map((a) => a.name).join(', ')}`),
     who.name,
-    who.tier,
+    opts.tier ?? who.tier,
     attachments,
     { ctx: opts.silent ? '' : extra, depth, loop: opts.loop, imgs: opts.imgs },
   )
@@ -326,6 +412,7 @@ async function runTurn(
   attachments: Attachment[],
   opts: { skipAsk?: boolean; ctx?: string; depth?: number; loop?: boolean; imgs?: string[] } = {},
 ) {
+  cancelQueuedTimer(chatId)
   controllers.get(chatId)?.abort()
   const ctl = new AbortController()
   controllers.set(chatId, ctl)
@@ -370,7 +457,8 @@ async function runTurn(
     ],
     pid,
   )
-  const T = new Turn(pid, chatId, msgId, agent, tier, laneId, ctl)
+  const current = () => controllers.get(chatId) === ctl
+  const T = new Turn(pid, chatId, msgId, agent, tier, laneId, ctl, current)
   let summary = ''
   let failed = false
   try {
@@ -378,6 +466,7 @@ async function runTurn(
     if (backendOnline() && tier !== 'Эскалация' && S().settings.autoVerify !== false && !T.aborted)
       await verifyAfter(T, chatId, pid, opts.depth || 0)
     T.patch({ streaming: false, thinking: undefined, endedAt: Date.now() })
+    T.guard()
     const ch = T.finish(summary)
     if (!T.aborted && !(ch && (ch.state === 'proposed' || ch.state === 'partial')))
       osNotify(
@@ -395,7 +484,7 @@ async function runTurn(
   } catch (e) {
     const aborted = ctl.signal.aborted
     T.stop()
-    live.endChat(chatId)
+    if (current()) live.endChat(chatId)
     T.flush(true)
     if (aborted) {
       T.finish('')
@@ -418,20 +507,40 @@ async function runTurn(
     }
   } finally {
     T.stop()
-    controllers.delete(chatId)
-    S().setChat(chatId, { running: false }, pid)
+    const owner = current()
+    if (owner) {
+      controllers.delete(chatId)
+      S().setChat(chatId, { running: false }, pid)
+    }
     S().setLanes((l) => l.filter((x) => x.id !== laneId), pid)
-    /* следующее сообщение из очереди — если ход не прервали вручную */
-    if (!ctl.signal.aborted) {
-      const nx = shiftQueue(chatId)
-      if (nx && getChat(pid, chatId) && S().projectId === pid)
-        setTimeout(
-          () => sendMessage(chatId, nx.text, nx.atts, nx.extra || '', autoFix.delete(chatId) ? 1 : 0),
-          350,
+    // Keep the item in the queue until the callback actually accepts it.
+    if (owner && !ctl.signal.aborted && peekQueue(chatId) && getChat(pid, chatId) && S().projectId === pid) {
+      const generation = queueGeneration(chatId)
+      const timer = setTimeout(() => {
+        if (queueTimers.get(chatId) !== timer) return
+        queueTimers.delete(chatId)
+        if (
+          generation !== queueGeneration(chatId) ||
+          ctl.signal.aborted ||
+          controllers.has(chatId) ||
+          S().projectId !== pid ||
+          !getChat(pid, chatId)
         )
+          return
+        const nx = peekQueue(chatId)
+        if (!nx) return
+        const sent = sendMessage(chatId, nx.text, nx.atts, nx.extra || '', autoFix.has(chatId) ? 1 : 0, {
+          pid,
+        })
+        if (sent) {
+          dequeue(chatId, nx.id)
+          autoFix.delete(chatId)
+        }
+      }, 350)
+      queueTimers.set(chatId, timer)
     }
     /* проход /loop закончился: цикл решает, идти ли дальше (во время паузы между проходами ход могут занять очередь и человек) */
-    if (opts.loop) {
+    if (owner && opts.loop) {
       if (ctl.signal.aborted) loopStop(chatId, 'ход прерван')
       else loopPassEnded(chatId, T.parts.map((p) => (p.k === 'text' ? p.text : '')).join('\n'), failed)
     }
@@ -498,7 +607,7 @@ async function liveLoop(
           free: provider.kind === 'ollama',
         },
       } as Partial<Message>)
-    setTimeout(budgetWarn, 50)
+    if (!T.aborted) budgetWarn()
   }
 }
 
@@ -516,9 +625,13 @@ async function liveLoopInner(
   const { pid, chatId, agent, msgId } = T
   const project = () => S().projects.find((p) => p.id === pid)!
   const messages: ChatMsg[] = history(getChat(pid, chatId)!.messages, msgId)
+  // The explicit current prompt is authoritative (including silent automation/loop turns).
   if (!messages.length || messages[messages.length - 1].role !== 'user')
     messages.push({ role: 'user', content: prompt })
+  else messages[messages.length - 1] = { ...messages[messages.length - 1], content: prompt }
+  T.guard()
   if (wantsGit(prompt)) ctx += await gitContext(project())
+  T.guard()
   if (ctx)
     messages[messages.length - 1] = {
       ...messages[messages.length - 1],
@@ -536,9 +649,11 @@ async function liveLoopInner(
   /* инструменты MCP: один раз на ход (серверы живут между ходами) */
   T.patch({ thinking: 'Подключаю инструменты' })
   const mcpAv: McpAvail = await loadMcp(project()).catch(() => ({ tools: {}, notes: {} }))
+  T.guard()
   const mcpText = mcpSection(mcpAv)
   let first = ''
   for (let step = 0; step < MAX_STEPS; step++) {
+    T.guard()
     const lim = S().settings.budget
     if (
       step > 0 &&
@@ -582,14 +697,18 @@ async function liveLoopInner(
         system: sysPrompt,
         messages,
         signal: T.ctl.signal,
-        onOpen: () => T.patch({ thinking: 'Модель отвечает' }),
+        onOpen: () => {
+          if (!T.aborted) T.patch({ thinking: 'Модель отвечает' })
+        },
         onReasoning: (r) => {
+          if (T.aborted) return
           T.reasoning += r
           T.chars += r.length
           T.touch()
           if (!T.firstAt) T.patch({ thinking: 'Рассуждает' })
         },
         onDelta: (d) => {
+          if (T.aborted) return
           acc += d
           T.chars += d.length
           T.touch()
@@ -598,6 +717,7 @@ async function liveLoopInner(
     } finally {
       clearInterval(iv)
     }
+    T.guard()
     pump(true)
     if (!acc.trim() && !T.parts.length)
       T.upsert({ k: 'text', id: 'empty', text: '_Модель вернула пустой ответ._' })
@@ -623,6 +743,7 @@ async function liveLoopInner(
           ['run', 'read', 'fetch', 'search', 'shot', 'mcp'].includes(x.s.kind),
       )
     for (const { s, i } of actions) {
+      T.guard()
       const id = opIds.get(i) || `${step}-o${i}`
       if (s.kind === 'read') {
         const path = (s.attrs.path || '').trim()
@@ -638,7 +759,7 @@ async function liveLoopInner(
           tool = (s.attrs.tool || '').trim()
         T.lane({ act: `вызывает ${server}.${tool}`.slice(0, 40), mode: 'write' })
         const r = await mcpAction(project(), T.tier, mcpAv, server, tool, s.body)
-        if (T.aborted) break
+        T.guard()
         T.upsert({ k: 'read', id, path: `${server}.${tool}`, ok: r.ok, label: 'mcp' })
         feedback.push(r.text)
         if (r.images?.length) fbImgs.push(...r.images)
@@ -651,7 +772,7 @@ async function liveLoopInner(
             : s.kind === 'search'
               ? await webSearchTool(s.body.trim())
               : await takeShotTool(project(), s.attrs)
-        if (T.aborted) break
+        T.guard()
         T.upsert({ k: 'read', id, path: r.label, ok: r.ok, label: 'web' })
         feedback.push(r.text)
         if (r.images) fbImgs.push(...r.images)
@@ -660,9 +781,11 @@ async function liveLoopInner(
         T.upsert({ k: 'cmd', id, cmd, state: 'running', out: '', real: backendOnline() })
         T.lane({ act: 'запускает ' + cmd.slice(0, 40), mode: 'write' })
         const out = await runCommand(T, id, cmd)
+        T.guard()
         feedback.push(`$ ${cmd}\n${out.text.slice(-6000)}\n(код выхода ${out.code})`)
       }
     }
+    T.guard()
     T.flush(true)
     if (!feedback.length) break
     messages.push({ role: 'assistant', content: summarizeForHistory(acc) || '…' })
@@ -690,13 +813,13 @@ function verifyCommand(files: Record<string, string>, changed: string[]): string
   } catch {
     /* package.json битый — проверим ниже */
   }
-  const py = changed.filter((f) => f.endsWith('.py'))
-  if (py.length) return 'python3 -m py_compile ' + py.map((f) => JSON.stringify(f)).join(' ')
-  const js = changed.filter((f) => /\.(m?js|cjs)$/.test(f))
-  if (js.length) return js.map((f) => 'node --check ' + JSON.stringify(f)).join(' && ')
+  // No shell quoting of user-controlled filenames. Standalone JS/Python checks
+  // wait for a structured argv server endpoint; fixed package scripts still work.
+  void changed
   return null
 }
 async function verifyAfter(T: Turn, chatId: ID, pid: ID, depth: number) {
+  T.guard()
   const changed = T.parts
     .filter(
       (p): p is Extract<Part, { k: 'file' }> => p.k === 'file' && p.state === 'done' && p.op !== 'delete',
@@ -714,6 +837,7 @@ async function verifyAfter(T: Turn, chatId: ID, pid: ID, depth: number) {
   T.upsert({ k: 'cmd', id, cmd, state: 'running', out: '', real: true })
   T.lane({ act: 'проверяет: ' + cmd.slice(0, 36), mode: 'read' })
   const r = await runCommand(T, id, cmd)
+  T.guard()
   T.closeSteps()
   if (r.code !== 0 && depth < 1) {
     const tail = r.text
@@ -744,7 +868,9 @@ async function runCommand(
   cmd: string,
   force = false,
 ): Promise<{ text: string; code: number }> {
+  T.guard()
   const upd = (patch: Partial<Extract<Part, { k: 'cmd' }>>) => {
+    if (T.aborted) return
     const p = T.parts.find((x) => x.id === id)
     if (p && p.k === 'cmd') {
       Object.assign(p, patch)
@@ -777,10 +903,12 @@ async function runCommand(
         signal: T.ctl.signal,
         timeout: 300,
         onOut: (d) => {
+          if (T.aborted) return
           out += d
           upd({ out: out.slice(-20000) })
         },
       })
+      T.guard()
       upd({ state: r.code === 0 ? 'done' : 'error', code: r.code, out: out.slice(-20000) })
       return { text: out, code: r.code }
     } catch (e) {
@@ -831,10 +959,12 @@ export async function retryCommand(chatId: ID, msgId: ID, partId: ID) {
         signal: ctl.signal,
         timeout: 300,
         onOut: (d) => {
+          if (ctl.signal.aborted) return
           out += d
           patch({ out: out.slice(-20000) })
         },
       })
+      if (ctl.signal.aborted) throw new DOMException('Выполнение отменено', 'AbortError')
       patch({ state: r.code === 0 ? 'done' : 'error', code: r.code, out: out.slice(-20000), real: true })
     } else {
       patch({ state: 'error', code: 127, out: 'Сервер TetraFree не подключён — команду выполнить нельзя.' })
@@ -858,8 +988,10 @@ function syncSegs(
   ids: Map<number, ID>,
   applied: Set<number>,
 ) {
+  if (T.aborted) return
   const { pid } = T
   segs.forEach((s, i) => {
+    if (T.aborted) return
     const id = `${step}-${s.t === 'text' ? 't' : 'o'}${i}`
     ids.set(i, id)
     if (s.t === 'text') {
@@ -889,7 +1021,13 @@ function syncSegs(
       }
       case 'edit': {
         if (!path) return
-        const cur = T.before.has(path) && T.after.has(path) ? T.after.get(path) : fileOf(pid, path)
+        const perr = agentPathError(path)
+        if (perr) {
+          T.fail(id, 'edit', path, perr)
+          applied.add(i)
+          return
+        }
+        const cur = T.beginEdit(id, path)
         if (cur == null) {
           if (s.closed || final) {
             T.fail(id, 'edit', path, 'Файла нет — используй <write>')
@@ -897,7 +1035,6 @@ function syncSegs(
           }
           return
         }
-        if (!T.part(id)) T.begin(id, 'edit', path)
         const pairs = parsePairs(s.body)
         const pre = pairs.filter((p) => p.complete)
         const r = applyPairs(cur, s.closed ? pairs : pre)
@@ -922,6 +1059,12 @@ function syncSegs(
       }
       case 'delete': {
         if (!path) return
+        const perr = agentPathError(path)
+        if (perr) {
+          T.fail(id, 'delete', path, perr)
+          applied.add(i)
+          return
+        }
         const list = expandDelete(pid, path)
         if (!list.length) {
           T.fail(id, 'delete', path, 'Такого файла или папки нет')
@@ -933,7 +1076,7 @@ function syncSegs(
         break
       }
       case 'rename': {
-        const perr = agentPathError(s.attrs.to || '')
+        const perr = agentPathError(s.attrs.from || '') || agentPathError(s.attrs.to || '')
         if (perr) {
           T.fail(id, 'rename', s.attrs.to || '', perr)
           applied.add(i)

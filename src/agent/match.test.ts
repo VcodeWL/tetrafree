@@ -98,11 +98,9 @@ test('картинки в сообщении: формат OpenAI и Anthropic',
   assert.deepEqual(wireMsg({ role: 'user', content: 'x' }, false), { role: 'user', content: 'x' })
 })
 
-test('shotTarget: страница проекта или локальный адрес', () => {
-  ;(globalThis as { location?: unknown }).location = { origin: 'http://127.0.0.1:3000' }
-  assert.equal(shotTarget({ name: 'p' }, { url: 'http://localhost:5173/' }).url, 'http://localhost:5173/')
-  assert.match(
-    shotTarget({ name: 'мой проект' }, { path: 'site/index.html' }).url,
-    /\/preview\/.*\/%D0%BC.*\/site\/index\.html$/,
+test('shotTarget: явный dev-сервер не требует capability проекта', async () => {
+  assert.equal(
+    (await shotTarget({ id: 'p', name: 'p' }, { url: 'http://localhost:5173/' })).url,
+    'http://localhost:5173/',
   )
 })

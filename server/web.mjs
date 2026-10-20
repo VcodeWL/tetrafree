@@ -10,6 +10,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
+import { childEnv, serverProcesses } from './process-safety.mjs'
+import { publicFailure } from './public-errors.mjs'
 
 const MAX_BYTES = 2 * 1024 * 1024
 const MAX_TEXT = 30000
@@ -18,23 +20,30 @@ const UA = 'Mozilla/5.0 (compatible; TetraFree/1.0; +https://github.com/VcodeWL/
 /** true — адрес приватный/служебный: наружу ходить нельзя */
 export function isPrivateIp(ip) {
   if (net.isIPv6(ip)) {
-    const l = ip.toLowerCase()
-    if (
-      l === '::1' ||
-      l === '::' ||
-      l.startsWith('fe8') ||
-      l.startsWith('fe9') ||
-      l.startsWith('fea') ||
-      l.startsWith('feb') ||
-      /^f[cd]/.test(l)
+    // net validates syntax; expand to eight 16-bit words, including dotted tails.
+    let text = ip.toLowerCase().split('%')[0]
+    text = text.replace(/(\d+\.\d+\.\d+\.\d+)$/, (v) => {
+      const n = v.split('.').map(Number)
+      return ((n[0] << 8) | n[1]).toString(16) + ':' + ((n[2] << 8) | n[3]).toString(16)
+    })
+    const halves = text.split('::')
+    const left = halves[0] ? halves[0].split(':') : []
+    const right = halves[1] ? halves[1].split(':') : []
+    const words = (
+      halves.length === 2 ? [...left, ...Array(8 - left.length - right.length).fill('0'), ...right] : left
+    ).map((x) => parseInt(x, 16))
+    if (words.length !== 8) return true
+    if (words.slice(0, 5).every((x) => x === 0) && words[5] === 0xffff)
+      return isPrivateIp([words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255].join('.'))
+    // Only global unicast is eligible; reject transition/documentation ranges.
+    return (
+      (words[0] & 0xe000) !== 0x2000 ||
+      words[0] === 0x2002 ||
+      (words[0] === 0x2001 && (words[1] < 0x0200 || words[1] === 0x0db8))
     )
-      return true
-    const m = l.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
-    return m ? isPrivateIp(m[1]) : false
   }
-  const p = ip.split('.').map(Number)
-  if (p.length !== 4 || p.some((x) => !(x >= 0 && x <= 255))) return true
-  const [a, b] = p
+  if (!net.isIPv4(ip)) return true
+  const [a, b, c] = ip.split('.').map(Number)
   return (
     a === 0 ||
     a === 10 ||
@@ -42,8 +51,9 @@ export function isPrivateIp(ip) {
     (a === 100 && b >= 64 && b <= 127) ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 192 && b === 0) ||
+    (a === 192 && (b === 168 || b === 0 || (b === 88 && c === 99))) ||
+    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+    (a === 203 && b === 0 && c === 113) ||
     a >= 224
   )
 }
@@ -320,53 +330,105 @@ export function shotArgs({ profile }) {
 const clamp = (v, a, b, d) => Math.min(b, Math.max(a, Math.round(Number(v)) || d))
 
 /** Минимальный клиент CDP поверх --remote-debugging-pipe (сообщения JSON, разделённые нулевым байтом) */
-function cdpClient(child) {
-  let buf = Buffer.alloc(0)
-  let id = 0
-  const waits = new Map()
-  const events = []
-  const listeners = new Set()
+export function cdpClient(
+  child,
+  { maxFrame = 24 * 1024 * 1024, maxPending = 32, maxQueue = 1024 * 1024 } = {},
+) {
+  let buf = Buffer.alloc(0),
+    id = 0,
+    closed = false,
+    rejectFailure
+  const waits = new Map(),
+    listeners = new Set()
+  const failure = new Promise((_, reject) => {
+    rejectFailure = reject
+  })
+  // Caller races this failure; attaching here also prevents unhandled rejection
+  // during initialization or final cleanup.
+  failure.catch(() => {})
+  const dispose = () => {
+    if (closed) return
+    closed = true
+    const error = new Error('Канал браузера закрыт')
+    for (const w of waits.values()) w.reject(error)
+    waits.clear()
+    listeners.clear()
+    buf = Buffer.alloc(0)
+    rejectFailure(error)
+  }
+  child.stdio[3].on('error', dispose)
+  child.stdio[4].on('error', dispose)
+  child.stdio[4].on('end', dispose)
   child.stdio[4].on('data', (d) => {
+    if (closed) return
+    if (buf.length + d.length > maxFrame) return dispose()
     buf = Buffer.concat([buf, d])
     let i
-    while ((i = buf.indexOf(0)) >= 0) {
+    while (!closed && (i = buf.indexOf(0)) >= 0) {
       const raw = buf.subarray(0, i).toString('utf8')
       buf = buf.subarray(i + 1)
       let m
       try {
         m = JSON.parse(raw)
       } catch {
-        continue
+        dispose()
+        return
+      }
+      if (!m || typeof m !== 'object' || Array.isArray(m)) {
+        dispose()
+        return
       }
       if (m.id && waits.has(m.id)) {
         const w = waits.get(m.id)
         waits.delete(m.id)
-        m.error ? w.reject(new Error(m.error.message)) : w.resolve(m.result || {})
-      } else if (m.method) {
-        events.push(m)
-        listeners.forEach((f) => f(m))
-      }
+        m.error ? w.reject(new Error('Браузер не выполнил операцию')) : w.resolve(m.result || {})
+      } else if (m.method) for (const f of listeners) f(m)
     }
   })
   return {
+    failure,
+    dispose,
     send(method, params = {}, sessionId) {
+      if (closed) return Promise.reject(new Error('Канал браузера закрыт'))
+      if (waits.size >= maxPending) {
+        dispose()
+        return Promise.reject(new Error('Лимит запросов браузера'))
+      }
       return new Promise((resolve, reject) => {
-        const n = ++id
+        const n = ++id,
+          record = JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0'
+        if ((child.stdio[3].writableLength || 0) + Buffer.byteLength(record) > maxQueue) {
+          reject(new Error('Лимит очереди браузера'))
+          dispose()
+          return
+        }
         waits.set(n, { resolve, reject })
-        child.stdio[3].write(
-          JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0',
-        )
+        try {
+          child.stdio[3].write(record, (e) => {
+            if (e) dispose()
+          })
+        } catch {
+          dispose()
+        }
       })
     },
     on: (f) => (listeners.add(f), () => listeners.delete(f)),
-    events,
   }
 }
 
 /** Снимок страницы; url — только loopback. Возвращает data:image/png;base64,… */
 export async function takeShot(
   raw,
-  { width, height, timeout = 30000, exe = findBrowser(), full = false } = {},
+  {
+    width,
+    height,
+    timeout = 30000,
+    exe = findBrowser(),
+    full = false,
+    signal,
+    launch = spawn,
+    registry = serverProcesses,
+  } = {},
 ) {
   let u
   try {
@@ -380,18 +442,30 @@ export async function takeShot(
     throw new Error(
       'Не нашёл браузер для скриншотов: нужен Microsoft Edge или Google Chrome (или путь в переменной TF_BROWSER)',
     )
+  if (signal?.aborted) throw new Error('Снимок отменён')
+  if (!registry.available('browser')) throw new Error('Лимит процессов браузера')
+  timeout = clamp(timeout, 100, 60000, 30000)
   const W = clamp(width, 320, 2560, 1280),
     H = clamp(height, 240, 6000, 800)
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-shot-'))
-  let child
-  let timer
+  let child, owned, c, abort
+  let timer, idleTimer, settleTimer
   try {
-    child = spawn(exe, shotArgs({ profile: path.join(dir, 'p') }), {
+    child = launch(exe, shotArgs({ profile: path.join(dir, 'p') }), {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
+      env: childEnv(),
     })
+    owned = registry.own(child, 'browser', () => {
+      fs.rmSync(dir, { recursive: true, force: true })
+    })
+    c = cdpClient(child)
     const dead = new Promise((_, reject) => {
-      child.on('error', (e) => reject(new Error('Не удалось запустить браузер: ' + e.message)))
+      child.on('error', () => reject(new Error('Не удалось запустить браузер')))
+      abort = () => reject(new Error('Снимок отменён'))
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
       child.on('exit', () => reject(new Error('Браузер закрылся, не сделав снимок')))
       timer = setTimeout(
         () => reject(new Error('Браузер не успел сделать снимок за ' + timeout / 1000 + ' с')),
@@ -399,7 +473,6 @@ export async function takeShot(
       )
     })
     const work = (async () => {
-      const c = cdpClient(child)
       const { targetId } = await c.send('Target.createTarget', { url: 'about:blank' })
       const { sessionId } = await c.send('Target.attachToTarget', { targetId, flatten: true })
       const S = (m, p) => c.send(m, p, sessionId)
@@ -414,16 +487,18 @@ export async function takeShot(
       await S('Emulation.setDefaultBackgroundColorOverride', { color: { r: 255, g: 255, b: 255, a: 1 } })
       const idle = new Promise((resolve) => {
         const off = c.on((m) => {
-          if (m.method === 'Page.lifecycleEvent' && m.params.name === 'networkIdle') {
+          if (m.method === 'Page.lifecycleEvent' && m.params?.name === 'networkIdle') {
             off()
             resolve()
           }
         })
-        setTimeout(resolve, 12000)
+        idleTimer = setTimeout(resolve, 12000)
       })
       await S('Page.navigate', { url: u.href })
       await idle
-      await new Promise((r) => setTimeout(r, 700)) /* шрифты, анимации входа */
+      await new Promise((r) => {
+        settleTimer = setTimeout(r, 700)
+      }) /* шрифты, анимации входа */
       let h = H
       if (full) {
         const r = await S('Runtime.evaluate', {
@@ -441,17 +516,19 @@ export async function takeShot(
           })
       }
       const shot = await S('Page.captureScreenshot', { format: 'png' })
+      if (typeof shot.data !== 'string' || shot.data.length > 22 * 1024 * 1024)
+        throw new Error('Превышен размер снимка')
       return 'data:image/png;base64,' + shot.data
     })()
-    return await Promise.race([work, dead])
+    return await Promise.race([work, dead, c.failure])
   } finally {
     clearTimeout(timer)
-    try {
-      child?.kill()
-    } catch {
-      /* уже закрыт */
-    }
-    setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 800)
+    clearTimeout(idleTimer)
+    clearTimeout(settleTimer)
+    signal?.removeEventListener('abort', abort)
+    c?.dispose()
+    if (owned) await owned.stop()
+    else fs.rmSync(dir, { recursive: true, force: true })
   }
 }
 
@@ -459,16 +536,35 @@ export async function webRoutes(req, res, u, io) {
   if (!u.pathname.startsWith('/api/web/') && u.pathname !== '/api/shot') return false
   if (req.method !== 'POST') return false
   const b = await io.readBody(req)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  const onClose = () => {
+    if (!res.writableEnded) abort()
+  }
+  req.once?.('aborted', abort)
+  res.once?.('close', onClose)
+  if (req.aborted || res.destroyed) abort()
   try {
     if (u.pathname === '/api/web/fetch') io.json(res, 200, await webFetch(String(b.url || '')))
     else if (u.pathname === '/api/web/search') io.json(res, 200, { results: await webSearch(b.q) })
     else if (u.pathname === '/api/shot') {
       io.json(res, 200, {
-        image: await takeShot(String(b.url || ''), { width: b.width, height: b.height, full: !!b.full }),
+        image: await takeShot(String(b.url || ''), {
+          width: b.width,
+          height: b.height,
+          full: !!b.full,
+          signal: controller.signal,
+        }),
       })
     } else return false
   } catch (e) {
-    io.json(res, 502, { error: { message: String(e.message || e) } })
+    if (!res.destroyed) {
+      const failure = publicFailure(e, 'Не удалось выполнить веб-операцию', 502, 'web')
+      io.json(res, failure.status, { error: failure.error })
+    }
+  } finally {
+    req.removeListener?.('aborted', abort)
+    res.removeListener?.('close', onClose)
   }
   return true
 }

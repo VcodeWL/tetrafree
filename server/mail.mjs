@@ -4,6 +4,7 @@
 import net from 'node:net'
 import tls from 'node:tls'
 import crypto from 'node:crypto'
+import { publicError, publicFailure } from './public-errors.mjs'
 
 const SMTP = process.env.SMTP_URL ? new URL(process.env.SMTP_URL) : null
 export const FROM =
@@ -37,8 +38,11 @@ function build({ to, subject, text, html }) {
 
 function smtpSend(msg, to) {
   return new Promise((ok, fail) => {
+    if (!['smtp:', 'smtps:'].includes(SMTP.protocol))
+      return fail(new Error('SMTP: требуется smtp:// или smtps://'))
     const secure = SMTP.protocol === 'smtps:'
     const port = +SMTP.port || (secure ? 465 : 587)
+    let tlsReady = false
     let sock = secure
       ? tls.connect({ host: SMTP.hostname, port, servername: SMTP.hostname })
       : net.connect({ host: SMTP.hostname, port })
@@ -46,7 +50,7 @@ function smtpSend(msg, to) {
       step = 0,
       caps = '',
       done = false,
-      upgraded = secure
+      upgraded = false
     const user = decodeURIComponent(SMTP.username || ''),
       pass = decodeURIComponent(SMTP.password || '')
     const end = (e) => {
@@ -72,6 +76,7 @@ function smtpSend(msg, to) {
     }
     const onData = (d) => {
       buf += d
+      if (buf.length > 65536) return end(new Error('SMTP: ответ слишком большой'))
       for (;;) {
         const m = buf.match(/^(?:\d{3}-.*\r?\n)*\d{3} .*\r?\n/)
         if (!m) return
@@ -92,13 +97,17 @@ function smtpSend(msg, to) {
       w('EHLO tetrafree.local')
     }
     const afterEhlo = () => {
-      if (!upgraded && /STARTTLS/i.test(caps)) {
+      if (!tlsReady && !/STARTTLS/i.test(caps))
+        return end(new Error('SMTP: сервер не предлагает обязательный STARTTLS'))
+      if (!tlsReady && !upgraded) {
         expect(/^220$/, () => {
           sock.removeAllListeners('data')
           sock.removeAllListeners('close')
           sock.removeAllListeners('error')
           sock = tls.connect({ socket: sock, servername: SMTP.hostname }, () => {
+            if (!sock.authorized) return end(new Error('SMTP: сертификат TLS не подтверждён'))
             upgraded = true
+            tlsReady = true
             bind()
             ehlo()
           })
@@ -106,6 +115,7 @@ function smtpSend(msg, to) {
         })
         return w('STARTTLS')
       }
+      if (!tlsReady) return end(new Error('SMTP: защищённое соединение не установлено'))
       if (user) {
         if (/AUTH[^\r\n]*PLAIN/i.test(caps)) {
           expect(/^235$/, mail)
@@ -123,6 +133,7 @@ function smtpSend(msg, to) {
       mail()
     }
     const mail = () => {
+      if (!tlsReady) return end(new Error('SMTP: отправка без TLS запрещена'))
       expect(/^250$/, () => {
         expect(/^25[01]$/, () => {
           expect(/^354$/, () => {
@@ -139,6 +150,13 @@ function smtpSend(msg, to) {
       w(`MAIL FROM:<${addr(FROM)}>`)
     }
     expect(/^220$/, ehlo)
+    if (secure) {
+      sock.once('secureConnect', () => {
+        if (!sock.authorized) return end(new Error('SMTP: сертификат TLS не подтверждён'))
+        tlsReady = true
+        upgraded = true
+      })
+    }
     bind()
     void step
   })
@@ -157,7 +175,7 @@ export async function sendMail({ to, subject, text, html }) {
   if (!SMTP) {
     outbox.unshift(rec)
     outbox.length = Math.min(outbox.length, 40)
-    console.log(`[mail:dev] → ${to} · ${subject}`)
+    console.log('[mail:dev] письмо сохранено в локальный Dev-ящик')
     return rec
   }
   try {
@@ -165,9 +183,14 @@ export async function sendMail({ to, subject, text, html }) {
     rec.status = 'sent'
   } catch (e) {
     rec.status = 'failed'
-    rec.error = e.message
-    console.error('[mail] ошибка отправки:', e.message)
-    throw Object.assign(new Error('Не удалось отправить письмо: ' + e.message), { status: 502 })
+    const failure = publicFailure(
+      e,
+      'Не удалось отправить письмо — проверь настройки почты или повтори позже',
+      502,
+      'mail',
+    )
+    rec.error = failure.error.message
+    throw publicError(502, failure.error.message, { correlationId: failure.error.correlationId })
   }
   return rec
 }

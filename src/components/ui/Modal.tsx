@@ -1,7 +1,9 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react'
 import { useModalFocus } from '../../hooks/useFocus'
 import { useStore } from '../../store'
 import { Icon, type IconName } from './Icon'
+
+const ModalBusy = createContext(false)
 
 /* Общая оболочка модалки. Esc и клик по подложке закрывают (если не busy). */
 export function Modal({
@@ -35,26 +37,28 @@ export function Modal({
     return () => window.removeEventListener('keydown', k)
   }, [doClose, busy])
   return (
-    <div
-      ref={wrap}
-      className="modal-wrap open"
-      onPointerDown={(e) => {
-        if (e.target === e.currentTarget && !busy) doClose()
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-label={label}
-    >
-      {kind === 'settings' ? (
-        children
-      ) : kind === 'bare' ? (
-        children
-      ) : (
-        <div className={'mcard' + (wide ? ' wide' : '')}>
-          <div className="mcard-in">{children}</div>
-        </div>
-      )}
-    </div>
+    <ModalBusy.Provider value={!!busy}>
+      <div
+        ref={wrap}
+        className="modal-wrap open"
+        onPointerDown={(e) => {
+          if (e.target === e.currentTarget && !busy) doClose()
+        }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+      >
+        {kind === 'settings' ? (
+          children
+        ) : kind === 'bare' ? (
+          children
+        ) : (
+          <div className={'mcard' + (wide ? ' wide' : '')}>
+            <div className="mcard-in">{children}</div>
+          </div>
+        )}
+      </div>
+    </ModalBusy.Provider>
   )
 }
 export function MHead({
@@ -69,9 +73,10 @@ export function MHead({
   onClose?: () => void
 }) {
   const close = useStore((s) => s.closeModal)
+  const busy = useContext(ModalBusy)
   return (
     <>
-      <button className="iconbtn mclose" onClick={onClose || close} aria-label="Закрыть">
+      <button className="iconbtn mclose" onClick={onClose || close} disabled={busy} aria-label="Закрыть">
         <Icon name="x" size={16} />
       </button>
       <h2>

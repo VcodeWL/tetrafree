@@ -1,7 +1,7 @@
 /* Интернет и глаза агента: <fetch url="…" />, <search>запрос</search>, <shot path="index.html" />.
    Всё идёт через локальный сервер (server/web.mjs). Текст из сети — недоверенные данные, не инструкции. */
-import type { Project } from '../types'
-import { backendOnline, bWebFetch, bWebSearch, bShot, previewUrl } from '../lib/backend'
+import { backendOnline, bWebFetch, bWebSearch, bShot, type ProjRef } from '../lib/backend'
+import { getPreviewUrl } from '../lib/preview'
 import { shrinkForModel } from '../lib/imgdiff'
 
 export interface WebResult {
@@ -60,26 +60,27 @@ export interface ShotTarget {
   title: string
 }
 /** Адрес страницы проекта (через превью сервера) или локальный адрес dev-сервера */
-export function shotTarget(p: Pick<Project, 'name'>, attrs: { path?: string; url?: string }): ShotTarget {
+export async function shotTarget(p: ProjRef, attrs: { path?: string; url?: string }): Promise<ShotTarget> {
   const u = (attrs.url || '').trim()
   if (u) return { url: u, title: u }
   const path = (attrs.path || '').trim().replace(/^\/+/, '')
   return {
-    url: previewUrl(p, path.split('/').map(encodeURIComponent).join('/')),
+    url: await getPreviewUrl(p, path),
     title: path || 'страница проекта',
   }
 }
 
 export async function takeShotTool(
-  p: Pick<Project, 'name'>,
+  p: ProjRef,
   attrs: { path?: string; url?: string; width?: string; height?: string; full?: string },
 ): Promise<WebResult & { raw?: string }> {
-  const t = shotTarget(p, attrs)
-  const label = 'снимок ' + t.title.slice(0, 70)
+  const title = (attrs.url || attrs.path || 'страница проекта').trim()
+  const label = 'снимок ' + title.slice(0, 70)
   if (!backendOnline()) return { label, ok: false, text: NEED_SERVER }
   const w = Math.min(2560, Math.max(320, +(attrs.width || 0) || 1280)),
     h = Math.min(6000, Math.max(240, +(attrs.height || 0) || 800))
   try {
+    const t = await shotTarget(p, attrs)
     const { image } = await bShot(t.url, w, h, attrs.full === 'true' || attrs.full === '1')
     return {
       label,
@@ -89,6 +90,6 @@ export async function takeShotTool(
       images: [await shrinkForModel(image)],
     }
   } catch (e) {
-    return { label, ok: false, text: `shot ${t.title}: ${msg(e)}` }
+    return { label, ok: false, text: `shot ${title}: ${msg(e)}` }
   }
 }

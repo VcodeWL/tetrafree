@@ -68,8 +68,54 @@ export interface Ctx {
   task?: string
 }
 
+let projectGeneration = 0
+let selectedProject = S().projectId
+useStore.subscribe((s) => {
+  if (s.projectId !== selectedProject) {
+    selectedProject = s.projectId
+    projectGeneration++
+  }
+})
+const firing = new Set<string>()
+// Identity belongs to the automation, never to an editable display title.
+const autoChats = new Map<string, ID>()
+export async function fireAuto(pid: ID, a: Auto, ctx: Ctx, why: string) {
+  const k = key(pid, a)
+  if (firing.has(k)) return { ok: false, note: 'предыдущий запуск ещё проверяется' }
+  firing.add(k)
+  try {
+    // Pin the executable specification, not just its raw approval object.
+    const approvedAuto = parseAutomations(JSON.stringify({ automations: [a.raw] })).list[0]
+    if (
+      !approvedAuto ||
+      JSON.stringify(approvedAuto.do) !== JSON.stringify(a.do) ||
+      approvedAuto.name !== a.name
+    )
+      return { ok: false, note: 'спецификация не совпадает с разрешением' }
+    const copy = JSON.parse(JSON.stringify(a)) as Auto
+    return await fireAutoInner(pid, copy, { ...ctx, files: ctx.files?.slice() }, why)
+  } catch {
+    // All detached scheduler/event callers share this supervised boundary.
+    // Do not expose infrastructure exception text (it may contain private data).
+    const result = {
+      ok: false,
+      note: 'Ошибка выполнения автоматизации. Проверь её настройки и состояние проекта.',
+    }
+    try {
+      const chatId = watching.get(k) || autoChats.get(k)
+      setRunning(pid, a, !!chatId && isRunning(chatId))
+      mark(pid, a, result, false)
+    } catch {
+      // A failed store/listener must not turn error reporting into another rejection.
+    }
+    return result
+  } finally {
+    firing.delete(k)
+  }
+}
+
 /** Запуск одной автоматизации. Возвращает короткий итог для показа пользователю. */
-export async function fireAuto(
+async function fireAutoInner(
   pid: ID,
   a: Auto,
   ctx: Ctx,
@@ -83,7 +129,21 @@ export async function fireAuto(
   }
   if (!p || S().projectId !== pid) return fail('проект не открыт', true)
   if (!a.enabled) return fail('выключена', true)
-  const ok = useAutos.getState().approved[await autoHash(pid, a)]
+  const fileText = p.files[AUTO_FILE]
+  const generation = projectGeneration
+  const hash = await autoHash(pid, a)
+  // Project or specification may change while the asynchronous digest is running.
+  if (
+    generation !== projectGeneration ||
+    S().projectId !== pid ||
+    !project(pid) ||
+    project(pid)!.files[AUTO_FILE] !== fileText
+  )
+    return fail('проект или автоматизация изменились во время проверки', true)
+  const current = autosOf(pid).find((x) => x.id === a.id)
+  if (!current || !current.enabled || JSON.stringify(current.raw) !== JSON.stringify(a.raw))
+    return fail('автоматизация изменена или удалена', true)
+  const ok = useAutos.getState().approved[hash]
   if (!ok) return fail('не разрешена — откройте «Настройки → Автоматизации»', true)
   const info = useAutos.getState().runs[k]
   if (info?.running) return fail('предыдущий запуск ещё идёт', true)
@@ -99,30 +159,41 @@ export async function fireAuto(
     return { ok: true, note: why }
   }
   if ('task' in a.do) {
-    S().saveTask({
-      title: expand(a.do.task, c).slice(0, 200),
-      desc: `Создано автоматизацией «${a.name}»`,
-      status: 'backlog',
-      assignee: null,
-      priority: 'med',
-    })
+    S().saveTask(
+      {
+        title: expand(a.do.task, c).slice(0, 200),
+        desc: `Создано автоматизацией «${a.name}»`,
+        status: 'backlog',
+        assignee: null,
+        priority: 'med',
+      },
+      pid,
+    )
     mark(pid, a, { ok: true, note: 'задача создана' }, true)
     return { ok: true, note: 'задача создана' }
   }
   const title = '⚙ ' + a.name
-  let chat = project(pid)!.chats.find((x) => x.title === title)
+  let chat = project(pid)!.chats.find((x) => x.id === autoChats.get(k))
   if (!chat) {
-    const id = S().createChat({
-      title,
-      creator: { kind: 'human', id: 'me' },
-      agents: [{ name: 'Builder', tier: a.do.tier, sub: [] }],
-    })
+    const id = S().createChat(
+      {
+        title,
+        creator: { kind: 'human', id: 'me' },
+        agents: [{ name: 'Builder', tier: a.do.tier, sub: [] }],
+      },
+      pid,
+    )
+    autoChats.set(k, id)
     chat = project(pid)!.chats.find((x) => x.id === id)
   }
   if (!chat) return fail('не удалось создать чат')
   if (isRunning(chat.id)) return fail('агент в этом чате занят', true)
   const sent = sendMessage(chat.id, expand(a.do.agent, c), [], '', 0, {
     silent: `⚙ Автоматизация «${a.name}» — ${why}`,
+    pid,
+    agent: 'Builder',
+    tier: a.do.tier,
+    prompt: expand(a.do.agent, c),
   })
   if (!sent) return fail('агент не запустился (нет модели или лимит расходов)')
   setRunning(pid, a, true)
@@ -195,6 +266,8 @@ export function startAutomations() {
     const pid = s.projectId
     if (pid !== was.projectId) {
       pendingFiles = new Set()
+      if (flushTimer) clearTimeout(flushTimer)
+      flushTimer = undefined
       if (pid) onOpen(pid)
       return
     }

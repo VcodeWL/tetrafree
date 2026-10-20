@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { sendMail, tpl, outbox, mailMode } from './mail.mjs'
+import { publicError, publicFailure } from './public-errors.mjs'
 
 const scrypt = promisify(crypto.scrypt)
 const DATA = path.resolve(process.env.TF_DATA || path.join(os.homedir(), 'TetraFree', 'data'))
@@ -29,7 +30,7 @@ try {
     try {
       const bad = FILE + '.broken-' + Date.now()
       fs.copyFileSync(FILE, bad)
-      console.error('[db] db.json не читается (' + e.message + '), копия сохранена в ' + bad)
+      publicFailure(e, 'База аккаунтов повреждена; резервная копия сохранена', 500, 'auth-db')
     } catch {
       /* нечего копировать */
     }
@@ -45,7 +46,7 @@ function save() {
       fs.writeFileSync(tmp, JSON.stringify(db), { mode: 0o600 })
       fs.renameSync(tmp, FILE)
     } catch (e) {
-      console.error('[db] не удалось сохранить:', e.message)
+      publicFailure(e, 'Не удалось сохранить базу аккаунтов', 500, 'auth-db')
     }
   }, 150)
 }
@@ -61,15 +62,10 @@ export const flushDb = () => {
   }
 }
 process.on('exit', flushDb)
-/* Ctrl+C и штатное завершение: без этого правки последних 150 мс (дебаунс записи) терялись */
-for (const sig of ['SIGINT', 'SIGTERM'])
-  process.on(sig, () => {
-    flushDb()
-    process.exit(0)
-  })
+/* The server coordinates signal/parent shutdown and calls flushDb before exit. */
 
 const isPlain = (x) => !!x && typeof x === 'object' && !Array.isArray(x)
-const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, extra })
+const err = publicError
 
 /* ───────── лимиты ───────── */
 const hits = new Map()
@@ -202,6 +198,50 @@ const pub = (u) => ({
   providers: Object.keys(u.oauth || {}),
   hasPassword: !!u.passHash,
 })
+const epoch = (u) => (Number.isSafeInteger(u?.securityEpoch) && u.securityEpoch >= 0 ? u.securityEpoch : 0)
+function requireEpoch(u, expected) {
+  const current = db.users[u?.id]
+  if (!current || epoch(current) !== expected)
+    throw err(409, 'Данные входа изменились — повтори подтверждение')
+  return current
+}
+function bumpSecurity(u, keep = []) {
+  u.securityEpoch = epoch(u) + 1
+  const retained = new Set(keep)
+  for (const session of Object.values(db.sessions))
+    if (session.userId === u.id) {
+      if (retained.has(session.id)) session.epoch = epoch(u)
+      else delete db.sessions[session.id]
+    }
+  for (const [key, ticket] of tickets) if (ticket.uid === u.id) tickets.delete(key)
+  for (const [key, code] of Object.entries(db.codes))
+    if (code.uid === u.id || key.endsWith(':' + u.email)) delete db.codes[key]
+  save()
+}
+async function stepUp(a, body, req) {
+  const u = a.user,
+    version = epoch(u)
+  limit('stepup:' + u.id, 10, 15 * MIN)
+  if (u.totp?.enabled) {
+    const code = String(body.stepupCode || body.code || '')
+    if (!(/^\d[\d\s]{5,}$/.test(code) ? totpOk(u, code) : useRecovery(u, code)))
+      throw err(403, 'Подтверди действие кодом 2FA или резервным кодом', { need: 'stepup', method: 'totp' })
+  } else if (u.passHash) {
+    const hash = u.passHash
+    const valid = await verifyPw(String(body.password || body.old || ''), hash)
+    requireEpoch(u, version)
+    if (!valid || u.passHash !== hash)
+      throw err(403, 'Для действия нужен текущий пароль', { need: 'stepup', method: 'password' })
+  } else {
+    const c = db.codes['stepup:' + u.email]
+    if (!body.emailCode || c?.sid !== a.session.id)
+      throw err(403, 'Подтверди действие кодом из письма', { need: 'stepup', method: 'email' })
+    checkCode('stepup', u.email, body.emailCode)
+  }
+  requireEpoch(u, version)
+  if (authed(req)?.session !== a.session) throw err(401, 'Сессия изменилась — войди заново')
+  return version
+}
 function newSession(u, req, remember) {
   const token = rnd(32)
   const id = sha(token)
@@ -213,6 +253,7 @@ function newSession(u, req, remember) {
     lastAt: t,
     exp: t + (remember ? 30 * DAY : 12 * HOUR),
     remember: !!remember,
+    epoch: epoch(u),
     ua: uaShort(req),
     ip: ip(req),
   }
@@ -237,7 +278,7 @@ export function authed(req) {
     return null
   }
   const u = db.users[s.userId]
-  if (!u) return null
+  if (!u || (s.epoch ?? 0) !== epoch(u)) return null
   if (t - s.lastAt > 5 * MIN) {
     s.lastAt = t
     s.exp = Math.max(s.exp, t + (s.remember ? 30 * DAY : 12 * HOUR))
@@ -253,17 +294,49 @@ export function previewValid(tok) {
   return !!tok && Object.values(db.sessions).some((s) => s.exp > now() && previewToken(s) === tok)
 }
 
+/** All primary authentication methods apply the same local MFA policy. */
+export function postAuthentication(user, req, remember, expected = epoch(user)) {
+  user = requireEpoch(user, expected)
+  if (user.totp?.enabled) {
+    const tk = rnd(18)
+    tickets.set(tk, {
+      uid: user.id,
+      epoch: epoch(user),
+      kind: 'mfa',
+      exp: now() + 5 * MIN,
+      tries: 0,
+      remember: !!remember,
+    })
+    return { need: '2fa', ticket: tk }
+  }
+  return { token: newSession(user, req, !!remember), user: pub(user) }
+}
+export function sessionValid(id) {
+  const s = db.sessions[id]
+  const u = s && db.users[s.userId]
+  return !!u && s.exp > now() && (s.epoch ?? 0) === epoch(u)
+}
+
 /* ───────── коды ───────── */
 async function issueCode(kind, email, ttl = 15 * MIN) {
   const code = String(crypto.randomInt(0, 1e6)).padStart(6, '0')
-  db.codes[kind + ':' + email] = { hash: sha(code + db.secret), exp: now() + ttl, tries: 0, sentAt: now() }
+  const owner = byEmail(email)
+  db.codes[kind + ':' + email] = {
+    uid: owner?.id,
+    epoch: epoch(owner),
+    hash: sha(code + db.secret),
+    exp: now() + ttl,
+    tries: 0,
+    sentAt: now(),
+  }
   save()
   return code
 }
 function checkCode(kind, email, code) {
   const k = kind + ':' + email
   const c = db.codes[k]
-  if (!c || c.exp < now()) throw err(400, 'Код истёк — запроси новый')
+  if (!c || c.exp < now() || c.uid !== byEmail(email)?.id || c.epoch !== epoch(byEmail(email)))
+    throw err(400, 'Код истёк — запроси новый')
   if (++c.tries > 5) {
     delete db.codes[k]
     save()
@@ -285,6 +358,10 @@ const appUrl = (req) =>
 
 async function mailCode(kind, u, req) {
   const code = await issueCode(kind, u.email)
+  if (kind === 'verify') {
+    db.codes[kind + ':' + u.email].owner = sha(u.id + ':' + (u.passHash || ''))
+    save()
+  }
   const ver = kind === 'verify'
   const link = `${appUrl(req)}/?${ver ? 'verify' : 'reset'}=${encodeURIComponent(u.email)}&code=${code}`
   const m = tpl({
@@ -341,6 +418,7 @@ function hotp(secret, step) {
   return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, '0')
 }
 function totpOk(u, code) {
+  if (!u?.totp?.secret) return false
   const step = Math.floor(now() / 30000)
   const c = String(code || '').replace(/\s/g, '')
   if (!/^\d{6}$/.test(c)) return false
@@ -527,13 +605,23 @@ export async function accountRoutes(req, res, u, io) {
       if (!EMAIL.test(email) || email.length > 254) throw err(400, 'Проверь адрес почты')
       checkPassword(body.password, email, name)
       const ex = byEmail(email)
-      if (ex && ex.verified) throw err(409, 'Эта почта уже зарегистрирована — войди или восстанови пароль')
-      const user = ex || { id: 'u_' + rnd(9), email, createdAt: now(), hue: Math.floor(Math.random() * 360) }
-      Object.assign(user, { name, passHash: await hashPw(body.password), verified: false })
+      if (ex) {
+        const version = epoch(ex),
+          hash = ex.passHash
+        if (ex.verified || !(await verifyPw(String(body.password || ''), hash || '')))
+          throw err(409, 'Эта почта уже зарегистрирована — войди, отправь код ещё раз или восстанови пароль')
+        requireEpoch(ex, version)
+        if (ex.passHash !== hash) throw err(409, 'Регистрация изменилась — запроси новый код')
+        return (out({ ok: true, email, mail: mailMode() }, 201), true)
+      }
+      const passHash = await hashPw(body.password)
+      if (byEmail(email)) throw err(409, 'Регистрация уже начата — отправь код ещё раз')
+      const user = { id: 'u_' + rnd(9), email, createdAt: now(), hue: Math.floor(Math.random() * 360) }
+      Object.assign(user, { name, passHash, verified: false })
       db.users[user.id] = user
       save()
       await mailCode('verify', user, req).catch((e) => {
-        throw err(502, e.message + ' Аккаунт создан — нажми «Отправить ещё раз».')
+        throw err(502, 'Аккаунт создан, но письмо не отправлено — нажми «Отправить ещё раз».')
       })
       audit(user.id, 'register', req)
       return (out({ ok: true, email, mail: mailMode() }, 201), true)
@@ -556,11 +644,13 @@ export async function accountRoutes(req, res, u, io) {
       limit('vf:' + email, 12, 15 * MIN)
       const user = byEmail(email)
       if (!user) throw err(400, 'Неверный код')
+      if (db.codes['verify:' + email]?.owner !== sha(user.id + ':' + (user.passHash || '')))
+        throw err(400, 'Регистрация изменилась — запроси новый код')
       checkCode('verify', email, body.code)
       user.verified = true
       save()
       audit(user.id, 'verified', req)
-      return (out({ token: newSession(user, req, true), user: pub(user) }), true)
+      return (out(postAuthentication(user, req, true)), true)
     }
 
     if (p === '/api/auth/login' && req.method === 'POST') {
@@ -569,6 +659,8 @@ export async function accountRoutes(req, res, u, io) {
       limit('lu:' + email, 15, 15 * MIN)
       const user = byEmail(email)
       const bad = () => err(401, 'Неверная почта или пароль')
+      const authEpoch = epoch(user),
+        authHash = user?.passHash
       if (user?.lockUntil > now())
         throw err(
           423,
@@ -578,7 +670,10 @@ export async function accountRoutes(req, res, u, io) {
         await verifyPw('x', 's1$AAAAAAAAAAAAAAAAAAAAAA==$' + Buffer.alloc(64).toString('base64'))
         throw bad()
       }
-      if (!(await verifyPw(String(body.password || ''), user.passHash))) {
+      const valid = await verifyPw(String(body.password || ''), authHash)
+      requireEpoch(user, authEpoch)
+      if (user.passHash !== authHash) throw err(409, 'Данные входа изменились — войди заново')
+      if (!valid) {
         user.failed = (user.failed || 0) + 1
         if (user.failed >= 5) {
           user.lockUntil = now() + 15 * MIN
@@ -598,14 +693,9 @@ export async function accountRoutes(req, res, u, io) {
         await mailCode('verify', user, req).catch(() => {})
         return (out({ need: 'verify', email }, 403), true)
       }
-      if (user.totp?.enabled) {
-        const tk = rnd(18)
-        tickets.set(tk, { uid: user.id, exp: now() + 5 * MIN, tries: 0, remember: !!body.remember })
-        return (out({ need: '2fa', ticket: tk }), true)
-      }
       audit(user.id, 'login', req)
       save()
-      return (out({ token: newSession(user, req, !!body.remember), user: pub(user) }), true)
+      return (out(postAuthentication(user, req, !!body.remember, authEpoch)), true)
     }
 
     if (p === '/api/auth/2fa/login' && req.method === 'POST') {
@@ -616,7 +706,10 @@ export async function accountRoutes(req, res, u, io) {
         throw err(429, 'Слишком много попыток — войди заново')
       }
       const user = db.users[t.uid]
-      if (!user) throw err(400, 'Аккаунт не найден — войди заново')
+      if (!user || !user.totp?.enabled || !user.totp.secret || t.kind !== 'mfa' || t.epoch !== epoch(user)) {
+        tickets.delete(body.ticket)
+        throw err(400, 'Подтверждение недействительно — войди заново')
+      }
       const code = String(body.code || '')
       const ok = /^\d[\d\s]{5,}$/.test(code) ? totpOk(user, code) : useRecovery(user, code)
       if (!ok) {
@@ -643,23 +736,21 @@ export async function accountRoutes(req, res, u, io) {
       const user = byEmail(email)
       if (!user) throw err(400, 'Неверный код')
       checkPassword(body.password, email, user.name)
+      const resetEpoch = epoch(user)
       checkCode('reset', email, body.code)
-      user.passHash = await hashPw(body.password)
+      const nextHash = await hashPw(body.password)
+      requireEpoch(user, resetEpoch)
+      user.passHash = nextHash
       user.verified = true
       user.failed = 0
       user.lockUntil = 0
-      for (const s of Object.values(db.sessions)) if (s.userId === user.id) delete db.sessions[s.id]
+      bumpSecurity(user)
       audit(user.id, 'password_reset', req)
       save()
       void notify(user, 'Пароль изменён', [
         'Пароль был сброшен по коду из письма. Все прежние сессии завершены.',
       ])
-      if (user.totp?.enabled) {
-        const tk = rnd(18)
-        tickets.set(tk, { uid: user.id, exp: now() + 5 * MIN, tries: 0, remember: true })
-        return (out({ need: '2fa', ticket: tk }), true)
-      }
-      return (out({ token: newSession(user, req, true), user: pub(user) }), true)
+      return (out(postAuthentication(user, req, true)), true)
     }
 
     /* OAuth */
@@ -708,17 +799,24 @@ export async function accountRoutes(req, res, u, io) {
           /* аккаунт с этой почтой создали по паролю, но не подтвердили: пароль мог задать не владелец почты — сбрасываем его и сессии */
           user.passHash = undefined
           user.totp = undefined
-          for (const s of Object.values(db.sessions)) if (s.userId === user.id) delete db.sessions[s.id]
+          bumpSecurity(user)
         }
         user.verified = true
         ;(user.oauth ||= {})[m[1]] = prof.sub
         save()
         audit(user.id, 'login', req, m[1])
         const tk = rnd(18)
-        tickets.set('o:' + tk, { uid: user.id, exp: now() + 2 * MIN })
+        tickets.set('o:' + tk, { uid: user.id, epoch: epoch(user), kind: 'oauth', exp: now() + 2 * MIN })
         return go('oauth=' + tk)
       } catch (e) {
-        return go('oauth_error=' + encodeURIComponent(e.message))
+        const failure = publicFailure(e, 'Вход через провайдера не удался', 502, 'oauth')
+        return go(
+          'oauth_error=' +
+            encodeURIComponent(
+              failure.error.message +
+                (failure.error.correlationId ? ' · ' + failure.error.correlationId : ''),
+            ),
+        )
       }
     }
     if (p === '/api/auth/oauth/exchange' && req.method === 'POST') {
@@ -726,8 +824,9 @@ export async function accountRoutes(req, res, u, io) {
       tickets.delete('o:' + body.ticket)
       if (!t || t.exp < now()) throw err(400, 'Ссылка входа устарела')
       const user = db.users[t.uid]
-      if (!user) throw err(400, 'Аккаунт не найден — войди заново')
-      return (out({ token: newSession(user, req, true), user: pub(user) }), true)
+      if (!user || t.kind !== 'oauth' || t.epoch !== epoch(user))
+        throw err(400, 'Ссылка входа недействительна — войди заново')
+      return (out(postAuthentication(user, req, true, t.epoch)), true)
     }
 
     /* ——— дальше нужен вход ——— */
@@ -768,6 +867,12 @@ export async function accountRoutes(req, res, u, io) {
       for (const s of Object.values(db.sessions))
         if (s.userId === a.user.id && (body.all ? s.id !== a.session.id : s.id === body.id))
           delete db.sessions[s.id]
+      bumpSecurity(
+        a.user,
+        Object.values(db.sessions)
+          .filter((s) => s.userId === a.user.id)
+          .map((s) => s.id),
+      )
       audit(a.user.id, 'sessions_revoked', req, body.all ? 'все остальные' : '')
       save()
       return (out({ ok: true }), true)
@@ -789,12 +894,20 @@ export async function accountRoutes(req, res, u, io) {
     if (p === '/api/auth/password' && req.method === 'POST') {
       const a = me()
       limit('pw:' + a.user.id, 8, 15 * MIN)
-      if (a.user.passHash && !(await verifyPw(String(body.old || ''), a.user.passHash)))
-        throw err(400, 'Текущий пароль неверен')
+      const version = epoch(a.user),
+        hash = a.user.passHash
+      if (hash) {
+        const valid = await verifyPw(String(body.old || ''), hash)
+        requireEpoch(a.user, version)
+        if (!valid || a.user.passHash !== hash) throw err(400, 'Текущий пароль неверен')
+      }
+      if (a.user.totp?.enabled || !hash) await stepUp(a, body, req)
       checkPassword(body.password, a.user.email, a.user.name)
-      a.user.passHash = await hashPw(body.password)
-      for (const s of Object.values(db.sessions))
-        if (s.userId === a.user.id && s.id !== a.session.id) delete db.sessions[s.id]
+      const nextHash = await hashPw(body.password)
+      requireEpoch(a.user, version)
+      if (authed(req)?.session !== a.session) throw err(401, 'Сессия изменилась — войди заново')
+      a.user.passHash = nextHash
+      bumpSecurity(a.user, [a.session.id])
       audit(a.user.id, 'password_change', req)
       save()
       void notify(a.user, 'Пароль изменён', [
@@ -802,11 +915,37 @@ export async function accountRoutes(req, res, u, io) {
       ])
       return (out({ ok: true }), true)
     }
+    if (p === '/api/auth/stepup/email' && req.method === 'POST') {
+      const a = me()
+      limit('stepupmail:' + a.user.id, 5, HOUR)
+      const version = epoch(a.user),
+        previous = db.codes['stepup:' + a.user.email]
+      if (previous && now() - previous.sentAt < 30000)
+        throw err(429, 'Подожди 30 секунд перед повторной отправкой кода')
+      const code = await issueCode('stepup', a.user.email, 5 * MIN)
+      requireEpoch(a.user, version)
+      if (authed(req)?.session !== a.session) throw err(401, 'Сессия изменилась — войди заново')
+      db.codes['stepup:' + a.user.email].sid = a.session.id
+      save()
+      await sendMail({
+        to: a.user.email,
+        subject: code + ' — подтверждение действия TetraFree',
+        ...tpl({
+          title: 'Подтверди действие',
+          lines: ['Код действует 5 минут и только в текущей сессии.'],
+          code,
+        }),
+      })
+      return (out({ ok: true, mail: mailMode() }), true)
+    }
     if (p === '/api/auth/2fa/setup' && req.method === 'POST') {
       const a = me()
       if (a.user.totp?.enabled) throw err(400, '2FA уже включена')
+      const proofEpoch = await stepUp(a, body, req)
+      requireEpoch(a.user, proofEpoch)
       const secret = b32enc(crypto.randomBytes(20))
       a.user.totp = { secret, enabled: false }
+      bumpSecurity(a.user, [a.session.id])
       save()
       return (
         out({
@@ -827,6 +966,7 @@ export async function accountRoutes(req, res, u, io) {
       })
       a.user.totp.enabled = true
       a.user.totp.recovery = codes.map((c) => sha(c + db.secret))
+      bumpSecurity(a.user, [a.session.id])
       audit(a.user.id, '2fa_on', req)
       save()
       void notify(a.user, 'Включена двухфакторная защита', [
@@ -837,9 +977,11 @@ export async function accountRoutes(req, res, u, io) {
     if (p === '/api/auth/2fa/disable' && req.method === 'POST') {
       const a = me()
       limit('2d:' + a.user.id, 6, 15 * MIN)
-      if (a.user.passHash && !(await verifyPw(String(body.password || ''), a.user.passHash)))
-        throw err(400, 'Пароль неверен')
+      if (!a.user.totp?.enabled) throw err(400, '2FA уже выключена')
+      const proofEpoch = await stepUp(a, body, req)
+      requireEpoch(a.user, proofEpoch)
       a.user.totp = undefined
+      bumpSecurity(a.user, [a.session.id])
       audit(a.user.id, '2fa_off', req)
       save()
       void notify(a.user, 'Двухфакторная защита отключена', ['2FA для вашего аккаунта выключена.'])
@@ -847,8 +989,9 @@ export async function accountRoutes(req, res, u, io) {
     }
     if (p === '/api/auth/account' && req.method === 'DELETE') {
       const a = me()
-      if (a.user.passHash && !(await verifyPw(String(body.password || ''), a.user.passHash)))
-        throw err(400, 'Пароль неверен')
+      const proofEpoch = await stepUp(a, body, req)
+      requireEpoch(a.user, proofEpoch)
+      bumpSecurity(a.user)
       for (const s of Object.values(db.sessions)) if (s.userId === a.user.id) delete db.sessions[s.id]
       for (const t of Object.values(db.teams)) {
         t.members = t.members.filter((x) => x !== a.user.id)
@@ -943,7 +1086,7 @@ export async function accountRoutes(req, res, u, io) {
         subject: `${a.user.name} приглашает вас в «${t.name}» · TetraFree`,
         ...msg,
       }).catch((e) => {
-        mailErr = e.message
+        mailErr = publicFailure(e, 'Приглашение создано, но письмо не отправлено', 502, 'mail').error.message
       })
       audit(a.user.id, 'invite', req, email)
       return (
@@ -1154,7 +1297,8 @@ export async function accountRoutes(req, res, u, io) {
     }
     throw err(404, 'Нет такого метода')
   } catch (e) {
-    out({ error: { message: e.message, ...(e.extra || {}) } }, e.status || 500)
+    const failure = publicFailure(e, 'Не удалось выполнить действие аккаунта', 500, 'auth')
+    out({ error: failure.error }, failure.status)
     return true
   }
 }

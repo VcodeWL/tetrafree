@@ -1,19 +1,21 @@
 /* Простой редактор кода: прозрачный textarea поверх подсвеченного pre. Двусторонняя связь с холстом:
    правка кода → файл → холст; выбранный на холсте элемент подсвечивается в коде. */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { HLine } from '../components/ui/Code'
 import { useDesign } from './store'
 import { getEl } from './actions'
 import { Icon } from '../components/ui/Icon'
+import { useScopedFile } from '../lib/useScopedFile'
+import { merge3 } from '../lib/merge3'
 
 export function CodeEditor({
   value,
-  onChange,
+  pid,
   lang = 'html',
   path,
 }: {
   value: string
-  onChange: (v: string) => void
+  pid: string
   lang?: string
   path: string
 }) {
@@ -26,30 +28,39 @@ export function CodeEditor({
   const rev = useDesign((s) => s.rev)
   const lines = useMemo(() => text.split('\n'), [text])
 
-  /* внешняя правка (холст, агент, диск) → обновляем текст, если пользователь сейчас не печатает */
+  const session = useScopedFile(pid, path)
+  const last = useRef(value)
+  const flush = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+    if (typed.current === last.current) return
+    const saved = session.save(last.current, typed.current)
+    last.current = typed.current = saved.text
+    setText(saved.text)
+  }, [session])
+
+  /* Accept external updates without dropping pending input. */
   useEffect(() => {
-    if (value !== typed.current) {
-      typed.current = value
-      setText(value)
+    if (value === last.current) return
+    let next = value
+    if (typed.current !== last.current) {
+      const merged = merge3(last.current, typed.current, value)
+      if (merged) next = merged.text
+      else session.save(last.current, typed.current)
     }
-  }, [value])
+    last.current = value
+    typed.current = next
+    setText(next)
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = next !== value ? setTimeout(flush, 350) : null
+  }, [value, session, flush])
   const push = (v: string) => {
     setText(v)
     typed.current = v
     if (timer.current) clearTimeout(timer.current)
-    timer.current = setTimeout(() => onChange(v), 350)
+    timer.current = setTimeout(flush, 350)
   }
-  useEffect(
-    () => () => {
-      if (timer.current) {
-        clearTimeout(timer.current)
-        if (typed.current !== value) onChange(typed.current)
-      }
-    },
-    // размонтирование: сбрасываем отложенную правку с актуальными value/onChange на момент ухода
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  )
+  useEffect(() => flush, [flush])
 
   /* строка выбранного элемента */
   const hl = useMemo(() => {

@@ -116,7 +116,7 @@ test('stdio: рукопожатие, пагинация инструментов
     assert.equal(r.images[0], 'data:image/png;base64,AAAA')
     assert.deepEqual(await c.callTool('boom', {}), { text: 'сломалось', images: [], isError: true })
     await assert.rejects(c.callTool('nope', {}), /нет такого инструмента/)
-    await assert.rejects(c.callTool('die', {}), /завершился \(код 3\)/)
+    await assert.rejects(c.callTool('die', {}), /Сервер MCP завершился/)
   } finally {
     c.close()
   }
@@ -127,7 +127,7 @@ test('stdio: несуществующая команда — понятная о
     { type: 'stdio', command: '/нет/такого/бинаря', args: [], env: {} },
     { cwd: os.tmpdir() },
   )
-  await assert.rejects(c.start(), /Не удалось запустить/)
+  await assert.rejects(c.start(), /Связь с сервером MCP прервана/)
   c.close()
 })
 
@@ -226,8 +226,11 @@ test('маршруты: без «Разрешить» ничего не запу
     r = await call('/api/mcp/tools', { server: 'fake' })
     assert.equal(r.code, 403)
     assert.equal(pool.pool.size, 0, 'процесс не должен стартовать без разрешения')
-    assert.equal((await call('/api/mcp/tools', { server: 'нет' })).code, 404)
-    await call('/api/mcp/approve', { server: 'fake' })
+    assert.equal((await call('/api/mcp/tools', { server: 'missing' })).code, 404)
+    await call('/api/mcp/approve', {
+      server: 'fake',
+      expectedHash: (await call('/api/mcp/status', {})).data.servers[0].hash,
+    })
     r = await call('/api/mcp/tools', { server: 'fake' })
     assert.equal(r.code, 200)
     assert.equal(r.data.tools[0].readOnly, true)
@@ -244,7 +247,13 @@ test('маршруты: без «Разрешить» ничего не запу
       path.join(dir, '.tetra/mcp.json'),
       JSON.stringify({ mcpServers: { fake: { command: cfg.command, args: cfg.args } } }),
     )
-    await call('/api/mcp/approve', { server: 'fake', approved: false })
+    await call('/api/mcp/approve', {
+      server: 'fake',
+      approved: false,
+      expectedHash:
+        (await call('/api/mcp/status', {})).data.servers[0].runningHash ||
+        (await call('/api/mcp/status', {})).data.servers[0].hash,
+    })
     assert.equal(pool.pool.size, 0)
     assert.equal((await call('/api/mcp/call', { server: 'fake', tool: 'echo' })).code, 403)
     assert.equal(readConfig(dir).errors.length, 0)

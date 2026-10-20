@@ -116,6 +116,7 @@ export const bBatch = (
   write: Record<string, string>,
   remove: string[],
   dirs?: { make?: string[]; drop?: string[] },
+  expectedHashes?: Record<string, string | null>,
 ) =>
   post<{ dir: string; failed?: { path: string; code: string; error: string }[] }>('/api/fs/batch', {
     ...pj(p),
@@ -123,6 +124,7 @@ export const bBatch = (
     remove,
     mkdirs: dirs?.make,
     rmdirs: dirs?.drop,
+    expectedHashes,
   })
 export const bCommit = (p: ProjRef, message: string) =>
   post<{ ok: boolean; hash?: string }>('/api/git/commit', { ...pj(p), message })
@@ -187,59 +189,108 @@ export async function bHashes(p: ProjRef) {
     hashes: Record<string, string>
   }
 }
-let ptok = ''
-export const setPreviewToken = (t: string) => {
-  ptok = t
-}
-export const previewUrl = (p: Pick<Project, 'name'>, file = '') =>
-  `${B().base || location.origin}/preview/${ptok}/${encodeURIComponent(p.name)}/${file}`
-
 /** Настоящий shell в папке проекта. Вывод — по кускам, по мере появления. */
 export async function bExec(
   p: ProjRef,
   cmd: string,
   o: { cwd?: string; signal?: AbortSignal; onOut: (s: string, err: boolean) => void; timeout?: number },
 ) {
+  const aborted = () => new DOMException('Выполнение отменено', 'AbortError')
+  if (o.signal?.aborted) throw aborted()
   const runId = Math.random().toString(36).slice(2)
-  const onAbort = () => {
+  const transport = new AbortController()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let timedOut = false
+  let terminal = false
+  const kill = () => {
     void post('/api/exec/kill', { runId }).catch(() => {})
   }
-  o.signal?.addEventListener('abort', onAbort)
+  const cancel = () => {
+    kill() // Server must retain cancellation for a runId not yet launched.
+    transport.abort()
+    void reader?.cancel().catch(() => {})
+  }
+  const onAbort = () => cancel()
+  o.signal?.addEventListener('abort', onAbort, { once: true })
+  const timeout = Math.min(86400, Math.max(1, Number(o.timeout) || 600))
+  const timer = setTimeout(
+    () => {
+      timedOut = true
+      cancel()
+    },
+    timeout * 1000 + 5000,
+  )
+  const guard = () => {
+    if (o.signal?.aborted) throw aborted()
+    if (timedOut) throw new Error('Связь с выполнением команды прервана по таймауту')
+  }
   try {
+    guard()
     const r = await fetch(B().base + '/api/exec', {
       method: 'POST',
+      signal: transport.signal,
       headers: { 'content-type': 'application/json', ...authHeader() },
-      body: JSON.stringify({ ...pj(p), cmd, cwd: o.cwd || '', runId, timeout: o.timeout || 600 }),
+      body: JSON.stringify({ ...pj(p), cmd, cwd: o.cwd || '', runId, timeout }),
     })
+    guard()
     if (!r.ok || !r.body) throw new Error('HTTP ' + r.status)
-    const reader = r.body.getReader()
+    reader = r.body.getReader()
     const dec = new TextDecoder()
     let buf = '',
-      code = 0,
+      code: number | undefined,
       cwd = o.cwd || ''
+    const frame = (line: string) => {
+      if (!line.trim()) return
+      guard()
+      let m: { t?: string; d?: unknown; code?: unknown; cwd?: unknown }
+      try {
+        m = JSON.parse(line)
+      } catch {
+        throw new Error('Повреждён поток выполнения команды')
+      }
+      if (!m || typeof m !== 'object' || terminal) throw new Error('Неверный кадр выполнения команды')
+      if (m.t === 'x') {
+        if (!Number.isInteger(m.code) || (m.cwd !== undefined && typeof m.cwd !== 'string'))
+          throw new Error('Неверный код завершения команды')
+        terminal = true
+        code = m.code as number
+        cwd = (m.cwd as string | undefined) ?? cwd
+      } else if (m.t === 'o' || m.t === 'e') {
+        if (typeof m.d !== 'string') throw new Error('Неверный вывод команды')
+        o.onOut(m.d, m.t === 'e')
+      } else if (m.t !== 's') throw new Error('Неизвестный кадр выполнения команды')
+    }
     for (;;) {
+      guard()
       const { value, done } = await reader.read()
-      if (done) break
+      guard()
+      if (done) {
+        buf += dec.decode()
+        break
+      }
       buf += dec.decode(value, { stream: true })
       let i: number
       while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i)
+        frame(buf.slice(0, i))
         buf = buf.slice(i + 1)
-        if (!line) continue
-        try {
-          const m = JSON.parse(line)
-          if (m.t === 'x') {
-            code = m.code
-            cwd = m.cwd ?? cwd
-          } else o.onOut(m.d, m.t === 'e')
-        } catch {
-          /* неполная строка */
-        }
       }
     }
+    if (buf.trim()) frame(buf)
+    guard()
+    if (!terminal || code === undefined)
+      throw new Error('Связь оборвалась: завершение команды не подтверждено')
     return { code, cwd }
+  } catch (e) {
+    if (!terminal) kill()
+    guard()
+    throw e
   } finally {
+    clearTimeout(timer)
     o.signal?.removeEventListener('abort', onAbort)
+    if (reader) {
+      await reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
   }
 }
 

@@ -20,13 +20,19 @@ export const enqueue = (chatId: ID, text: string, atts: Attachment[], extra?: st
   }))
 export const dequeue = (chatId: ID, id: ID) =>
   useQueue.setState((s) => ({ q: { ...s.q, [chatId]: (s.q[chatId] || []).filter((x) => x.id !== id) } }))
+export const peekQueue = (chatId: ID): Queued | undefined => useQueue.getState().q[chatId]?.[0]
 export function shiftQueue(chatId: ID): Queued | undefined {
   const list = useQueue.getState().q[chatId] || []
   const first = list[0]
   if (first) dequeue(chatId, first.id)
   return first
 }
-export const clearQueue = (chatId: ID) => useQueue.setState((s) => ({ q: { ...s.q, [chatId]: [] } }))
+const generations = new Map<ID, number>()
+export const queueGeneration = (chatId: ID) => generations.get(chatId) || 0
+export const clearQueue = (chatId: ID) => {
+  generations.set(chatId, queueGeneration(chatId) + 1)
+  useQueue.setState((s) => ({ q: { ...s.q, [chatId]: [] } }))
+}
 
 /** Сдвиг элемента на `dir` позиций (-1 выше, +1 ниже); за границы не выходит. Чистая функция. */
 export function moveItem<T extends { id: string }>(list: T[], id: string, dir: number): T[] {

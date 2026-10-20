@@ -67,6 +67,37 @@ static class TfConPty
     [DllImport("kernel32.dll")]
     static extern bool CloseHandle(IntPtr h);
 
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOB_BASIC_LIMIT {
+        public long ProcessTime, JobTime;
+        public uint Flags;
+        public UIntPtr MinWorkingSet, MaxWorkingSet;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass, SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IO_COUNTERS { public ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct JOB_LIMIT {
+        public JOB_BASIC_LIMIT Basic;
+        public IO_COUNTERS Io;
+        public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+    }
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern IntPtr CreateJobObjectW(IntPtr attrs, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetInformationJobObject(IntPtr job, int info, ref JOB_LIMIT limits, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll")]
+    static extern void DeleteProcThreadAttributeList(IntPtr list);
+
+    static IntPtr job;
     static IntPtr hpc, inW, outR, hProc;
     static Thread reader;
     static Stream stdout;
@@ -84,13 +115,20 @@ static class TfConPty
 
     static int Main(string[] args)
     {
-        if (args.Length < 3) return 1;
-        int cols = int.Parse(args[0]);
-        int rows = int.Parse(args[1]);
+        int cols, rows;
+        if (args.Length < 3 || !int.TryParse(args[0], out cols) || !int.TryParse(args[1], out rows)
+            || cols < 20 || cols > 500 || rows < 5 || rows > 200)
+        { Console.Error.WriteLine("Invalid terminal dimensions (integer cols 20..500, rows 5..200 required)"); return 1; }
+        job = CreateJobObjectW(IntPtr.Zero, null);
+        JOB_LIMIT limits = new JOB_LIMIT();
+        limits.Basic.Flags = 0x00002000; /* KILL_ON_JOB_CLOSE; no BREAKAWAY */
+        if (job == IntPtr.Zero || !SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(JOB_LIMIT))))
+        { Console.Error.WriteLine("Job setup: " + Marshal.GetLastWin32Error()); return 7; }
         string cmdline = args[2];
 
         IntPtr inR, outW;
-        if (!CreatePipe(out inR, out inW, IntPtr.Zero, 0) || !CreatePipe(out outR, out outW, IntPtr.Zero, 0)) return 2;
+        if (!CreatePipe(out inR, out inW, IntPtr.Zero, 0) || !CreatePipe(out outR, out outW, IntPtr.Zero, 0))
+        { Console.Error.WriteLine("CreatePipe: " + Marshal.GetLastWin32Error()); return 2; }
         uint pcFlags = 0;
         uint.TryParse(Environment.GetEnvironmentVariable("TF_PTY_FLAGS") ?? "0", out pcFlags);
         int hr = CreatePseudoConsole(Size(cols, rows), inR, outW, pcFlags, out hpc);
@@ -103,9 +141,11 @@ static class TfConPty
         IntPtr listSize = IntPtr.Zero;
         InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref listSize);
         IntPtr list = Marshal.AllocHGlobal(listSize);
-        if (!InitializeProcThreadAttributeList(list, 1, 0, ref listSize)) return 4;
+        if (!InitializeProcThreadAttributeList(list, 1, 0, ref listSize))
+        { Console.Error.WriteLine("InitializeProcThreadAttributeList: " + Marshal.GetLastWin32Error()); return 4; }
         /* PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016; значение — сам дескриптор HPCON */
-        if (!UpdateProcThreadAttribute(list, 0, (IntPtr)0x00020016, hpc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) return 5;
+        if (!UpdateProcThreadAttribute(list, 0, (IntPtr)0x00020016, hpc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
+        { Console.Error.WriteLine("UpdateProcThreadAttribute: " + Marshal.GetLastWin32Error()); return 5; }
 
         STARTUPINFOEX si = new STARTUPINFOEX();
         si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
@@ -118,12 +158,22 @@ static class TfConPty
         PROCESS_INFORMATION pi;
         StringBuilder cl = new StringBuilder(cmdline, Math.Max(cmdline.Length + 1, 32768));
         /* EXTENDED_STARTUPINFO_PRESENT = 0x00080000 */
-        if (!CreateProcessW(null, cl, IntPtr.Zero, IntPtr.Zero, false, 0x00080000, IntPtr.Zero, null, ref si, out pi))
+        if (!CreateProcessW(null, cl, IntPtr.Zero, IntPtr.Zero, false, 0x00080000 | 0x00000004, IntPtr.Zero, null, ref si, out pi))
         {
             Console.Error.WriteLine("CreateProcessW: " + Marshal.GetLastWin32Error());
             return 6;
         }
         hProc = pi.hProcess;
+        if (!AssignProcessToJobObject(job, hProc) || ResumeThread(pi.hThread) == 0xFFFFFFFF)
+        {
+            Console.Error.WriteLine("Job assignment/resume: " + Marshal.GetLastWin32Error());
+            TerminateProcess(hProc, 7);
+            CloseHandle(pi.hThread);
+            return 7;
+        }
+        CloseHandle(pi.hThread);
+        DeleteProcThreadAttributeList(list);
+        Marshal.FreeHGlobal(list);
         CloseHandle(inR);
         CloseHandle(outW);
 
@@ -148,7 +198,8 @@ static class TfConPty
             for (int i = 0; i < n; i++) pending.Add(buf[i]);
             Drain(pending, marker);
         }
-        TerminateProcess(hProc, 1);
+        TerminateJobObject(job, 1);
+        WaitForSingleObject(hProc, 2000);
         Environment.Exit(1);
         return 1;
     }
@@ -180,13 +231,22 @@ static class TfConPty
                 p.RemoveRange(0, at);
             }
             int nl = p.IndexOf((byte)10);
-            if (nl < 0) return; /* строка размера ещё не пришла целиком */
+            if (nl < 0)
+            {
+                if (p.Count > 128) { Console.Error.WriteLine("Oversized resize record"); p.Clear(); }
+                return; /* fragmented control record, bounded to 128 bytes */
+            }
             string line = Encoding.ASCII.GetString(p.GetRange(marker.Length, nl - marker.Length).ToArray());
             p.RemoveRange(0, nl + 1);
             string[] parts = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             int c, r;
-            if (parts.Length == 2 && int.TryParse(parts[0], out c) && int.TryParse(parts[1], out r))
-                ResizePseudoConsole(hpc, Size(c, r));
+            if (parts.Length == 2 && int.TryParse(parts[0], out c) && int.TryParse(parts[1], out r)
+                && c >= 20 && c <= 500 && r >= 5 && r <= 200)
+            {
+                int hr = ResizePseudoConsole(hpc, Size(c, r));
+                if (hr != 0) Console.Error.WriteLine("ResizePseudoConsole: " + hr);
+            }
+            else Console.Error.WriteLine("Invalid resize dimensions");
         }
     }
 
@@ -240,12 +300,14 @@ static class TfConPty
     {
         WaitForSingleObject(hProc, 0xFFFFFFFF);
         uint code;
-        GetExitCodeProcess(hProc, out code);
+        if (!GetExitCodeProcess(hProc, out code)) code = 1;
         Log("child exited " + code);
         ClosePseudoConsole(hpc);
         reader.Join(2000);
         stdout.Flush();
-        Environment.Exit((int)(code & 0xFF));
+        TerminateJobObject(job, code); /* reap descendants even when shell exited normally */
+        CloseHandle(hProc);
+        Environment.Exit(unchecked((int)code));
     }
 }
 `

@@ -13,18 +13,37 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import crypto from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { assertGitMetadata, gitInvocation } from './git-safety.mjs'
+import { captureProcess } from './owned-process.mjs'
+import { publicFailure } from './public-errors.mjs'
+const requestScope = new AsyncLocalStorage()
+import { inside, realInside, fnv, matchesExpected, withProjectLock } from './fs-safety.mjs'
+export { realInside, fnv } from './fs-safety.mjs'
+import {
+  childEnv,
+  killTree,
+  winScripts,
+  boundedSend,
+  parentControl,
+  serverProcesses,
+} from './process-safety.mjs'
+import { createPreview } from './preview.mjs'
 import { mailMode } from './mail.mjs'
 import { checkFolder, bad, winDrives } from './folders.mjs'
 import { makeIgnore } from './ignore.mjs'
-import { ptyRoutes, hasPty } from './pty.mjs'
+import { ptyRoutes, hasPty, shutdownPty } from './pty.mjs'
 import { createVault, secretRoutes } from './secrets.mjs'
 import { webRoutes } from './web.mjs'
 import { mcpRoutes, createPool } from './mcp.mjs'
-import { accountRoutes, authed, previewToken, previewValid } from './auth.mjs'
+import { accountRoutes, authed, sessionValid, flushDb } from './auth.mjs'
 
 const ROOT = path.resolve(process.env.TF_ROOT || path.join(os.homedir(), 'TetraFree', 'projects'))
 const vault = createVault({ dir: path.dirname(ROOT) })
 const mcpPool = createPool()
+const preview = createPreview({ sessionValid })
 process.on('exit', () => mcpPool.closeAll())
 import { checkRemoteUrl, redactUrl } from './gitremote.mjs'
 import { parseStatus, parseLog, kindOf, parseBlame, splitHunks, pickHunks } from './gitparse.mjs'
@@ -70,15 +89,6 @@ const safeName = (s) =>
     .replace(/[^\w.-]+/g, '-')
     .replace(/^\.+/, '')
     .slice(0, 80) || 'project'
-export const fnv = (s) => {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(36) + ':' + s.length
-}
-
 /* имя проекта → папка (для маршрута превью, где в URL только имя) */
 const REG = new Map()
 /** папка проекта. Если клиент знает путь (folder) — используем его; иначе старая схема ROOT/<имя> с поиском по id. */
@@ -96,6 +106,7 @@ async function projectDir(id, name, folder) {
   if (id) {
     for (const d of await fsp.readdir(ROOT).catch(() => [])) {
       const idf = path.join(ROOT, d, '.tetrafree', 'id')
+      await realInside(ROOT, idf)
       if (fs.existsSync(idf) && fs.readFileSync(idf, 'utf8').trim() === id) {
         const cur = path.join(ROOT, d)
         if (cur !== want && !fs.existsSync(want)) {
@@ -108,58 +119,24 @@ async function projectDir(id, name, folder) {
       }
     }
   }
+  await realInside(ROOT, want)
+  await realInside(want, path.join(want, '.tetrafree', 'id'))
   await fsp.mkdir(path.join(want, '.tetrafree'), { recursive: true })
   if (id) await fsp.writeFile(path.join(want, '.tetrafree', 'id'), id)
   REG.set(safeName(name), want)
   return want
-}
-const WIN_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
-function inside(dir, rel) {
-  if (
-    process.platform === 'win32' &&
-    String(rel)
-      .split(/[\\/]/)
-      .some((x) => WIN_DEVICE.test(x))
-  )
-    throw Object.assign(new Error('Зарезервированное имя Windows: ' + rel), { status: 400 })
-  const abs = path.resolve(dir, rel)
-  if (abs !== dir && !abs.startsWith(dir + path.sep))
-    throw Object.assign(new Error('Путь вне папки проекта: ' + rel), { status: 400 })
-  return abs
-}
-/** Символическая ссылка внутри проекта (например, из склонированного репозитория) не должна выводить запись за его пределы */
-export async function realInside(dir, abs) {
-  const root = await fsp.realpath(dir).catch(() => dir)
-  let p = abs
-  for (;;) {
-    try {
-      const rp = await fsp.realpath(p)
-      if (rp !== root && !rp.startsWith(root + path.sep))
-        throw Object.assign(
-          new Error('Путь ведёт за пределы папки проекта (ссылка): ' + path.relative(dir, abs)),
-          {
-            status: 400,
-          },
-        )
-      return abs
-    } catch (e) {
-      if (e.status) throw e
-      /* самой папки проекта ещё нет (первая запись) — выйти через ссылку нечем */
-      if (p === dir) return abs
-      const up = path.dirname(p)
-      if (up === p) return abs
-      p = up
-    }
-  }
 }
 const MAX_FILES = 2500
 const MAX_TOTAL = 4 * 1024 * 1024
 /** Читает текстовые файлы папки. lim.cut = true, если упёрлись в лимит числа/объёма (часть файлов не прочитана). */
 async function walk(dir, base = dir, out = {}, lim = { n: 0, bytes: 0, cut: false }) {
   if (!lim.ig) {
-    const gi = await fsp.readFile(path.join(base, '.gitignore'), 'utf8').catch(() => '')
+    const gi = await realInside(base, path.join(base, '.gitignore'))
+      .then((p) => fsp.readFile(p, 'utf8'))
+      .catch(() => '')
     lim.ig = makeIgnore(gi)
   }
+  await realInside(base, dir)
   const ents = await fsp.readdir(dir, { withFileTypes: true }).catch((e) => {
     if (e.code !== 'ENOENT') lim.partial = true /* папка недоступна: её файлы не считаем удалёнными */
     return []
@@ -175,6 +152,7 @@ async function walk(dir, base = dir, out = {}, lim = { n: 0, bytes: 0, cut: fals
       /* файл мог исчезнуть или быть занят другой программой (антивирус, редактор) — пропускаем его, а не ломаем весь обход */
       let st, buf
       try {
+        await realInside(base, abs)
         st = await fsp.stat(abs)
         if (st.size > MAX_FILE) continue
         buf = await fsp.readFile(abs)
@@ -198,6 +176,8 @@ async function walk(dir, base = dir, out = {}, lim = { n: 0, bytes: 0, cut: fals
 async function pruneEmpty(dir, stop) {
   let d = dir
   while (d.startsWith(stop + path.sep)) {
+    await realInside(stop, d)
+    if ((await fsp.lstat(d).catch(() => null))?.isSymbolicLink()) return
     const items = await fsp.readdir(d).catch(() => null)
     if (!items || items.length) return
     await fsp.rmdir(d).catch(() => {})
@@ -205,47 +185,38 @@ async function pruneEmpty(dir, stop) {
   }
 }
 
-function git(dir, args, timeout = 0, input = null) {
-  return new Promise((res) => {
-    const p = spawn('git', args, {
-      cwd: dir,
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'TetraFree',
-        GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'agent@tetrafree.local',
-        GIT_COMMITTER_NAME: 'TetraFree',
-        GIT_COMMITTER_EMAIL: 'agent@tetrafree.local',
-      },
-    })
-    p.stdin.on('error', () => {})
-    p.stdin.end(input ?? '')
-    let out = '',
-      so = '',
-      se = ''
-    p.stdout.on('data', (d) => {
-      out += d
-      so += d
-    })
-    p.stderr.on('data', (d) => {
-      out += d
-      se += d
-    })
-    const to = timeout
-      ? setTimeout(() => {
-          se += '\nПревышено время ожидания'
-          out += '\nПревышено время ожидания'
-          p.kill()
-        }, timeout)
-      : null
-    p.on('close', (code) => {
-      if (to) clearTimeout(to)
-      res({ code, out, so, se })
-    })
-    p.on('error', (e) => res({ code: -1, out: String(e), so: '', se: String(e) }))
+async function git(dir, args, timeout = 60000, input = null) {
+  if (requestScope.getStore()?.aborted) throw Object.assign(new Error('Операция отменена'), { status: 499 })
+  await realInside(dir, path.join(dir, '.git'))
+  await assertGitMetadata(dir)
+  const invocation = gitInvocation(dir, args)
+  const result = await captureProcess('git', invocation.args, {
+    cwd: dir,
+    env: {
+      ...invocation.env,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'TetraFree',
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'agent@tetrafree.local',
+      GIT_COMMITTER_NAME: 'TetraFree',
+      GIT_COMMITTER_EMAIL: 'agent@tetrafree.local',
+    },
+    timeout: timeout || 60000,
+    input: input ?? '',
+    signal: requestScope.getStore(),
   })
+  // Git stderr is not public data (may contain transport details/local paths).
+  if (result.code !== 0 && !(args[0] === 'diff' && result.code === 1))
+    return { ...result, so: '', se: 'Операция Git не выполнена', out: 'Операция Git не выполнена' }
+  return { ...result, se: '', out: result.so }
 }
 async function ensureGit(dir) {
+  await realInside(dir, path.join(dir, '.git'))
+  const gs = await fsp.lstat(path.join(dir, '.git')).catch((e) => {
+    if (e.code !== 'ENOENT') throw e
+    return null
+  })
+  if (gs && (!gs.isDirectory() || gs.isSymbolicLink()))
+    throw Object.assign(new Error('Внешние git-dir/worktree не поддерживаются'), { status: 400 })
+  await realInside(dir, path.join(dir, '.gitignore'))
   if (!hasGit()) return false
   if (!fs.existsSync(path.join(dir, '.git'))) {
     await git(dir, ['init', '-q', '-b', 'main'])
@@ -309,9 +280,40 @@ const MIME = {
 }
 
 const running = new Map()
+const pendingExec = new Map()
+const cancelledRuns = new Map()
+const CANCEL_TTL = 15 * 60 * 1000
+const CANCEL_LIMIT = 1024
+function execKey(req, runId) {
+  if (runId === undefined || runId === null || runId === '') return ''
+  if (typeof runId !== 'string' || runId.length > 160)
+    throw Object.assign(new Error('Неверный runId'), { status: 400 })
+  return authed(req).session.id + ':' + runId
+}
+function pruneCancelled() {
+  for (const [key, exp] of cancelledRuns) if (exp <= Date.now()) cancelledRuns.delete(key)
+}
+const execChildren = new Set()
+const servers = new Set()
+let stopping
+export function shutdownServer() {
+  if (stopping) return stopping
+  stopping = (async () => {
+    for (const srv of servers) {
+      srv.close()
+      srv.closeAllConnections?.()
+    }
+    servers.clear()
+    preview.close()
+    await Promise.allSettled([shutdownPty(), mcpPool.closeAll(), serverProcesses.shutdown()])
+    flushDb()
+  })()
+  return stopping
+}
 
 async function handle(req, res, isLocal) {
   const u = new URL(req.url, 'http://x')
+  if (stopping) return json(res, 503, { error: { message: 'Сервер завершает работу' } })
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
@@ -341,7 +343,11 @@ async function handle(req, res, isLocal) {
 
   /* всё ниже — доступ к диску, shell и сети: только с этого компьютера и только для вошедшего пользователя */
   const pv = u.pathname.match(/^\/preview\/([0-9a-f]{32})\//)
-  if (!pv) {
+  if (pv)
+    return json(res, 410, {
+      error: { message: 'Обнови превью: используй /api/preview, отдельный безопасный origin' },
+    })
+  {
     if (!isLocal)
       return json(res, 403, {
         error: { message: 'Диск, терминал и превью доступны только на компьютере, где запущен TetraFree' },
@@ -362,6 +368,13 @@ async function handle(req, res, isLocal) {
     )
   )
     return
+
+  if (u.pathname === '/api/preview' && req.method === 'POST') {
+    const a = authed(req),
+      body = await readBody(req)
+    const dir = await projectDir(body.id, body.name, body.folder)
+    return json(res, 200, await preview.issue(dir, a.session.id, body.path || ''))
+  }
 
   /* обзор папок для выбора места проекта: список подпапок + сведения о самой папке */
   if (u.pathname === '/api/fs/browse') {
@@ -431,7 +444,10 @@ async function handle(req, res, isLocal) {
     try {
       abs = checkFolder(folder)
     } catch (e) {
-      return json(res, 200, { ok: false, reason: e.message })
+      return json(res, 200, {
+        ok: false,
+        reason: publicFailure(e, 'Недоступный путь проекта', 400, 'project').error.message,
+      })
     }
     let probe = abs
     while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe)
@@ -461,7 +477,10 @@ async function handle(req, res, isLocal) {
     try {
       abs = checkFolder(folder)
     } catch (e) {
-      return json(res, 200, { ok: false, reason: e.message })
+      return json(res, 200, {
+        ok: false,
+        reason: publicFailure(e, 'Недоступный путь проекта', 400, 'project').error.message,
+      })
     }
     if (!hasGit()) return json(res, 200, { ok: false, reason: 'git не установлен — поставь Git for Windows' })
     if (fs.existsSync(abs)) {
@@ -474,13 +493,7 @@ async function handle(req, res, isLocal) {
     if (r.code !== 0) {
       /* неудачная попытка не должна оставлять недокачанную папку */
       await fsp.rm(abs, { recursive: true, force: true }).catch(() => {})
-      const why = r.se
-        .trim()
-        .split('\n')
-        .filter((x) => !/^Cloning into/.test(x))
-        .slice(-2)
-        .join(' ')
-      return json(res, 200, { ok: false, reason: (why || 'git clone не удался').slice(0, 300) })
+      return json(res, 200, { ok: false, reason: 'Не удалось клонировать репозиторий' })
     }
     return json(res, 200, { ok: true, dir: abs })
   }
@@ -489,6 +502,7 @@ async function handle(req, res, isLocal) {
     const { id, name, folder, rel } = await readBody(req)
     const dir = await projectDir(id, name, folder)
     const target = rel && fs.existsSync(inside(dir, rel)) ? inside(dir, rel) : dir
+    await realInside(dir, target)
     const isFile = target !== dir
     const [cmd, args] =
       process.platform === 'win32'
@@ -497,7 +511,7 @@ async function handle(req, res, isLocal) {
           ? ['open', isFile ? ['-R', target] : [target]]
           : ['xdg-open', [isFile ? path.dirname(target) : target]]
     try {
-      const c = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+      const c = spawn(cmd, args, { detached: true, env: childEnv(), stdio: 'ignore' })
       c.on('error', () => {})
       c.unref()
     } catch {
@@ -522,14 +536,14 @@ async function handle(req, res, isLocal) {
       })
     const failed = await new Promise((ok) => {
       try {
-        const c = spawn(l.cmd, l.args, { detached: true, stdio: 'ignore', cwd: l.cwd })
-        c.once('error', (e) => ok(e.message))
+        const c = spawn(l.cmd, l.args, { detached: true, env: childEnv(), stdio: 'ignore', cwd: l.cwd })
+        c.once('error', (e) => ok('Не удалось запустить приложение'))
         c.once('spawn', () => {
           c.unref()
           ok('')
         })
       } catch (e) {
-        ok(String(e.message || e))
+        ok('Не удалось запустить приложение')
       }
     })
     if (failed)
@@ -572,14 +586,19 @@ async function handle(req, res, isLocal) {
     fs.mkdirSync(dir, { recursive: true })
     const failed = await new Promise((ok) => {
       try {
-        const c = spawn(exe, editorArgs(ed, dir, abs, line), { detached: true, stdio: 'ignore', cwd: dir })
-        c.once('error', (e) => ok(e.message))
+        const c = spawn(exe, editorArgs(ed, dir, abs, line), {
+          detached: true,
+          env: childEnv(),
+          stdio: 'ignore',
+          cwd: dir,
+        })
+        c.once('error', (e) => ok('Не удалось запустить приложение'))
         c.once('spawn', () => {
           c.unref()
           ok('')
         })
       } catch (e) {
-        ok(String(e.message || e))
+        ok('Не удалось запустить приложение')
       }
     })
     if (failed)
@@ -603,6 +622,8 @@ async function handle(req, res, isLocal) {
       const name = nameFor(new Date())
       const tmp = path.join(dir, name + '.tmp')
       try {
+        await realInside(dir, tmp)
+        await realInside(dir, path.join(dir, name))
         await fsp.writeFile(tmp, JSON.stringify(data))
         await fsp.rename(tmp, path.join(dir, name))
       } catch (e) {
@@ -610,9 +631,13 @@ async function handle(req, res, isLocal) {
         throw e
       }
       const left = await fsp.readdir(dir)
-      for (const old of stale(left, 14)) await fsp.rm(path.join(dir, old), { force: true })
+      for (const old of stale(left, 14)) {
+        await realInside(dir, path.join(dir, old))
+        await fsp.rm(path.join(dir, old), { force: true })
+      }
       for (const t of staleTmp(left)) {
         /* свежий .tmp может принадлежать соседней записи — трогаем только старше минуты */
+        await realInside(dir, path.join(dir, t))
         const st = await fsp.stat(path.join(dir, t)).catch(() => null)
         if (st && Date.now() - st.mtimeMs > 60000) await fsp.rm(path.join(dir, t), { force: true })
       }
@@ -620,6 +645,7 @@ async function handle(req, res, isLocal) {
     const names = (await fsp.readdir(dir).catch(() => [])).filter(isBackupName).sort().reverse()
     const list = []
     for (const n of names.slice(0, 14)) {
+      await realInside(dir, path.join(dir, n))
       const st = await fsp.stat(path.join(dir, n)).catch(() => null)
       if (st) list.push({ name: n, size: st.size, at: st.mtimeMs })
     }
@@ -637,51 +663,99 @@ async function handle(req, res, isLocal) {
       mkdirs = list(body.mkdirs),
       rmdirs = list(body.rmdirs)
     const dir = await projectDir(id, name, folder)
-    /* один плохой файл (слишком длинное имя, занято другим процессом…) не должен ронять всю пачку */
-    const failed = []
-    for (const [rel, content] of Object.entries(write)) {
-      try {
-        const abs = inside(dir, rel)
-        await realInside(dir, abs)
-        await fsp.mkdir(path.dirname(abs), { recursive: true })
-        await fsp.writeFile(abs, content)
-      } catch (e) {
-        failed.push({ path: rel, code: e?.code || 'ERR', error: String(e?.message || e).slice(0, 160) })
+    if (
+      body.expectedHashes !== undefined &&
+      (!body.expectedHashes ||
+        typeof body.expectedHashes !== 'object' ||
+        Array.isArray(body.expectedHashes) ||
+        Object.values(body.expectedHashes).some((v) => v !== null && typeof v !== 'string'))
+    )
+      return json(res, 400, { error: { message: 'expectedHashes — словарь хешей или null' } })
+    return withProjectLock(dir, async () => {
+      const expected = body.expectedHashes || {}
+      const compare = async (rel) => {
+        if (Object.hasOwn(expected, rel) && !(await matchesExpected(dir, rel, expected[rel])))
+          throw Object.assign(
+            new Error('Файл на диске изменился — перечитай его перед записью или удалением'),
+            { code: 'CONFLICT' },
+          )
       }
-    }
-    for (const rel of remove) {
-      try {
-        const abs = inside(dir, rel)
-        /* пустой путь или «.» — это сама папка проекта: удалять её целиком по ошибке клиента нельзя */
-        if (abs === dir)
-          throw Object.assign(new Error('Нельзя удалить папку проекта целиком'), { code: 'EPROJ' })
-        await realInside(dir, path.dirname(abs))
-        await fsp.rm(abs, { force: true, recursive: true })
-        await pruneEmpty(path.dirname(abs), dir)
-      } catch (e) {
-        failed.push({ path: rel, code: e?.code || 'ERR', error: String(e?.message || e).slice(0, 160) })
+      /* один плохой файл (слишком длинное имя, занято другим процессом…) не должен ронять всю пачку */
+      const failed = []
+      for (const [rel, content] of Object.entries(write)) {
+        try {
+          const abs = inside(dir, rel)
+          await realInside(dir, abs)
+          await fsp.mkdir(path.dirname(abs), { recursive: true })
+          await realInside(dir, abs)
+          await compare(rel)
+          await fsp.writeFile(abs, content)
+        } catch (e) {
+          failed.push({
+            path: rel,
+            code: e?.code === 'CONFLICT' ? 'CONFLICT' : 'ERR',
+            error:
+              e?.code === 'CONFLICT'
+                ? 'Файл изменился — перечитай его перед записью или удалением'
+                : 'Не удалось изменить файл',
+            correlationId: publicFailure(e, 'Не удалось изменить файл', 400, 'batch').error.correlationId,
+          })
+        }
       }
-    }
-    /* пустые папки, созданные в приложении; rmdir (не rm -r) — непустую папку не тронет */
-    for (const rel of mkdirs) {
-      try {
-        const abs = inside(dir, rel)
-        await realInside(dir, abs)
-        await fsp.mkdir(abs, { recursive: true })
-      } catch (e) {
-        failed.push({ path: rel, code: e?.code || 'ERR', error: String(e?.message || e).slice(0, 160) })
+      for (const rel of remove) {
+        try {
+          const abs = inside(dir, rel)
+          /* пустой путь или «.» — это сама папка проекта: удалять её целиком по ошибке клиента нельзя */
+          if (abs === dir)
+            throw Object.assign(new Error('Нельзя удалить папку проекта целиком'), { code: 'EPROJ' })
+          await realInside(dir, path.dirname(abs))
+          await compare(rel)
+          await fsp.rm(abs, { force: true, recursive: true })
+          await pruneEmpty(path.dirname(abs), dir)
+        } catch (e) {
+          failed.push({
+            path: rel,
+            code: e?.code === 'CONFLICT' ? 'CONFLICT' : 'ERR',
+            error:
+              e?.code === 'CONFLICT'
+                ? 'Файл изменился — перечитай его перед записью или удалением'
+                : 'Не удалось изменить файл',
+            correlationId: publicFailure(e, 'Не удалось изменить файл', 400, 'batch').error.correlationId,
+          })
+        }
       }
-    }
-    for (const rel of rmdirs) {
-      try {
-        const abs = inside(dir, rel)
-        await fsp.rmdir(abs).catch(() => {})
-        await pruneEmpty(path.dirname(abs), dir) /* родитель мог остаться пустым */
-      } catch {
-        /* пустая папка не важнее остальной пачки */
+      /* пустые папки, созданные в приложении; rmdir (не rm -r) — непустую папку не тронет */
+      for (const rel of mkdirs) {
+        try {
+          const abs = inside(dir, rel)
+          await realInside(dir, abs)
+          await fsp.mkdir(abs, { recursive: true })
+        } catch (e) {
+          failed.push({
+            path: rel,
+            code: e?.code === 'CONFLICT' ? 'CONFLICT' : 'ERR',
+            error:
+              e?.code === 'CONFLICT'
+                ? 'Файл изменился — перечитай его перед записью или удалением'
+                : 'Не удалось изменить файл',
+            correlationId: publicFailure(e, 'Не удалось изменить файл', 400, 'batch').error.correlationId,
+          })
+        }
       }
-    }
-    return json(res, 200, { ok: true, dir, failed })
+      for (const rel of rmdirs) {
+        try {
+          const abs = inside(dir, rel)
+          if (abs === dir) throw Object.assign(new Error('Нельзя удалить папку проекта'), { code: 'EPROJ' })
+          await realInside(dir, abs)
+          await fsp.rmdir(abs)
+          await pruneEmpty(path.dirname(abs), dir) /* родитель мог остаться пустым */
+        } catch (e) {
+          if (!['ENOENT', 'ENOTEMPTY'].includes(e.code))
+            failed.push({ path: rel, code: e.code || 'ERR', error: 'Не удалось удалить папку' })
+        }
+      }
+      return json(res, 200, { ok: true, dir, failed })
+    })
   }
   /* хеши файлов на диске — для подхвата правок из внешнего редактора */
   if (u.pathname === '/api/fs/hashes') {
@@ -695,7 +769,9 @@ async function handle(req, res, isLocal) {
     return json(res, 200, {
       dir,
       truncated: lim.cut || !!lim.partial,
-      ignore: await fsp.readFile(path.join(dir, '.gitignore'), 'utf8').catch(() => ''),
+      ignore: await realInside(dir, path.join(dir, '.gitignore'))
+        .then((p) => fsp.readFile(p, 'utf8'))
+        .catch(() => ''),
       skip: [...SKIP],
       hashes: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, fnv(v)])),
     })
@@ -719,114 +795,227 @@ async function handle(req, res, isLocal) {
   /* shell: NDJSON-стрим {t:'o'|'e', d} … {t:'x', code, cwd} */
   if (u.pathname === '/api/exec' && req.method === 'POST') {
     const { id, name, folder, cmd: rawCmd, cwd = '', timeout: rawTimeout = 600, runId } = await readBody(req)
-    const cmd = typeof rawCmd === 'string' ? rawCmd : ''
-    /* setTimeout больше ~24 дней срабатывает сразу — зажимаем срок в разумные рамки */
-    const timeout = Math.min(86400, Math.max(1, Number(rawTimeout) || 600))
-    const dir = await projectDir(id, name, folder)
-    const wd = inside(dir, cwd)
-    res.writeHead(200, {
-      'content-type': 'application/x-ndjson; charset=utf-8',
-      'cache-control': 'no-cache',
-      'access-control-allow-origin': '*',
-      'x-accel-buffering': 'no',
-    })
-    const send = (o) => {
-      try {
-        res.write(JSON.stringify(o) + '\n')
-      } catch {
-        /* клиент ушёл */
+    const runKey = execKey(req, runId)
+    pruneCancelled()
+    if (runKey && (running.has(runKey) || pendingExec.has(runKey)))
+      return json(res, 409, { error: { message: 'Этот runId уже выполняется' } })
+    if (pendingExec.size >= 64)
+      return json(res, 429, { error: { message: 'Слишком много ожидающих команд' } })
+    const state = { cancelled: !!runKey && cancelledRuns.has(runKey) }
+    if (runKey) pendingExec.set(runKey, state)
+    let temp
+    const cancelledReply = async () => {
+      if (runKey) pendingExec.delete(runKey)
+      if (temp) await fsp.rm(temp, { recursive: true, force: true }).catch(() => {})
+      if (!res.destroyed) {
+        res.writeHead(200, {
+          'content-type': 'application/x-ndjson; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        res.end(JSON.stringify({ t: 'x', code: 130, cwd: typeof cwd === 'string' ? cwd : '' }) + '\n')
       }
     }
-    const marker = '__TF_CWD__'
-    const isWin = process.platform === 'win32'
-    const script = isWin
-      ? `${cmd} & echo ${marker}%CD%`
-      : `trap 'printf "\\n${marker}%s\\n" "$(pwd)"' EXIT\n${cmd}`
-    const child = spawn(
-      isWin
-        ? 'cmd.exe'
-        : process.env.SHELL && !process.env.SHELL.endsWith('fish')
-          ? process.env.SHELL
-          : 'bash',
-      isWin ? ['/d', '/s', '/c', script] : ['-lc', script],
-      {
-        cwd: fs.existsSync(wd) ? wd : dir,
-        env: { ...process.env, FORCE_COLOR: '1', TERM: 'xterm-256color', TETRA_PROJECT: name },
-        detached: !isWin,
-      },
-    )
-    if (runId) running.set(runId, child)
-    let newCwd = cwd,
-      hold = ''
-    const onOut = (d) => {
-      let s = hold + d.toString('utf8')
-      hold = ''
-      const k = s.indexOf(marker)
-      if (k >= 0) {
-        const nl = s.indexOf('\n', k)
-        if (nl < 0) {
-          hold = s.slice(k)
-          s = s.slice(0, k)
-        } else {
-          const abs = s.slice(k + marker.length, nl).trim()
-          if (abs === dir) newCwd = ''
-          else if (abs.startsWith(dir + path.sep)) newCwd = path.relative(dir, abs).split(path.sep).join('/')
-          s = s.slice(0, k).replace(/\r?\n$/, '') + s.slice(nl + 1)
+    try {
+      if (state.cancelled || req.aborted || res.destroyed) return cancelledReply()
+      const cmd = typeof rawCmd === 'string' ? rawCmd : ''
+      if (Buffer.byteLength(cmd) > 1024 * 1024)
+        throw Object.assign(new Error('Слишком большая команда'), { status: 413 })
+      /* setTimeout больше ~24 дней срабатывает сразу — зажимаем срок в разумные рамки */
+      const timeout = Math.min(86400, Math.max(1, Number(rawTimeout) || 600))
+      const dir = await projectDir(id, name, folder)
+      const wd = inside(dir, cwd)
+      await realInside(dir, wd)
+      if (!(await fsp.stat(wd)).isDirectory())
+        throw Object.assign(new Error('Рабочая папка недоступна'), { status: 400 })
+      const marker = '__TF_CWD_' + crypto.randomBytes(12).toString('hex') + '__'
+      const isWin = process.platform === 'win32'
+      const env = childEnv({ FORCE_COLOR: '1', TERM: 'xterm-256color', TETRA_PROJECT: String(name || '') })
+      const script = `trap 'status=$?; printf "\\n${marker}%s\\n" "$(pwd)"; exit "$status"' EXIT\n${cmd}`
+      let args = ['-lc', script]
+      if (isWin) {
+        temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'tf-exec-'))
+        const scripts = winScripts(cmd, marker)
+        const commandFile = path.join(temp, 'command.cmd'),
+          wrapperFile = path.join(temp, 'wrapper.cmd')
+        await fsp.writeFile(commandFile, scripts.command, { mode: 0o600 })
+        await fsp.writeFile(wrapperFile, scripts.wrapper, { mode: 0o600 })
+        env.TF_EXEC_COMMAND = commandFile
+        env.TF_EXEC_WRAPPER = wrapperFile
+        args = ['/d', '/v:off', '/s', '/c', '""%TF_EXEC_WRAPPER%""']
+      }
+      if (state.cancelled || req.aborted || res.destroyed || stopping) return cancelledReply()
+      if (!serverProcesses.available('exec') || execChildren.size >= 32)
+        throw Object.assign(new Error('Слишком много команд'), { status: 429 })
+      const child = spawn(
+        isWin
+          ? 'cmd.exe'
+          : process.env.SHELL && !process.env.SHELL.endsWith('fish')
+            ? process.env.SHELL
+            : 'bash',
+        args,
+        { cwd: wd, env, detached: !isWin, windowsHide: true },
+      )
+      const owned = serverProcesses.own(child, 'exec', async () => {
+        execChildren.delete(child)
+        if (runKey && running.get(runKey) === child) running.delete(runKey)
+        if (temp) await fsp.rm(temp, { recursive: true, force: true }).catch(() => {})
+      })
+      child.stdin.on('error', () => {})
+      child.stdin.end() // non-PTY mode cannot provide interactive stdin
+      if (runKey) {
+        running.set(runKey, child)
+        pendingExec.delete(runKey)
+      }
+      execChildren.add(child)
+      res.writeHead(200, {
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'cache-control': 'no-cache',
+        'x-accel-buffering': 'no',
+      })
+      let newCwd = cwd,
+        hold = '',
+        finished = false,
+        killWait,
+        drainTimer,
+        timer
+      const kill = () => {
+        if (finished) return killWait
+        child.stdout.resume()
+        child.stderr.resume()
+        if (!killWait)
+          killWait = owned.stop().then((result) => {
+            if (!result.stopped && !finished) {
+              send({
+                t: 'e',
+                d: 'Остановка дерева процессов не подтверждена; процесс остаётся под контролем очистки\n',
+              })
+              if (!res.destroyed) res.destroy()
+            }
+            return result
+          })
+        return killWait
+      }
+      child.tfKill = kill
+      const write = boundedSend(res, kill)
+      const send = (o) => {
+        const ok = write(o)
+        if (!ok && !res.destroyed && !finished) {
+          child.stdout.pause()
+          child.stderr.pause()
+          if (!drainTimer)
+            drainTimer = setTimeout(() => {
+              kill()
+              res.destroy()
+            }, 15000)
         }
-      } else {
-        for (let j = Math.min(marker.length, s.length); j > 0; j--)
-          if (marker.startsWith(s.slice(-j).replace(/^\n/, ''))) {
-            hold = s.slice(-j)
-            s = s.slice(0, -j)
-            break
+      }
+      res.on('drain', () => {
+        clearTimeout(drainTimer)
+        drainTimer = undefined
+        child.stdout.resume()
+        child.stderr.resume()
+      })
+      const outDecoder = new StringDecoder('utf8'),
+        errDecoder = new StringDecoder('utf8')
+      let reportedCwd
+      const onOut = (text) => {
+        let s = hold + text
+        hold = ''
+        const k = s.indexOf(marker)
+        if (k >= 0) {
+          const nl = s.indexOf('\n', k)
+          if (nl < 0) {
+            hold = s.slice(k)
+            s = s.slice(0, k)
+          } else {
+            reportedCwd = s.slice(k + marker.length, nl).replace(/\r$/, '')
+            s = s.slice(0, k).replace(/\r?\n$/, '') + s.slice(nl + 1)
           }
+        } else {
+          for (let j = Math.min(marker.length, s.length); j > 0; j--)
+            if (marker.startsWith(s.slice(-j))) {
+              hold = s.slice(-j)
+              s = s.slice(0, -j)
+              break
+            }
+        }
+        if (hold.length > 32768) {
+          send({ t: 'e', d: 'Некорректный маркер рабочей папки' })
+          kill()
+          hold = ''
+        }
+        if (s) send({ t: 'o', d: s })
       }
-      if (s) send({ t: 'o', d: s })
-    }
-    const onErr = (d) => send({ t: 'e', d: d.toString('utf8') })
-    child.stdout.on('data', onOut)
-    child.stderr.on('data', onErr)
-    const kill = () => {
-      try {
-        if (isWin) child.kill()
-        else process.kill(-child.pid, 'SIGTERM')
-      } catch {
-        /* уже завершён */
+      child.stdout.on('data', (d) => onOut(outDecoder.write(d)))
+      child.stderr.on('data', (d) => {
+        const text = errDecoder.write(d)
+        if (text) send({ t: 'e', d: text })
+      })
+      const finish = async (code, sig) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        clearTimeout(drainTimer)
+        onOut(outDecoder.end())
+        const tail = errDecoder.end()
+        if (tail) send({ t: 'e', d: tail })
+        if (hold && !hold.includes(marker)) send({ t: 'o', d: hold })
+        if (reportedCwd) {
+          try {
+            const abs = inside(dir, reportedCwd)
+            await realInside(dir, abs)
+            newCwd = path.relative(dir, abs).split(path.sep).join('/')
+          } catch {
+            /* no cwd escape */
+          }
+        }
+        const tree = await owned.stop()
+        if (!tree.stopped)
+          send({
+            t: 'e',
+            d: 'Корневой процесс завершён, но остановка дерева не подтверждена; ownership сохранён\n',
+          })
+        send({ t: 'x', code: code ?? (sig ? 130 : 1), cwd: newCwd, treeStopped: tree.stopped })
+        if (!res.destroyed) res.end()
       }
+      timer = setTimeout(() => {
+        send({ t: 'e', d: `\n[таймаут ${timeout} с — остановка дерева процессов]\n` })
+        kill()
+      }, timeout * 1000)
+      req.on('aborted', kill)
+      res.on('close', () => {
+        if (!finished) kill()
+      })
+      child.on('error', () => {
+        send({ t: 'e', d: 'Не удалось запустить команду\n' })
+        void finish(1)
+      })
+      child.on('close', (code, sig) => {
+        void finish(code, sig)
+      })
+      return
+    } catch (e) {
+      if (runKey) pendingExec.delete(runKey)
+      if (temp) await fsp.rm(temp, { recursive: true, force: true }).catch(() => {})
+      throw e
     }
-    const timer = setTimeout(() => {
-      send({ t: 'e', d: `\n[таймаут ${timeout} с — процесс остановлен]\n` })
-      kill()
-    }, timeout * 1000)
-    req.on('close', () => {
-      if (child.exitCode === null) kill()
-    })
-    res.on('close', () => {
-      if (child.exitCode === null) kill()
-    })
-    child.on('error', (e) => {
-      send({ t: 'e', d: String(e) + '\n' })
-    })
-    child.on('close', (code, sig) => {
-      clearTimeout(timer)
-      if (hold && !hold.includes(marker)) send({ t: 'o', d: hold })
-      if (runId) running.delete(runId)
-      send({ t: 'x', code: code ?? (sig ? 130 : 1), cwd: newCwd })
-      res.end()
-    })
-    return
   }
   if (u.pathname === '/api/exec/kill' && req.method === 'POST') {
     const { runId } = await readBody(req)
-    const c = running.get(runId)
-    if (c) {
-      try {
-        process.platform === 'win32' ? c.kill() : process.kill(-c.pid, 'SIGINT')
-      } catch {
-        /* noop */
-      }
-    }
-    return json(res, 200, { ok: !!c })
+    const key = execKey(req, runId)
+    if (!key) return json(res, 400, { error: { message: 'Нужен runId для отмены' } })
+    pruneCancelled()
+    const c = running.get(key),
+      pending = pendingExec.get(key)
+    // Never evict an accepted, unexpired cancellation to make room. Unknown
+    // runs are tombstoned for 15min; pending preparations retain their own bit.
+    if (!cancelledRuns.has(key) && cancelledRuns.size >= CANCEL_LIMIT && !c && !pending)
+      return json(res, 429, { error: { message: 'Слишком много ожидающих отмен — повтори позже' } })
+    if (cancelledRuns.size < CANCEL_LIMIT || cancelledRuns.has(key))
+      cancelledRuns.set(key, Date.now() + CANCEL_TTL)
+    if (pending) pending.cancelled = true
+    if (c) c.tfKill ? c.tfKill('SIGINT') : killTree(c, 'SIGINT')
+    return json(res, 200, { ok: true, cancellationRequested: true, cancelled: !c && !pending, running: !!c })
   }
 
   /* git */
@@ -837,9 +1026,17 @@ async function handle(req, res, isLocal) {
     if (!(await ensureGit(dir))) return json(res, 200, { ok: false, reason: 'git не установлен' })
     const clip = (t) => (t.length > MAX_DIFF ? t.slice(0, MAX_DIFF) + '\n… diff обрезан' : t)
     const relOk = (p) => {
+      if (typeof p !== 'string' || !p || p.startsWith(':') || /[?*\[]/.test(p))
+        throw Object.assign(new Error('Нужен точный путь файла Git'), { status: 400 })
       inside(dir, p)
       return p
     }
+    const selected = [
+      ...(Array.isArray(body.paths) ? body.paths : []),
+      ...Object.keys(body.partial || {}),
+      ...(body.path ? [body.path] : []),
+    ]
+    for (const p of selected) await realInside(dir, inside(dir, relOk(p)))
     if (op === 'commit') {
       const { message, paths, manual, amend, partial } = body
       if (amend) {
@@ -970,7 +1167,10 @@ async function handle(req, res, isLocal) {
         const hasHead = (await git(dir, ['rev-parse', '--verify', '-q', 'HEAD'])).code === 0
         if (hasHead) await git(dir, ['checkout', 'HEAD', '--', p])
         else await git(dir, ['rm', '-q', '-f', '--cached', '--', p])
-      } else await fsp.rm(inside(dir, p), { force: true })
+      } else {
+        await realInside(dir, inside(dir, p))
+        await fsp.rm(inside(dir, p), { force: true })
+      }
       return json(res, 200, { ok: true })
     }
     const okName = (n) =>
@@ -1161,50 +1361,13 @@ async function handle(req, res, isLocal) {
     } catch (e) {
       if (!res.headersSent)
         json(res, 502, {
-          error: { message: 'Бэкенд не смог связаться с провайдером: ' + (e.cause?.code || e.message) },
+          error: publicFailure(e, 'Бэкенд не смог связаться с провайдером', 502, 'proxy').error,
         })
       else res.end()
     }
     return
   }
 
-  /* превью: /preview/<имя>/путь */
-  const pm = u.pathname.match(/^\/preview\/[0-9a-f]{32}\/([^/]+)\/?(.*)$/)
-  if (pm) {
-    if (!isLocal || !previewValid(pv[1])) {
-      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
-      return res.end('Сессия превью недействительна — открой превью из приложения')
-    }
-    let pname, rel
-    try {
-      pname = safeName(decodeURIComponent(pm[1]))
-      rel = decodeURIComponent(pm[2] || '')
-    } catch {
-      res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
-      return res.end('bad path')
-    }
-    const dir = REG.get(pname) || path.join(ROOT, pname)
-    if (!rel) rel = fs.existsSync(path.join(dir, 'site', 'index.html')) ? 'site/index.html' : 'index.html'
-    let abs
-    try {
-      abs = inside(dir, rel)
-      await realInside(dir, abs) /* ссылка внутри проекта не должна отдавать файлы вне его */
-    } catch {
-      res.writeHead(400)
-      return res.end('bad path')
-    }
-    if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) abs = path.join(abs, 'index.html')
-    if (!fs.existsSync(abs)) {
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-      return res.end('Файл не найден: ' + rel)
-    }
-    res.writeHead(200, {
-      'content-type':
-        (MIME[abs.split('.').pop().toLowerCase()] || 'application/octet-stream') + '; charset=utf-8',
-      'cache-control': 'no-store',
-    })
-    return pipeFile(abs, res)
-  }
   return false
 }
 
@@ -1237,20 +1400,34 @@ export function tetraMiddleware() {
     const addr = String(req.socket?.remoteAddress || '')
     const loopback = addr === '::1' || addr === '127.0.0.1' || addr.startsWith('::ffff:127.') || addr === ''
     const isLocal = localHost && loopback
-    handle(req, res, isLocal)
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    req.once('aborted', abort)
+    res.once('close', () => {
+      if (!res.writableEnded) abort()
+    })
+    requestScope
+      .run(controller.signal, () => handle(req, res, isLocal))
       .then((r) => {
         if (r === false) next()
       })
       .catch((e) => {
-        if (!res.headersSent) json(res, e.status || 500, { error: { message: e.message } })
-        else res.end()
+        if (!res.headersSent) {
+          const failure = publicFailure(
+            e,
+            'Не удалось выполнить операцию сервера',
+            Number.isInteger(e?.status) && e.status >= 400 && e.status <= 599 ? e.status : 500,
+            'server',
+          )
+          json(res, failure.status, { error: failure.error })
+        } else res.end()
       })
   }
 }
 
 /** `npm run build` + `npm run server`: сервер сам отдаёт собранное приложение (для командного хоста) */
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
-function serveStatic(req, res) {
+async function serveStatic(req, res) {
   if (!fs.existsSync(path.join(DIST, 'index.html')) || (req.method !== 'GET' && req.method !== 'HEAD'))
     return json(res, 404, { error: { message: 'not found' } })
   let url
@@ -1266,6 +1443,12 @@ function serveStatic(req, res) {
     return res.end()
   }
   if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) abs = path.join(DIST, 'index.html')
+  try {
+    await realInside(DIST, abs)
+  } catch {
+    res.writeHead(400)
+    return res.end()
+  }
   const ext = abs.split('.').pop().toLowerCase()
   res.writeHead(200, {
     'content-type':
@@ -1280,13 +1463,22 @@ function serveStatic(req, res) {
 
 export function start(port = +(process.env.PORT || 3001), host = process.env.HOST || '127.0.0.1') {
   const mw = tetraMiddleware()
-  const srv = http.createServer((req, res) => mw(req, res, () => serveStatic(req, res)))
+  const srv = http.createServer((req, res) =>
+    mw(req, res, () => {
+      void serveStatic(req, res).catch(() => {
+        if (!res.headersSent) json(res, 500, { error: { message: 'Не удалось прочитать приложение' } })
+        else res.destroy()
+      })
+    }),
+  )
+  servers.add(srv)
+  srv.once('close', () => servers.delete(srv))
   /* порт занят или нельзя слушать: раньше процесс молча висел без сервера, а приложение ждало ответа */
   srv.on('error', (e) => {
     console.error(
       e.code === 'EADDRINUSE'
         ? `[server] порт ${port} уже занят другой программой — сервер не запущен`
-        : '[server] не удалось начать слушать: ' + e.message,
+        : '[server] не удалось начать слушать',
     )
     if (isMain()) process.exit(1)
   })
@@ -1315,7 +1507,16 @@ const isMain = () => {
 }
 if (isMain()) {
   /* страховка: случайная ошибка в фоновом обработчике не должна ронять сервер вместе со всеми терминалами и синхронизацией */
-  process.on('uncaughtException', (e) => console.error('[uncaughtException]', e))
-  process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e))
+  process.on('uncaughtException', (e) => {
+    publicFailure(e, 'Ошибка фоновой операции', 500, 'uncaughtException')
+  })
+  process.on('unhandledRejection', (e) => {
+    publicFailure(e, 'Ошибка фоновой операции', 500, 'unhandledRejection')
+  })
+  const stop = () => {
+    void shutdownServer().finally(() => process.exit(0))
+  }
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, stop)
+  if (process.env.TF_SERVE === '1') parentControl(process.stdin, stop)
   start()
 }

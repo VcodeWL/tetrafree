@@ -6,7 +6,6 @@ test('dangerOf: безопасные команды проходят', () => {
   for (const c of [
     'npm run build',
     'npm test',
-    'npx tsc --noEmit',
     'node --check a.js',
     'git status',
     'git diff && git log',
@@ -41,4 +40,15 @@ test('dangerOf: опасные команды ловятся в любой ча�
     'cd a && del /q b.txt',
   ])
     assert.notEqual(dangerOf(c), null, c)
+})
+
+test('dangerOf: benign wrappers and unknown forms request approval, not a sandbox claim', () => {
+  for (const command of [
+    'npx tsc --noEmit',
+    'cmd /c echo hello',
+    'powershell -Command Write-Output hello',
+    'custom-tool status',
+    'git -C project status',
+  ])
+    assert.notEqual(dangerOf(command), null)
 })

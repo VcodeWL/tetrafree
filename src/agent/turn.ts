@@ -5,10 +5,10 @@ import { diffStat } from '../lib/diff'
 import { live } from './live'
 import { useStore, getChat, toast } from '../store'
 import { fileOf, base, putFile, countLines } from './projectfs'
+import { image, sameImage, type GuardedFile, type FileImage } from './fileguard'
 
 const S = () => useStore.getState()
 
-const KEEP = 40_000 // сколько хранить «до/после» в самом сообщении
 const MAX_PROPOSE = 300_000
 
 /* ------------------------------------------------------------------ Turn */
@@ -23,6 +23,9 @@ export class Turn {
   private timer: ReturnType<typeof setInterval> | null = null
   private dirty = false
   firstAt = 0
+  private baselines = new Map<ID, FileImage>()
+  private editInputs = new Map<ID, string>()
+  private proposalDependencies = new Set<ID>()
   constructor(
     public pid: ID,
     public chatId: ID,
@@ -31,11 +34,15 @@ export class Turn {
     public tier: Tier,
     public laneId: ID,
     public ctl: AbortController,
+    public current: () => boolean = () => true,
   ) {
     this.timer = setInterval(() => this.flush(), 60)
   }
   get aborted() {
-    return this.ctl.signal.aborted
+    return this.ctl.signal.aborted || !this.current()
+  }
+  guard() {
+    if (this.aborted) throw new DOMException('Ход отменён', 'AbortError')
   }
   patch(p: Partial<Message>) {
     S().patchMsg(this.chatId, this.msgId, p, this.pid)
@@ -99,6 +106,7 @@ export class Turn {
   }
 
   follow(path: string) {
+    if (this.aborted) return
     const st = S()
     if (st.settings.followAgent === false || st.projectId !== this.pid || st.mode !== 'dev') return
     if (st.activeFile !== path || !st.rightOpen || st.rightTab !== 'code') st.openFile(path)
@@ -106,6 +114,8 @@ export class Turn {
 
   /* ---- запись файла */
   begin(id: ID, op: FileOp, path: string, to?: string) {
+    if (this.aborted) return
+    this.baselines.set(id, image(this.pid, [path, ...(to ? [to] : [])]))
     this.mark()
     if (!this.before.has(path)) this.before.set(path, fileOf(this.pid, path) ?? null)
     const exists = fileOf(this.pid, path) !== undefined
@@ -130,7 +140,31 @@ export class Turn {
       act: (real === 'create' ? 'создаёт ' : real === 'edit' ? 'правит ' : 'удаляет ') + base(path),
     })
   }
+  /** Freeze computation input together with its CAS evidence, once per operation.
+   * Applied operations use live text. Only an unaccepted proposal may supply a
+   * virtual input, and its original before-image/approval requirement must follow. */
+  beginEdit(id: ID, path: string): string | undefined {
+    if (this.aborted) return
+    if (this.editInputs.has(id)) return this.editInputs.get(id)
+    const latest = [...this.parts]
+      .reverse()
+      .find((p): p is GuardedFile => p.k === 'file' && p.path === path && p.id !== id)
+    const proposal =
+      latest?.state === 'proposed' && (latest.op === 'create' || latest.op === 'edit') && latest.after != null
+        ? latest
+        : undefined
+    const expected = proposal?.agentGuard?.before || image(this.pid, [path])
+    const input = proposal ? proposal.after : expected[path]
+    if (input == null) return
+    this.begin(id, 'edit', path)
+    this.baselines.set(id, { ...expected })
+    this.editInputs.set(id, input)
+    if (proposal) this.proposalDependencies.add(id)
+    return input
+  }
+
   progress(id: ID, path: string, text: string) {
+    if (this.aborted) return
     live.set(this.pid, path, text)
     const f = this.part<'file'>(id)
     if (!f) return
@@ -140,12 +174,17 @@ export class Turn {
   }
   /** Модель дописала файл. Применяем по политике автономности. */
   endWrite(id: ID, path: string, content: string) {
+    if (this.aborted) return
     live.end(this.pid, path)
-    const f = this.part<'file'>(id)
+    const f = this.part<'file'>(id) as GuardedFile | undefined
     if (!f) return
-    const before = this.before.get(path) ?? null
+    const baseline = this.baselines.get(id) || image(this.pid, [path])
+    const before = baseline[path]
     const st = diffStat(before, content)
-    const propose = this.tier === 'Эскалация'
+    const propose =
+      this.tier === 'Эскалация' ||
+      this.proposalDependencies.has(id) ||
+      !sameImage(baseline, image(this.pid, [path]))
     this.after.set(path, content)
     if (content.length > MAX_PROPOSE) {
       f.state = 'error'
@@ -157,8 +196,9 @@ export class Turn {
       add: st.add,
       del: st.del,
       lines: countLines(content),
-      before: before !== null && before.length <= KEEP ? before : null,
-      after: propose || content.length <= KEEP ? content : null,
+      before,
+      after: content,
+      agentGuard: { before: baseline, after: { [path]: content } },
       state: propose ? 'proposed' : 'done',
     })
     if (!propose) {
@@ -168,7 +208,8 @@ export class Turn {
     this.touch()
   }
   endDelete(id: ID, path: string) {
-    const before = this.before.get(path) ?? fileOf(this.pid, path) ?? null
+    if (this.aborted) return
+    const before = fileOf(this.pid, path) ?? null
     this.before.set(path, before)
     const propose = this.tier === 'Эскалация' || this.tier === 'Спросить'
     this.closeSteps()
@@ -183,15 +224,17 @@ export class Turn {
       add: 0,
       del: countLines(before || ''),
       lines: countLines(before || ''),
-      before: before !== null && before.length <= KEEP ? before : null,
+      before,
       after: null,
-    })
+      agentGuard: { before: { [path]: before }, after: { [path]: null } },
+    } as GuardedFile)
     if (!propose) {
       putFile(this.pid, path, null)
       this.done.add(id)
     }
   }
   endRename(id: ID, from: string, to: string) {
+    if (this.aborted) return
     const src = fileOf(this.pid, from)
     this.mark()
     if (src === undefined) return this.fail(id, 'rename', from, 'Файла нет', to)
@@ -212,7 +255,10 @@ export class Turn {
       add: 0,
       del: 0,
       lines: countLines(src),
-    })
+      before: src,
+      after: src,
+      agentGuard: { before: { [from]: src, [to]: null }, after: { [from]: null, [to]: src } },
+    } as GuardedFile)
     if (!propose) {
       putFile(this.pid, to, src)
       putFile(this.pid, from, null)
@@ -229,7 +275,7 @@ export class Turn {
   finish(summary: string): TurnChanges | undefined {
     this.stop()
     this.closeSteps()
-    live.endChat(this.chatId)
+    if (this.current()) live.endChat(this.chatId)
     this.parts = this.parts.map((p) =>
       p.k === 'file' && p.state === 'writing'
         ? { ...p, state: 'error', error: 'Остановлено' }
@@ -245,7 +291,16 @@ export class Turn {
       return undefined
     }
     let version: number | undefined
-    if (applied.length) version = commitFiles(this.pid, this.chatId, this.agent, applied, summary)
+    if (applied.length)
+      version = commitFiles(
+        this.pid,
+        this.chatId,
+        this.agent,
+        applied,
+        summary,
+        '',
+        () => !this.ctl.signal.aborted,
+      )
     const sum = tally(files)
     const ch: TurnChanges = {
       state: proposed.length
@@ -277,6 +332,7 @@ export function commitFiles(
   files: Extract<Part, { k: 'file' }>[],
   summary: string,
   prefix = '',
+  allowEffects: () => boolean = () => true,
 ) {
   const st = S()
   const title = (prefix + (summary.trim().split(/\n|(?<=[.!?])\s/)[0] || '')).replace(/[`*_#>]/g, '').trim()
@@ -298,7 +354,9 @@ export function commitFiles(
           : `Изменён ${f.path} (+${f.add} −${f.del})`,
   )
   const chatTitle = getChat(pid, chatId)?.title
-  queueMicrotask(() => fireTrigger(pid, 'version'))
+  queueMicrotask(() => {
+    if (allowEffects()) fireTrigger(pid, 'version')
+  })
   const n = st.commit(
     {
       title: t,
@@ -314,14 +372,21 @@ export function commitFiles(
   )
   st.remember({ kind: 'decision', text: `${t} — v${n}`, by: agent, chatId, chat: chatTitle }, pid)
   const site = files.some((f) => f.path === 'site/index.html' && f.state === 'done')
-  if (S().projectId === pid && site && S().mode === 'dev' && S().settings.followAgent !== false)
+  if (
+    allowEffects() &&
+    S().projectId === pid &&
+    site &&
+    S().mode === 'dev' &&
+    S().settings.followAgent !== false
+  )
     S().setRight({ rightOpen: true, rightTab: 'browser' })
-  toast({
-    title: `Версия v${n}`,
-    desc: t,
-    icon: 'check',
-    tone: 'ok',
-    action: { label: 'История', run: () => S().openModal({ type: 'versions', focus: n }) },
-  })
+  if (allowEffects())
+    toast({
+      title: `Версия v${n}`,
+      desc: t,
+      icon: 'check',
+      tone: 'ok',
+      action: { label: 'История', run: () => S().openModal({ type: 'versions', focus: n }) },
+    })
   return n
 }
