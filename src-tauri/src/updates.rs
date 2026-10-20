@@ -43,6 +43,12 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         )
         .await
         .map_err(|e| e.to_string())?;
+    // The download may take minutes: checkpoint must happen AFTER download,
+    // immediately before backend stop/installer dispatch, not just in JS before it.
+    if let Err(error) = crate::desktop_checkpoint::save(&app, "update").await {
+        crate::desktop_checkpoint::warning(&app);
+        return Err(error);
+    }
     let mut backend = state
         .0
         .lock()
@@ -59,5 +65,6 @@ pub async fn update_install(app: AppHandle) -> Result<(), String> {
         return Err(error);
     }
     drop(backend);
+    crate::desktop_checkpoint::allow_exit(&app);
     app.restart()
 }

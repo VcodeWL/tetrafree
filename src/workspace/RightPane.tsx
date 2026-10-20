@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { composeToChat } from '../store/navigation'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { rowKeys } from '../lib/a11y'
 import { opsFor, type Op } from '../lib/opstack'
 import { useStore, useProject } from '../store'
@@ -18,7 +19,7 @@ import { useLiveInProject } from '../agent/live'
 import { CodeSurface, MAX_EDIT } from './CodeEditor'
 import { hasMarkers, resolveMarkers } from '../lib/merge3'
 import { reportCaret, usePeers } from '../lib/team'
-import { GitPane } from './GitPane'
+const GitPane = lazy(() => import('./GitPane').then((m) => ({ default: m.GitPane })))
 import { useGit, refreshGit } from '../lib/git'
 import { useBackend, joinPath, bReveal, type GitFile } from '../lib/backend'
 
@@ -85,7 +86,21 @@ export function RightPane() {
         </button>
       </div>
       <div className="rpane">
-        {tab === 'code' ? <CodePane /> : tab === 'git' ? <GitPane /> : <BrowserPane />}
+        {tab === 'code' ? (
+          <CodePane />
+        ) : tab === 'git' ? (
+          <Suspense
+            fallback={
+              <div className="route-loading" role="status">
+                Загружаю Git…
+              </div>
+            }
+          >
+            <GitPane />
+          </Suspense>
+        ) : (
+          <BrowserPane />
+        )}
       </div>
     </section>
   )
@@ -1377,15 +1392,16 @@ function CodePane() {
 export function askAgent(text: string) {
   const st = useStore.getState()
   const p = st.projects.find((x) => x.id === st.projectId)
-  let chatId = st.center.kind === 'chat' ? st.center.id : p?.chats[0]?.id
+  if (!p || st.screen !== 'workspace') return
+  const activeChat = st.center.kind === 'chat' ? st.center.id : undefined
+  let chatId = p.chats.find((c) => c.id === activeChat)?.id || p.chats[0]?.id
   if (!chatId)
     chatId = st.createChat({
       title: 'Правки кода',
       creator: { kind: 'human', id: 'me' },
       agents: [{ name: 'builder', tier: 'Спросить', sub: [] }],
     })
-  st.setCenter({ kind: 'chat', id: chatId })
-  setTimeout(() => window.dispatchEvent(new CustomEvent('tf:compose', { detail: { chatId, text } })), 30)
+  composeToChat(p.id, chatId, text)
 }
 
 const DEVICES = [

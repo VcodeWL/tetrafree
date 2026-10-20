@@ -16,13 +16,8 @@ import { Menu, MenuHead, MenuItem, MenuSep, useMenu } from '../components/ui/Men
 import { AGENTS } from '../data/seed'
 import type { Actor } from '../types'
 
-export const COLS: { k: TaskStatus; t: string; c: string }[] = [
-  { k: 'backlog', t: 'Бэклог', c: '#6a6a74' },
-  { k: 'doing', t: 'В работе', c: '#8fa6ff' },
-  { k: 'review', t: 'Ревью', c: '#b78fff' },
-  { k: 'done', t: 'Готово', c: '#8fe6c0' },
-]
-export const PRIO: Record<Task['priority'], string> = { low: 'низкий', med: 'средний', high: 'высокий' }
+import { COLS, PRIO } from '../lib/taskConstants'
+export { COLS, PRIO } from '../lib/taskConstants'
 const fmtDay = (iso?: string) =>
   iso ? new Date(iso + 'T12:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : ''
 const today = () => localDay()
