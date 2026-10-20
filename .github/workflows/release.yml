@@ -1,5 +1,6 @@
 name: Release
-# Релиз: создай тег vX.Y.Z (версия берётся из тега, править файлы не нужно) — соберёт установщик Windows, подпишет и выложит в GitHub Releases
+# Релиз: тег vX.Y.Z запускает проверки того же SHA, затем сборку подписанного draft.
+# Публикация человеком только после installed-bundle и signed-updater acceptance.
 # вместе с latest.json, по которому приложение находит обновления.
 # Нужно один раз: npx tauri signer generate -w tetrafree.key; затем
 #   Secrets:   TAURI_SIGNING_PRIVATE_KEY (содержимое tetrafree.key), TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -10,17 +11,34 @@ on:
 permissions:
   contents: write
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
   windows:
+    needs: verify
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { ref: '${{ github.sha }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22.23.3, cache: npm }
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with: { toolchain: 1.90.0 }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with: { workspaces: src-tauri }
       - run: npm ci
-      - name: Версия из тега в файлы сборки, заметки из CHANGELOG.md
+      - name: Tag must match the verified source versions
+        shell: node {0}
+        run: |
+          const fs = require('fs')
+          const expected = process.env.RELEASE_TAG.replace(/^v/, '')
+          const versions = [JSON.parse(fs.readFileSync('package.json')).version,
+            JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json')).version,
+            /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync('src-tauri/Cargo.toml', 'utf8'))[1]]
+          if (versions.some(v => v !== expected)) throw new Error('Tag must match all checked source versions')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+      - name: Заметки из CHANGELOG.md (версия уже проверена)
         id: notes
         run: node scripts/release-notes.mjs "${{ github.ref_name }}"
       - name: Node.js как sidecar (сервер работает без установленного Node)
@@ -39,7 +57,7 @@ jobs:
         env:
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
           REPO: ${{ github.repository }}
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -48,5 +66,5 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'TetraFree ${{ github.ref_name }}'
           releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: false
-          args: --features extras,updater --config src-tauri/tauri.updater.conf.json
+          releaseDraft: true
+          args: --ci --features extras,updater --config src-tauri/tauri.updater.conf.json -- --locked

@@ -38,8 +38,10 @@
 
 ### Разработка
 
+Node.js 22.23.3 (или совместимый ≥22.12); для Windows-сборки также Rust 1.90.0 и MSVC/WebView2.
+
 ```bash
-npm install
+npm ci
 npm run dev            # http://localhost:3000, сервер встроен
 npm run check          # типы, линтер, тесты
 npm run desktop:dev    # окно Tauri (нужен Rust)
@@ -49,6 +51,8 @@ npm run desktop:build  # установщик
 React 18, TypeScript, Vite, zustand, Tauri 2; сервер — Node без зависимостей.
 
 ### Документация
+
+[Аудит и границы ремонта 3.1.5](docs/audit/3.1.5/README.md)
 
 [Подробности и безопасность](docs/DETAILS.md) · [Архитектура](ARCHITECTURE.md) · [Инструкции для агентов](AGENTS.md) · [Дорожная карта](ROADMAP.md) · [Список изменений](CHANGELOG.md)
 

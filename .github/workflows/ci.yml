@@ -3,34 +3,46 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+permissions:
+  contents: read
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { ref: '${{ github.sha }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22.23.3, cache: npm }
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+      - name: Additional Windows lifecycle regressions
+        run: node --test server/pty-windows.test.mjs scripts/windows.test.mjs
       - run: npm run build
   windows:
-    # то, что на Linux не проверить: ConPTY, DPAPI, запуск сервера по \\?\-пути, компиляция Rust-оболочки
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { ref: '${{ github.sha }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 22.23.3, cache: npm }
       - run: npm ci
+      - run: node --test server/pty-windows.test.mjs scripts/windows.test.mjs
       - run: node scripts/smoke-win.mjs
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
+        timeout-minutes: 5
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with: { toolchain: 1.90.0 }
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with: { workspaces: src-tauri }
       - run: npm run build
       - run: node scripts/prepare-sidecar.mjs
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --features extras,updater
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features extras,updater
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features extras,updater --lib

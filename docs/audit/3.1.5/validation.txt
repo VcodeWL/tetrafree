@@ -1,0 +1,57 @@
+TetraFree 3.1.5 — fresh post-rollback integration validation
+Current run: 2026-10-20; initial audit began 2026-10-15.
+Runtime: official Node.js v22.23.3 Linux x64, archive SHA256 verified.
+
+npm run check: PASS (CHECK_EXIT=0)
+  TypeScript: PASS; ESLint: PASS; Prettier: PASS.
+  node --test: 147/147 pass, 0 fail/cancelled/skipped.
+  tsx --test: 507/507 pass, 0 fail/cancelled/skipped.
+  Total normal suite: 654/654 (26 server/script + 72 client test files).
+
+npm run build: PASS (BUILD_EXIT=0); web production, NOT Windows installer.
+  Vite warning: chunk >500 kB. Not treated as an error or hidden.
+npm audit --json: zero known advisories at current check.
+
+Fresh independent agent/sync acceptance after restoration: 25/25 desired,
+172/172 scoped regressions. After global-format: another fresh 25/25 desired
+on post-format bytes with stable source/fixtures. These overlap the main suite;
+no addition into a fabricated count of unique tests.
+Fresh server reviewer: 2/2 benign contract tests; remaining matrix distinguishes
+code-level, author evidence, and current tested status (acceptance-server.md).
+Storage/UI: see their detailed acceptance reports; do not confuse old snapshots
+with post-rollback runs or mocks with native acceptance.
+
+Real Chromium localhost browser regression: 8/8 PASS, BROWSER_EXIT=0.
+  Cross-project file isolation, pending-delete recovery, Russian shortcuts,
+  Design pending input, module Worker, isolated preview/assets/benign JS,
+  IndexedDB reload. Browser account/projects are isolated synthetic test data.
+Actual Vite HMR lifecycle: PASS, HMR_EXIT=0; no collected React root/page errors.
+  See browser-results.json and hmr-results.json.
+
+Rust 1.90.0: CURRENT portable tests recompiled and executed: paths 1/1,
+lifecycle 2/2, total 3/3 PASS. Windows Job cross-target typecheck and blocked
+full Tauri check are historical owner evidence, NOT native acceptance.
+Full Windows build/runtime, ConPTY, installed sidecar, updater/signatures,
+OAuth/SMTP/MCP real integrations not accepted here. Linux smoke SKIP != PASS.
+
+Restoration:
+  Sandbox rolled back to an intermediate snapshot. Late generation/runtime/
+  chat/sync repairs restored from exact history patches by original owners.
+  Root persistence owner verified all 3 final hashes equal prior accepted bytes.
+  Sync owner does not claim unavailable prior whole-file SHA equality.
+  All current counts above are reruns, not transferred historical green logs.
+
+Intermediate gate corrections:
+  First formatter pass required a second pass for two fluent-call layouts.
+  Static requestScope.run assertion made whitespace-tolerant after formatting;
+  behavioral contract retained. Final full gate passed after these corrections.
+
+Remaining limits: README and layer reports. In particular durable vault remote-
+delete outbox after crash/reload, native/tray/OS checkpoint-ack, per-operation
+Windows tree proof, external filesystem CAS races, cross-window/power-loss
+atomicity. Real providers and signed updates require separate acceptance.
+
+GitHub Actions for final pushed SHA not executed from this sandbox.
+Release creates DRAFT; do not publish until native installed-bundle acceptance.
+
+Current random UI run: seed 31577, requested 120000 ms, 259 actions, 0 collected errors; no white-screen marker; MONKEY_EXIT=0. This is one bounded random run, not exhaustive UI coverage.

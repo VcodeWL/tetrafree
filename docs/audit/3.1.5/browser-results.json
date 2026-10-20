@@ -1,0 +1,68 @@
+{
+  "results": [
+    {
+      "name": "cross-project readonly keeps both files",
+      "ok": true,
+      "data": {
+        "a": "CONTENT_A",
+        "b": "CONTENT_B"
+      }
+    },
+    {
+      "name": "pending deleted file is recovered, not resurrected",
+      "ok": true,
+      "data": {
+        "exists": false,
+        "recovered": true
+      }
+    },
+    {
+      "name": "Russian Ctrl comment and Esc finish",
+      "ok": true,
+      "data": {
+        "prevented": true,
+        "value": "<!-- CONTENT_B -->"
+      }
+    },
+    {
+      "name": "Design pending page switch and unmount",
+      "ok": true,
+      "data": {
+        "a": "A_TYPED",
+        "b": "B_TYPED"
+      }
+    },
+    {
+      "name": "module Worker search and substitution",
+      "ok": true,
+      "data": {
+        "hits": 1,
+        "text": "привет привет"
+      }
+    },
+    {
+      "name": "isolated preview API and relative asset",
+      "ok": true,
+      "data": {
+        "origin": "http://127.0.0.1:34021",
+        "path": "/p/CAPABILITY/site/repair.html"
+      }
+    },
+    {
+      "name": "isolated preview executes benign JS, no app APIs",
+      "ok": true,
+      "data": {
+        "text": "interactive",
+        "apiStatus": 401
+      }
+    },
+    {
+      "name": "IndexedDB reload retains current project",
+      "ok": true,
+      "data": {
+        "retained": true
+      }
+    }
+  ],
+  "errs": []
+}

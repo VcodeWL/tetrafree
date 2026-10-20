@@ -1,35 +1,72 @@
-/* Кладёт Node.js рядом с приложением как sidecar (src-tauri/binaries/node-<triple>[.exe]),
-   чтобы встроенный сервер TetraFree работал на машине, где Node не установлен.
-   Берётся тот node, которым запущен скрипт (в CI это Node из actions/setup-node). */
+/* Copy the Node runtime that was actually verified, not an equal-sized stale binary. */
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { createHash, randomBytes } from 'node:crypto'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  chmodSync,
+  statSync,
+} from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+export function nodeTriple(platform = process.platform, arch = process.arch) {
+  const cpu = { x64: 'x86_64', arm64: 'aarch64', ia32: 'i686' }[arch]
+  if (!cpu) throw new Error(`Unsupported Node architecture: ${arch}`)
+  const os = { win32: 'pc-windows-msvc', darwin: 'apple-darwin', linux: 'unknown-linux-gnu' }[platform]
+  if (!os) throw new Error(`Unsupported Node platform: ${platform}`)
+  return `${cpu}-${os}`
+}
+export function sidecarTriple(
+  host,
+  target = process.env.CARGO_BUILD_TARGET || process.env.TAURI_ENV_TARGET_TRIPLE,
+) {
+  const actual = nodeTriple()
+  const wanted = target || host || actual
+  if (wanted !== actual)
+    throw new Error(`Node runtime ${actual} cannot be packaged as ${wanted}; run with matching Node/target`)
+  return wanted
+}
+const digest = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
 
-function hostTriple() {
+export function copySidecar(source, dest) {
+  const expected = digest(source)
+  if (existsSync(dest) && digest(dest) === expected) return false
+  mkdirSync(dirname(dest), { recursive: true })
+  const temp = `${dest}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   try {
-    const out = execFileSync('rustc', ['-vV'], { encoding: 'utf8' })
-    const m = /^host:\s*(\S+)/m.exec(out)
-    if (m) return m[1]
-  } catch {
-    /* rustc нет в PATH — определим по платформе */
+    copyFileSync(source, temp)
+    chmodSync(temp, statSync(source).mode)
+    if (digest(temp) !== expected) throw new Error('sidecar digest mismatch after copy')
+    renameSync(temp, dest)
+    if (digest(dest) !== expected) throw new Error('sidecar digest mismatch after rename')
+    return true
+  } finally {
+    rmSync(temp, { force: true })
   }
-  const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64'
-  if (process.platform === 'win32') return `${arch}-pc-windows-msvc`
-  if (process.platform === 'darwin') return `${arch}-apple-darwin`
-  return `${arch}-unknown-linux-gnu`
 }
 
-const triple = hostTriple()
-const ext = process.platform === 'win32' ? '.exe' : ''
-const dir = join(root, 'src-tauri', 'binaries')
-const dest = join(dir, `node-${triple}${ext}`)
-mkdirSync(dir, { recursive: true })
-if (existsSync(dest) && statSync(dest).size === statSync(process.execPath).size) {
-  console.log(`sidecar: уже на месте — ${dest}`)
-} else {
-  copyFileSync(process.execPath, dest)
-  console.log(`sidecar: node ${process.version} → ${dest}`)
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  let host
+  try {
+    host = /^host:\s*(\S+)/m.exec(execFileSync('rustc', ['-vV'], { encoding: 'utf8', timeout: 10000 }))?.[1]
+  } catch {
+    /* actual Node triple below */
+  }
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const triple = sidecarTriple(host)
+  const dest = join(
+    root,
+    'src-tauri',
+    'binaries',
+    `node-${triple}${process.platform === 'win32' ? '.exe' : ''}`,
+  )
+  const copied = copySidecar(process.execPath, dest)
+  console.log(
+    `sidecar: ${copied ? 'copied' : 'digest verified'} node ${process.version} sha256=${digest(dest)} → ${dest}`,
+  )
 }
