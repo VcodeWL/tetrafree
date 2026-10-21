@@ -46,11 +46,19 @@ import { mcpAction } from './mcptool'
 const S = () => useStore.getState()
 const controllers = new Map<ID, AbortController>()
 const queueTimers = new Map<ID, ReturnType<typeof setTimeout>>()
+interface TurnOrigin {
+  msgId: ID
+  startedAt: number
+  chatCreatedAt: number
+}
+const turnOrigins = new WeakMap<AbortController, TurnOrigin>()
+const queuedOrigins = new Map<ID, TurnOrigin>()
 function cancelQueuedTimer(chatId: ID, pid: ID) {
   const key = runtimeKey(pid, chatId)
   const timer = queueTimers.get(key)
   if (timer !== undefined) clearTimeout(timer)
   queueTimers.delete(key)
+  queuedOrigins.delete(key)
 }
 export const isRunning = (chatId: ID, pid = S().projectId) =>
   !!pid && (controllers.has(runtimeKey(pid, chatId)) || queueTimers.has(runtimeKey(pid, chatId)))
@@ -61,6 +69,61 @@ export function stopTurn(chatId: ID, pid = S().projectId) {
   clearQueue(chatId, pid)
   autoFix.delete(runtimeKey(pid, chatId))
   controllers.get(runtimeKey(pid, chatId))?.abort()
+}
+
+export interface TurnControl {
+  phase: 'running' | 'queued' | 'stopping'
+  /** Requests cancellation of this captured runtime only, not proof of OS termination. */
+  cancel: () => boolean
+}
+
+/** Read-only snapshot for the operations centre. No selected-project fallback.
+ * Unlike stopTurn, cancellation here deliberately preserves all queued prompts.
+ */
+export function captureTurnControl(chatId: ID, pid: ID): TurnControl | null {
+  if (!pid || !getChat(pid, chatId)) return null
+  const key = runtimeKey(pid, chatId)
+  const ctl = controllers.get(key)
+  const timer = queueTimers.get(key)
+  if (!ctl && timer === undefined) return null
+  const origin = ctl ? turnOrigins.get(ctl) : queuedOrigins.get(key)
+  const sameOrigin = () => {
+    const chat = getChat(pid, chatId)
+    return (
+      !!origin &&
+      !!chat &&
+      chat.createdAt === origin.chatCreatedAt &&
+      chat.messages.some(
+        (m) => m.kind === 'agent' && m.id === origin.msgId && m.startedAt === origin.startedAt,
+      )
+    )
+  }
+  if (!sameOrigin()) return null
+  let requested = false
+  return {
+    phase: ctl?.signal.aborted ? 'stopping' : ctl ? 'running' : 'queued',
+    cancel: () => {
+      if (
+        requested ||
+        !sameOrigin() ||
+        controllers.get(key) !== ctl ||
+        queueTimers.get(key) !== timer ||
+        (timer === undefined && ctl?.signal.aborted)
+      )
+        return false
+      requested = true
+      // Remove only the captured timer, before observers can schedule replacement work.
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        queueTimers.delete(key)
+        queuedOrigins.delete(key)
+      }
+      // loopStop can notify store observers; never mutate runtime maps after that.
+      loopStop(chatId, 'остановлено вручную', pid)
+      ctl?.abort()
+      return true
+    },
+  }
 }
 
 export function resolveModel() {
@@ -448,6 +511,7 @@ async function runTurn(
   const msgId = uid('m'),
     laneId = uid('l')
   const t0 = Date.now()
+  turnOrigins.set(ctl, { msgId, startedAt: t0, chatCreatedAt: chat.createdAt })
   st.setChat(chatId, { running: true }, pid)
   st.pushMsg(
     chatId,
@@ -594,6 +658,7 @@ async function runTurn(
       const timer = setTimeout(() => {
         if (queueTimers.get(key) !== timer) return
         queueTimers.delete(key)
+        queuedOrigins.delete(key)
         if (
           generation !== queueGeneration(chatId, pid) ||
           ctl.signal.aborted ||
@@ -613,6 +678,7 @@ async function runTurn(
         }
       }, 350)
       queueTimers.set(key, timer)
+      queuedOrigins.set(key, turnOrigins.get(ctl)!)
     }
     /* проход /loop закончился: цикл решает, идти ли дальше (во время паузы между проходами ход могут занять очередь и человек) */
     if (owner && opts.loop) {
@@ -1008,8 +1074,43 @@ interface RetryRun {
   chatId: ID
   msgId: ID
   partId: ID
+  ownsCard: () => boolean
 }
 const retryCtl = new Map<string, RetryRun>()
+
+export interface RetryControl {
+  pid: ID
+  chatId: ID
+  msgId: ID
+  partId: ID
+  stopping: boolean
+  /** Requests cancellation of this captured retry only, not proof of OS termination. */
+  cancel: () => boolean
+}
+
+/** Read-only snapshots of standalone command retries currently owned by their original cards. */
+export function captureRetryControls(): readonly RetryControl[] {
+  const controls: RetryControl[] = []
+  for (const [key, run] of retryCtl) {
+    if (!run.ownsCard()) continue
+    let requested = false
+    controls.push({
+      pid: run.pid,
+      chatId: run.chatId,
+      msgId: run.msgId,
+      partId: run.partId,
+      stopping: run.ctl.signal.aborted,
+      cancel: () => {
+        if (requested || run.ctl.signal.aborted || retryCtl.get(key) !== run || !run.ownsCard()) return false
+        requested = true
+        run.ctl.abort()
+        return true
+      },
+    })
+  }
+  return controls
+}
+
 export function stopRetry(partId: ID, pid = S().projectId, chatId?: ID, msgId?: ID) {
   if (!pid) return
   const matches = [...retryCtl.values()].filter(
@@ -1042,8 +1143,16 @@ export async function retryCommand(chatId: ID, msgId: ID, partId: ID, forPid?: I
   if (!expected) return
   const cmd = expected.cmd
   const ctl = new AbortController()
-  retryCtl.set(key, { ctl, pid, chatId, msgId, partId })
-  const ownsCard = () => retryCtl.get(key)?.ctl === ctl && read() === expected
+  const run: RetryRun = {
+    ctl,
+    pid,
+    chatId,
+    msgId,
+    partId,
+    ownsCard: () => retryCtl.get(key) === run && read() === expected,
+  }
+  retryCtl.set(key, run)
+  const ownsCard = run.ownsCard
   const valid = () => {
     if (ctl.signal.aborted || S().projectId !== pid || !ownsCard()) {
       ctl.abort()
@@ -1099,7 +1208,7 @@ export async function retryCommand(chatId: ID, msgId: ID, partId: ID, forPid?: I
     })
   } finally {
     unsubscribe()
-    if (retryCtl.get(key)?.ctl === ctl) retryCtl.delete(key)
+    if (retryCtl.get(key) === run) retryCtl.delete(key)
   }
 }
 
@@ -1263,6 +1372,7 @@ registerAutomationStopper(() => {
   for (const r of retryCtl.values()) r.ctl.abort()
   for (const timer of queueTimers.values()) clearTimeout(timer)
   queueTimers.clear()
+  queuedOrigins.clear()
   clearAllQueues()
   autoFix.clear()
 })

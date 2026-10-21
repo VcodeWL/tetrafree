@@ -1,0 +1,13 @@
+{
+  "version": "3.4.0",
+  "node": "22.23.3",
+  "check": { "ok": true, "serverAndScripts": 184, "client": 758, "total": 942, "failed": 0 },
+  "build": { "ok": true },
+  "npmAudit": { "ok": true, "vulnerabilities": 0 },
+  "browser": { "ok": true, "operations": 8, "legacy": 18, "total": 26, "errors": 0 },
+  "scoped": { "operations": "17/17", "runtimeControls": "95/95", "independentReview": "17/17" },
+  "cargoMetadataLocked": { "ok": true, "nativeBuild": false },
+  "sourceConfigUnchangedAcrossGates": true,
+  "windowsNativeAcceptance": false,
+  "realProvidersAcceptance": false
+}

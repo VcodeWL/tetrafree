@@ -5,8 +5,16 @@ import type { StreamOpts } from './llm'
 import type { BackendInfo } from '../lib/backend'
 import { harness, deferred, tick } from './test-helpers/harness'
 import { parseStream } from './protocol'
+import type { RetryControl } from './engine'
 
-type MockChat = { id: string; title: string; agents: ChatAgent[]; messages: Message[]; running?: boolean }
+type MockChat = {
+  id: string
+  title: string
+  createdAt?: number
+  agents: ChatAgent[]
+  messages: Message[]
+  running?: boolean
+}
 type MockProject = {
   id: string
   name: string
@@ -1720,4 +1728,337 @@ test('policy characterization: review state precedence, totals and version reten
       del: c.files,
     })
   }
+})
+
+test('operations control: idle metadata has no side effects or selected-project fallback', () => {
+  reset()
+  assert.equal(typeof api.captureTurnControl, 'function')
+  api.enqueue('c', 'Retained greeting', [], undefined, 'A')
+  const before = api.queueGet('c', 'A')
+  assert.equal(api.captureTurnControl('c', 'A'), null)
+  assert.equal(api.captureTurnControl('c', ''), null)
+  assert.equal(api.captureTurnControl('missing', 'A'), null)
+  assert.equal(api.queueGet('c', 'A'), before)
+  api.clearQueue('c', 'A')
+})
+
+test('operations control: running cancellation preserves queued bytes and never stops a clone', async () => {
+  reset()
+  cloneProjectWithHistoricalIds()
+  assert.equal(typeof api.captureTurnControl, 'function')
+  const gates = [deferred(), deferred()],
+    started = [deferred(), deferred()],
+    calls: StreamOpts[] = []
+  H.stream = async (o) => {
+    const i = calls.push(o) - 1
+    started[i].resolve()
+    await gates[i].promise
+  }
+  const a = start()
+  await started[0].promise
+  const prompt = '  Greeting\nwith whitespace\t\n'
+  api.enqueue('c', prompt, [], 'exact extra\n', 'A')
+  const queued = JSON.stringify(api.queueGet('c', 'A'))
+  const control = api.captureTurnControl('c', 'A')!
+  assert.equal(control.phase, 'running')
+  assert.equal(calls[0].signal.aborted, false)
+  state.projectId = 'B'
+  const b = api.runTurn('B', 'c', 'Clone greeting', 'Builder', 'Уведомить', [])
+  await started[1].promise
+  try {
+    assert.equal(control.cancel(), true)
+    assert.equal(calls[0].signal.aborted, true)
+    assert.equal(calls[1].signal.aborted, false)
+    assert.equal(api.captureTurnControl('c', 'A')?.phase, 'stopping')
+    assert.equal(control.cancel(), false)
+    assert.equal(api.captureTurnControl('c', 'A')?.cancel(), false)
+    assert.equal(JSON.stringify(api.queueGet('c', 'A')), queued)
+  } finally {
+    gates[0].resolve()
+    gates[1].resolve()
+    await Promise.all([a, b])
+  }
+  assert.equal(api.captureTurnControl('c', 'A'), null)
+  assert.equal(JSON.stringify(api.queueGet('c', 'A')), queued)
+  api.clearQueue('c', 'A')
+})
+
+test('operations control: stale running handle cannot abort its replacement turn', async () => {
+  reset()
+  assert.equal(typeof api.captureTurnControl, 'function')
+  const gates = [deferred(), deferred()],
+    started = [deferred(), deferred()],
+    calls: StreamOpts[] = []
+  H.stream = async (o) => {
+    const i = calls.push(o) - 1
+    started[i].resolve()
+    await gates[i].promise
+  }
+  const old = start()
+  await started[0].promise
+  const control = api.captureTurnControl('c', 'A')!
+  const replacement = start()
+  await started[1].promise
+  try {
+    assert.equal(control.cancel(), false)
+    assert.equal(calls[1].signal.aborted, false)
+  } finally {
+    gates[0].resolve()
+    gates[1].resolve()
+    await Promise.all([old, replacement])
+  }
+})
+
+test('operations control: queued dispatch cancellation retains prompt and cancels only captured timer', async () => {
+  reset()
+  assert.equal(typeof api.captureTurnControl, 'function')
+  let calls = 0
+  H.stream = async () => {
+    calls++
+  }
+  api.enqueue('c', '  exact queued greeting\n', [], 'extra\n', 'A')
+  await start()
+  const before = JSON.stringify(api.queueGet('c', 'A'))
+  const control = api.captureTurnControl('c', 'A')!
+  assert.equal(control.phase, 'queued')
+  assert.equal(control.cancel(), true)
+  assert.equal(control.cancel(), false)
+  assert.equal(api.captureTurnControl('c', 'A'), null)
+  await new Promise((r) => setTimeout(r, 400))
+  assert.equal(calls, 1)
+  assert.equal(JSON.stringify(api.queueGet('c', 'A')), before)
+  api.clearQueue('c', 'A')
+})
+
+test('operations control: stale queued handle cannot cancel a replacement queued dispatch', async () => {
+  reset()
+  assert.equal(typeof api.captureTurnControl, 'function')
+  api.enqueue('c', 'Queued greeting', [], undefined, 'A')
+  await start()
+  const old = api.captureTurnControl('c', 'A')!
+  await start()
+  const replacement = api.captureTurnControl('c', 'A')!
+  assert.equal(old.cancel(), false)
+  assert.equal(replacement.phase, 'queued')
+  assert.equal(replacement.cancel(), true)
+  assert.equal(api.peekQueue('c', 'A')?.text, 'Queued greeting')
+  api.clearQueue('c', 'A')
+})
+
+test('operations control: missing original chat never falls back to the selected historical clone', async () => {
+  reset()
+  cloneProjectWithHistoricalIds()
+  const gate = deferred(),
+    started = deferred()
+  let signal: AbortSignal | undefined
+  H.stream = async (o) => {
+    signal = o.signal
+    started.resolve()
+    await gate.promise
+  }
+  const run = start()
+  await started.promise
+  const control = api.captureTurnControl('c', 'A')!
+  const origin = getProject('A').chats
+  getProject('A').chats = []
+  state.projectId = 'B'
+  try {
+    assert.equal(api.captureTurnControl('c', 'A'), null)
+    assert.equal(control.cancel(), false)
+    assert.equal(signal?.aborted, false)
+  } finally {
+    getProject('A').chats = origin
+    gate.resolve()
+    await run
+  }
+})
+
+test('operations control: message/start and chat-created anchors reject replacement without immutable reference guards', async () => {
+  reset()
+  getProject().chats[0].createdAt = 100
+  const gate = deferred(),
+    started = deferred()
+  H.stream = async () => {
+    started.resolve()
+    await gate.promise
+  }
+  const run = start()
+  await started.promise
+  const control = api.captureTurnControl('c', 'A')!
+  const chat = getProject().chats[0]
+  const original = chat.messages.find((m) => m.kind === 'agent')!
+  assert.ok(original.kind === 'agent')
+  try {
+    state.patchMsg('c', original.id, { text: 'Normal stream update', thinking: 'Working' }, 'A')
+    assert.equal(api.captureTurnControl('c', 'A')?.phase, 'running')
+    chat.createdAt = 101
+    assert.equal(api.captureTurnControl('c', 'A'), null)
+    assert.equal(control.cancel(), false)
+    chat.createdAt = 100
+    state.patchMsg('c', original.id, { startedAt: original.startedAt! + 1 }, 'A')
+    assert.equal(control.cancel(), false)
+    chat.messages = []
+    assert.equal(control.cancel(), false)
+  } finally {
+    chat.messages = [original]
+    gate.resolve()
+    await run
+  }
+})
+
+test('operations control: queued timer keeps the finished owning turn anchor', async () => {
+  reset()
+  api.enqueue('c', 'Preserved greeting\n', [], undefined, 'A')
+  await start()
+  const control = api.captureTurnControl('c', 'A')!
+  const chat = getProject().chats[0]
+  const messages = chat.messages
+  chat.messages = []
+  try {
+    assert.equal(api.captureTurnControl('c', 'A'), null)
+    assert.equal(control.cancel(), false)
+    assert.equal(api.peekQueue('c', 'A')?.text, 'Preserved greeting\n')
+  } finally {
+    chat.messages = messages
+    api.captureTurnControl('c', 'A')?.cancel()
+    api.clearQueue('c', 'A')
+  }
+})
+
+test('operations control: retry capture is read-only and reports only the actual registry', async () => {
+  reset()
+  commandCard()
+  const gate = deferred<Response>(),
+    started = deferred()
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/kill')) return new Response('{}')
+    started.resolve()
+    return gate.promise
+  }
+  const run = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await started.promise
+  const before = retryPart()
+  const beforeJson = JSON.stringify(before)
+  const controls = api.captureRetryControls() as readonly RetryControl[]
+  assert.equal(controls.length, 1)
+  assert.deepEqual(
+    controls.map(({ pid, chatId, msgId, partId, stopping }) => ({ pid, chatId, msgId, partId, stopping })),
+    [{ pid: 'A', chatId: 'c', msgId: 'retry-message', partId: 'retry-part', stopping: false }],
+  )
+  assert.equal(retryPart(), before)
+  assert.equal(JSON.stringify(retryPart()), beforeJson)
+  gate.resolve(response())
+  await run
+  assert.deepEqual(api.captureRetryControls(), [])
+})
+
+test('operations control: retry cancellation is one-shot and remains stopping until unwind', async () => {
+  reset()
+  commandCard()
+  const gate = deferred<Response>(),
+    started = deferred()
+  let signal: AbortSignal | undefined
+  globalThis.fetch = async (url, o) => {
+    if (String(url).endsWith('/kill')) return new Response('{}')
+    signal = o!.signal!
+    started.resolve()
+    return gate.promise
+  }
+  const run = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await started.promise
+  const control = api.captureRetryControls()[0]!
+  assert.equal(control.cancel(), true)
+  assert.equal(signal?.aborted, true)
+  assert.equal(control.cancel(), false)
+  const stopping = api.captureRetryControls()
+  assert.equal(stopping.length, 1)
+  assert.equal(stopping[0].stopping, true)
+  assert.equal(stopping[0].cancel(), false)
+  gate.reject(Error('unit cancelled transport'))
+  await run
+  assert.deepEqual(api.captureRetryControls(), [])
+})
+
+test('operations control: retry controls are pid-bound across historical clones', async () => {
+  reset()
+  commandCard()
+  cloneProjectWithHistoricalIds()
+  const gate = deferred<Response>(),
+    started = deferred()
+  let signal: AbortSignal | undefined
+  globalThis.fetch = async (url, o) => {
+    if (String(url).endsWith('/kill')) return new Response('{}')
+    signal = o!.signal!
+    started.resolve()
+    return gate.promise
+  }
+  const a = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await started.promise
+  const controls = api.captureRetryControls() as readonly RetryControl[]
+  const controlA = controls[0]!
+  assert.deepEqual(
+    controls.map((c) => c.pid),
+    ['A'],
+  )
+  assert.equal(controlA.cancel(), true)
+  assert.equal(signal?.aborted, true)
+  const original = retryPart()
+  assert.ok(original?.k === 'cmd')
+  assert.equal(original.cmd, 'echo greeting')
+  assert.equal(
+    (
+      getProject('B').chats[0].messages.find((m) => m.id === 'retry-message') as Extract<
+        Message,
+        { kind: 'agent' }
+      >
+    ).parts![0].k,
+    'cmd',
+  )
+  gate.reject(Error('unit cancelled A transport'))
+  await a
+})
+
+test('operations control: stale or replaced retry handles cannot cancel current work', async () => {
+  reset()
+  commandCard()
+  const gates = [deferred<Response>(), deferred<Response>()],
+    signals: AbortSignal[] = []
+  globalThis.fetch = async (url, o) => {
+    if (String(url).endsWith('/kill')) return new Response('{}')
+    const i = signals.push(o!.signal!) - 1
+    return gates[i].promise
+  }
+  const first = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await tick()
+  const stale = api.captureRetryControls()[0]!
+  gates[0].resolve(response())
+  await first
+  state.patchMsg(
+    'c',
+    'retry-message',
+    {
+      parts: [{ k: 'cmd', id: 'retry-part', cmd: 'echo replacement', state: 'error', out: '', code: 1 }],
+    },
+    'A',
+  )
+  const second = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await tick()
+  assert.equal(stale.cancel(), false)
+  assert.equal(signals[1].aborted, false)
+  const current = api.captureRetryControls()[0]!
+  state.patchMsg(
+    'c',
+    'retry-message',
+    {
+      parts: [
+        { k: 'cmd', id: 'retry-part', cmd: 'echo another replacement', state: 'error', out: '', code: 2 },
+      ],
+    },
+    'A',
+  )
+  assert.deepEqual(api.captureRetryControls(), [])
+  assert.equal(current.cancel(), false)
+  assert.equal(signals[1].aborted, false)
+  gates[1].resolve(response())
+  await second
 })

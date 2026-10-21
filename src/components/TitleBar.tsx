@@ -175,6 +175,16 @@ export function TitleBar() {
         {screen !== 'auth' && (
           <button
             className="tb-ic"
+            aria-label="Центр фоновых операций"
+            title="Фоновые операции: работа, очередь, ошибки и история"
+            onClick={() => useStore.getState().openModal({ type: 'operations' })}
+          >
+            <Icon name="layers" size={15} />
+          </button>
+        )}
+        {screen !== 'auth' && (
+          <button
+            className="tb-ic"
             title="Центр восстановления"
             onClick={() => useStore.getState().openModal({ type: 'recovery' })}
           >

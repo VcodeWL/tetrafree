@@ -335,3 +335,81 @@ test('clone loop controls/read/note/end are fail-closed outside the stored proje
   a.stopEverything()
   assert.deepEqual(sent, ['A', 'B'])
 })
+
+test('operations pipeline control: metadata is exact, abort is one-shot and pending reconcile cannot dispatch', async () => {
+  const a = await fresh()
+  assert.equal(typeof a.capturePipelineControl, 'function')
+  assert.equal(a.capturePipelineControl('A', 'missing'), null)
+  const gate = deferred(),
+    started = deferred()
+  let calls = 0
+  H.reconcile = async () => {
+    started.resolve()
+    await gate.promise
+  }
+  H.exec = async () => {
+    calls++
+    return { code: 0 }
+  }
+  const run = a.runPipeline('verify', 'A')
+  await started.promise
+  const row = state.projects[0].deploy.runs[0]
+  const control = a.capturePipelineControl('A', row.id)!
+  try {
+    assert.equal(a.capturePipelineControl('B', row.id), null)
+    assert.equal(a.capturePipelineControl('', row.id), null)
+    assert.equal(a.capturePipelineControl('A', 'other'), null)
+    assert.equal(control.stopping, false)
+    assert.equal(row.status, 'running')
+    assert.equal(control.cancel(), true)
+    assert.equal(control.cancel(), false)
+    assert.equal(a.capturePipelineControl('A', row.id)?.stopping, true)
+    assert.equal(a.capturePipelineControl('A', row.id)?.cancel(), false)
+    assert.equal(row.status, 'running') // Request, not confirmation of process termination.
+  } finally {
+    gate.resolve()
+    await run
+  }
+  assert.equal(calls, 0)
+  assert.equal(row.status, 'failed')
+  assert.equal(a.capturePipelineControl('A', row.id), null)
+})
+
+test('operations pipeline control: old run/clone callback cannot stop the current exec', async () => {
+  const a = await fresh()
+  assert.equal(typeof a.capturePipelineControl, 'function')
+  let gate = deferred<{ code: number }>(),
+    started = deferred(),
+    signal: AbortSignal | undefined
+  H.exec = async (_p, _cmd, opts) => {
+    signal = opts.signal
+    started.resolve()
+    return gate.promise
+  }
+  const old = a.runPipeline('verify', 'A')
+  await started.promise
+  const oldId = state.projects[0].deploy.runs[0].id
+  const oldControl = a.capturePipelineControl('A', oldId)!
+  gate.resolve({ code: 0 })
+  await old
+  assert.equal(oldControl.cancel(), false)
+  state.projectId = 'B'
+  for (const notify of listeners) notify(state)
+  gate = deferred()
+  started = deferred()
+  const current = a.runPipeline('verify', 'B')
+  await started.promise
+  const currentId = state.projects[1].deploy.runs[0].id
+  // Historical cloned row IDs are not authority over the active project/controller.
+  state.projects[0].deploy.runs.unshift(structuredClone(state.projects[1].deploy.runs[0]))
+  try {
+    assert.equal(a.capturePipelineControl('A', currentId), null)
+    assert.equal(oldControl.cancel(), false)
+    assert.equal(signal?.aborted, false)
+    assert.equal(a.capturePipelineControl('B', currentId)?.cancel(), true)
+    assert.equal(signal?.aborted, true)
+  } finally {
+    gate.resolve({ code: 0 })
+    await current
+  }
+})

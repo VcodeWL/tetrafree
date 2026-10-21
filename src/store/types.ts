@@ -50,6 +50,7 @@ export type ModalState =
   | { type: 'trash' }
   | { type: 'recovery' }
   | { type: 'diagnostics' }
+  | { type: 'operations' }
   | { type: 'replay'; chatId: ID; msgId: ID }
   | { type: 'blame'; path: string }
   | { type: 'confirm'; title: string; body: string; danger?: boolean; confirm: string; run: () => void }

@@ -7,6 +7,7 @@ import { NewProjectModal, ProjectFolderModal } from './NewProject'
 
 /* Тяжёлые окна грузятся при первом открытии — запуск приложения от этого быстрее */
 const BlameModal = lazy(() => import('./BlameModal').then((m) => ({ default: m.BlameModal })))
+const OperationsModal = lazy(() => import('./Operations').then((m) => ({ default: m.OperationsModal })))
 const DiagnosticsModal = lazy(() => import('./Diagnostics').then((m) => ({ default: m.DiagnosticsModal })))
 const RecoveryModal = lazy(() => import('./RecoveryModal').then((m) => ({ default: m.RecoveryModal })))
 const TrashModal = lazy(() => import('./TrashModal').then((m) => ({ default: m.TrashModal })))
@@ -95,6 +96,8 @@ function useModalBody() {
       return <TodayModal />
     case 'blame':
       return <BlameModal path={m.path} />
+    case 'operations':
+      return <OperationsModal />
     case 'diagnostics':
       return <DiagnosticsModal collect={captureDiagnostics} />
     case 'recovery':

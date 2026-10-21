@@ -130,7 +130,6 @@ npm run build
 - `stopEverything()` оставляет автоматизации paused. History whitelist/стоимость — без prompt/file/key/URL. Ledger оценочный, не billing guarantee.
 - Native close/quit/update final checkpoint — до остановки backend/install. Forced kill/power-loss/native acceptance нельзя объявлять проверенными portable fixtures.
 
-
 ## Изоляция проектов и диагностика (3.3)
 
 - Исторические ID чатов могут совпадать в копиях. Runtime keys и все UI-вызовы queue/controller/retry/apply/revert/live должны нести captured pid. Не remap исторические ID ради обхода проблемы.
@@ -139,3 +138,11 @@ npm run build
 - captureSyncHealth — наблюдение eligible текстовых файлов и project-local checkpoint, не гарантия всего диска/облака/атомарности. Не использовать global lastSync как доказательство для текущего проекта.
 - Диагностика — только allowlist JSON через diagnostics builder. Никаких UA, raw errors, имён, путей, ID, model/provider URLs, контента, токенов. Preview до явного экспорта, без upload.
 - HTTP body limit измеряется по байтам UTF-8; transport 413/408/499 не превращать в пустой успешный запрос. После drain/await учитывать disconnect и актуальность authority.
+
+## Центр фоновых операций (3.4)
+
+- `collectOperations()` остаётся read-only проекцией: открытие/опрос не запускает, не повторяет и не отменяет работу. Все действия явные и повторно проверяют captured pid/runtime identity.
+- Индивидуальная отмена хода сохраняет очередь; `stopEverything()` — отдельное глобальное действие и очищает её. Запрос abort не доказывает завершение процесса или дерева процессов.
+- Persisted `running` без живого runtime control — `attention`, а не активная работа или успех. Повтор пайплайна требует просмотра актуального YAML; предложенные файлы применяются только в исходном чате.
+- Проекция bounded: 500 проектов, 200 чатов на проект, 20 последних сообщений, 50 последних parts активного ответа, 20 pipeline runs и 250 строк. При усечении отсутствие строки не доказывает отсутствие работы.
+- Отложенные cancel/retry/clear должны сверять exact captured object/array/journal record и исходный проект после await. Не переносить действие на clone с теми же историческими ID.

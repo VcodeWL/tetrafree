@@ -54,6 +54,7 @@ export function pipelinesOf(files: Record<string, string>) {
 
 let active: ID | null = null
 let activeCtl: AbortController | null = null
+let activePid: ID | null = null
 let fireTimer = 0
 let selectedProject = S().projectId
 let projectGeneration = 0
@@ -91,6 +92,26 @@ export function fireTrigger(pid: ID, ev: TriggerEvent) {
   }, 2500)
 }
 export const pipelineRunning = () => active !== null
+
+export interface PipelineControl {
+  stopping: boolean
+  /** Abort requested, not confirmation that the backend process tree has stopped. */
+  cancel: () => boolean
+}
+
+/** Metadata only: historical run IDs (including cloned rows) do not own a process. */
+export function capturePipelineControl(pid: ID, runId: ID): PipelineControl | null {
+  const ctl = activeCtl
+  if (!pid || !ctl || activePid !== pid || active !== runId) return null
+  return {
+    stopping: ctl.signal.aborted,
+    cancel: () => {
+      if (activeCtl !== ctl || activePid !== pid || active !== runId || ctl.signal.aborted) return false
+      ctl.abort()
+      return true
+    },
+  }
+}
 
 /* Расписание: пока приложение открыто, раз в 30 с проверяем, не пора ли запустить пайплайн со строкой `schedule:`.
    Работает так же, как триггеры: только при включённом «Автодеплое» и живом бэкенде. Последний запуск помним в localStorage. */
@@ -202,6 +223,7 @@ export async function runPipeline(name = 'release', forPid?: ID, background = fa
   active = run.id
   const ctl = new AbortController()
   activeCtl = ctl
+  activePid = pid
   const epoch = automationEpoch()
   const unsubscribe = useStore.subscribe((s) => {
     if (s.projectId !== pid) ctl.abort()
@@ -288,8 +310,11 @@ export async function runPipeline(name = 'release', forPid?: ID, background = fa
     })
   } finally {
     unsubscribe()
-    if (activeCtl === ctl) activeCtl = null
-    if (active === run.id) active = null
+    if (activeCtl === ctl && active === run.id && activePid === pid) {
+      activeCtl = null
+      active = null
+      activePid = null
+    }
   }
 }
 

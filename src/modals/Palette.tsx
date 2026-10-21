@@ -463,6 +463,7 @@ function build(): Item[] {
       t.hint,
     ),
   )
+  cmd('operations', 'Фоновые операции', 'layers', () => st().openModal({ type: 'operations' }))
   cmd('cmp', 'Сравнить два файла', 'layers', () =>
     st().openModal({ type: 'compare', a: st().activeFile || undefined }),
   )
