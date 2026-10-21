@@ -45,7 +45,12 @@ export const useLoops = create<{ loops: Record<ID, LoopState> }>(() => ({ loops:
 const timers = new Map<ID, ReturnType<typeof setTimeout>>()
 const hooks = new Map<ID, Hooks>()
 const sessions = new Map<ID, symbol>()
-const get = (chatId: ID) => useLoops.getState().loops[chatId]
+/** Loops deliberately run only in the single selected project. Never match by chat ID alone. */
+export const loopFor = (state: { loops: Record<ID, LoopState> }, pid: ID | null | undefined, chatId: ID) => {
+  const loop = state.loops[chatId]
+  return pid && loop?.pid === pid ? loop : undefined
+}
+const get = (chatId: ID, pid = useStore.getState().projectId) => loopFor(useLoops.getState(), pid, chatId)
 const set = (chatId: ID, patch: Partial<LoopState> | null) =>
   useLoops.setState((s) => {
     const loops = { ...s.loops }
@@ -56,8 +61,8 @@ const set = (chatId: ID, patch: Partial<LoopState> | null) =>
 
 export interface Runner {
   /** отправить проход агенту; false — не удалось начать (нет модели, лимит, нет агента) */
-  send(chatId: ID, o: { text: string; extra: string; silent?: string; imgs?: string[] }): boolean
-  busy(chatId: ID): boolean
+  send(chatId: ID, o: { text: string; extra: string; silent?: string; imgs?: string[] }, pid?: ID): boolean
+  busy(chatId: ID, pid?: ID): boolean
   projectOpen(pid: ID): boolean
   say(chatId: ID, pid: ID, text: string): void
 }
@@ -67,9 +72,11 @@ export const setLoopRunner = (r: Runner) => {
 }
 
 /** Подпись в панели цикла */
-export const loopNote = (chatId: ID, note: string) => set(chatId, { note })
+export const loopNote = (chatId: ID, note: string, pid = useStore.getState().projectId) => {
+  if (get(chatId, pid)) set(chatId, { note })
+}
 
-export const loopActive = (chatId: ID) => !!get(chatId)
+export const loopActive = (chatId: ID, pid = useStore.getState().projectId) => !!get(chatId, pid)
 
 /** Причина остановки после завершённого прохода или null — продолжаем. Чистая функция. */
 export function decide(
@@ -95,7 +102,7 @@ export async function loopStart(
   h: Hooks = { title: 'Цикл' },
   kind: LoopKind = 'loop',
 ): Promise<boolean> {
-  if (!R || get(chatId) || !automationAllowed() || !R.projectOpen(pid)) return false
+  if (!R || useLoops.getState().loops[chatId] || !automationAllowed() || !R.projectOpen(pid)) return false
   const epoch = automationEpoch()
   const session = Symbol()
   sessions.set(chatId, session)
@@ -119,28 +126,33 @@ export async function loopStart(
       },
     },
   }))
-  const started = get(chatId)
+  const started = get(chatId, pid)
+  if (!started) return false
   const pre: Pre = h.before ? await h.before(1, started).catch((e: Error) => ({ stop: e.message })) : {}
-  if (sessions.get(chatId) !== session || !get(chatId)) return false
+  if (sessions.get(chatId) !== session || !get(chatId, pid)) return false
   if (!automationAllowed(epoch) || !R.projectOpen(pid)) {
-    loopStop(chatId)
+    loopStop(chatId, undefined, pid)
     return false
   } /* остановили, пока готовили первый проход */
   if (pre.stop) {
-    loopStop(chatId, pre.stop)
+    loopStop(chatId, pre.stop, pid)
     return false
   }
-  const ok = R.send(chatId, {
-    text: typed,
-    extra: pre.extra ?? loopPrompt(spec.task, 1, spec.max),
-    imgs: pre.imgs,
-  })
-  if (!ok) loopStop(chatId)
+  const ok = R.send(
+    chatId,
+    {
+      text: typed,
+      extra: pre.extra ?? loopPrompt(spec.task, 1, spec.max),
+      imgs: pre.imgs,
+    },
+    pid,
+  )
+  if (!ok) loopStop(chatId, undefined, pid)
   return ok
 }
 
-export function loopStop(chatId: ID, why?: string) {
-  const st = get(chatId)
+export function loopStop(chatId: ID, why?: string, pid = useStore.getState().projectId) {
+  const st = get(chatId, pid)
   if (!st) return false
   const t = timers.get(chatId)
   if (t) clearTimeout(t)
@@ -158,15 +170,20 @@ export function loopStop(chatId: ID, why?: string) {
 }
 
 /** Движок сообщает: проход закончился. Планируем следующий или завершаем цикл. */
-export function loopPassEnded(chatId: ID, text: string, failed: boolean) {
-  const st = get(chatId)
+export function loopPassEnded(
+  chatId: ID,
+  text: string,
+  failed: boolean,
+  pid = useStore.getState().projectId,
+) {
+  const st = get(chatId, pid)
   if (!st) return
   const h = norm(text)
   const same = h && h === st.last ? st.same + 1 : 0
   set(chatId, { last: h, same })
   const why = decide({ n: st.n, max: st.max, same }, text, failed, hooks.get(chatId)?.ignoreDone)
   if (why) {
-    loopStop(chatId, why)
+    loopStop(chatId, why, st.pid)
     return
   }
   set(chatId, { phase: 'wait', nextAt: Date.now() + st.gap })
@@ -187,43 +204,48 @@ function schedule(chatId: ID, ms: number) {
 
 async function fire(chatId: ID) {
   timers.delete(chatId)
-  const st = get(chatId)
+  const st = useLoops.getState().loops[chatId]
   if (!st || !R) return
   const epoch = automationEpoch()
-  if (!automationAllowed()) return void loopStop(chatId, 'автоматические запуски на паузе')
-  if (!R.projectOpen(st.pid)) return void loopStop(chatId, 'проект закрыт')
+  if (!automationAllowed()) return void loopStop(chatId, 'автоматические запуски на паузе', st.pid)
+  if (!R.projectOpen(st.pid)) return void loopStop(chatId, 'проект закрыт', st.pid)
   /* пользователь сам написал агенту — не перебиваем его, ждём конца хода */
-  if (R.busy(chatId)) return schedule(chatId, 3000)
+  if (R.busy(chatId, st.pid)) return schedule(chatId, 3000)
   const n = st.n + 1
   set(chatId, { n, phase: 'run', nextAt: undefined })
   const session = sessions.get(chatId)
   const h = hooks.get(chatId)
   const pre: Pre = h?.before
-    ? await h.before(n, get(chatId) || st).catch((e: Error) => ({ stop: e.message }))
+    ? await h.before(n, get(chatId, st.pid) || st).catch((e: Error) => ({ stop: e.message }))
     : {}
-  if (sessions.get(chatId) !== session || !get(chatId)) return
-  if (!automationAllowed(epoch) || !R.projectOpen(st.pid)) return void loopStop(chatId)
-  if (pre.stop) return void loopStop(chatId, pre.stop)
+  if (sessions.get(chatId) !== session || !get(chatId, st.pid)) return
+  if (!automationAllowed(epoch) || !R.projectOpen(st.pid)) return void loopStop(chatId, undefined, st.pid)
+  if (pre.stop) return void loopStop(chatId, pre.stop, st.pid)
   /* пока готовили проход, пользователь мог написать агенту */
-  if (R.busy(chatId)) {
+  if (R.busy(chatId, st.pid)) {
     set(chatId, { n: n - 1, phase: 'wait', nextAt: Date.now() + 3000 })
     return schedule(chatId, 3000)
   }
-  const ok = R.send(chatId, {
-    text: '',
-    extra: pre.extra ?? loopPrompt(st.task, n, st.max),
-    imgs: pre.imgs,
-    silent:
-      pre.silent ?? `↻ ${st.title} · проход ${n}${st.max ? ' из ' + st.max : ''}: ${st.task.slice(0, 80)}`,
-  })
-  if (!ok) loopStop(chatId, 'не удалось запустить следующий проход (модель, лимит расходов или нет агента)')
+  const ok = R.send(
+    chatId,
+    {
+      text: '',
+      extra: pre.extra ?? loopPrompt(st.task, n, st.max),
+      imgs: pre.imgs,
+      silent:
+        pre.silent ?? `↻ ${st.title} · проход ${n}${st.max ? ' из ' + st.max : ''}: ${st.task.slice(0, 80)}`,
+    },
+    st.pid,
+  )
+  if (!ok)
+    loopStop(chatId, 'не удалось запустить следующий проход (модель, лимит расходов или нет агента)', st.pid)
 }
 
 export const loopLabel = (st: LoopState) =>
   `${st.title} · проход ${st.n}${st.max ? ' из ' + st.max : ' · без лимита'}${st.kind === 'loop' ? ' · пауза ' + fmtGap(st.gap) : ''}`
 
 registerAutomationStopper(() => {
-  for (const id of Object.keys(useLoops.getState().loops)) loopStop(id)
+  for (const loop of Object.values(useLoops.getState().loops)) loopStop(loop.chatId, undefined, loop.pid)
 })
 
 let selectedProject = useStore.getState().projectId
@@ -231,5 +253,5 @@ useStore.subscribe((s) => {
   if (s.projectId === selectedProject) return
   selectedProject = s.projectId
   for (const [id, loop] of Object.entries(useLoops.getState().loops))
-    if (loop.pid !== s.projectId) loopStop(id)
+    if (loop.pid !== s.projectId) loopStop(id, undefined, loop.pid)
 })

@@ -35,7 +35,7 @@ export async function harness() {
     [join(root, 'lib/gitctx')]:
       `export const wantsGit = () => false; export const gitContext = async () => '';`,
     [join(root, 'lib/mcp')]:
-      `export const loadMcp = async () => ({tools:{},notes:{}}); export const mcpSection = () => '';`,
+      `export const loadMcp = async () => globalThis.__agentHarness.bootstrap?.() ?? ({tools:{},notes:{}}); export const mcpSection = () => '';`,
     [join(root, 'agent/mcptool')]:
       `export const mcpAction = (...args) => globalThis.__agentHarness.mcp(...args);`,
     [join(root, 'agent/webtools')]:
@@ -45,7 +45,7 @@ export async function harness() {
     const outfile = join(dir, 'unit.mjs')
     await build({
       stdin: {
-        contents: `export * from './src/agent/automationControl'; export * from './src/agent/automationJournal'; export * from './src/agent/engine'; export {Turn} from './src/agent/turn'; export * from './src/agent/queue'; export * from './src/agent/autorun'; export * from './src/agent/automations'; export * from './src/lib/backend'; export {setToken} from './src/lib/token';`,
+        contents: `export {live,useLive} from './src/agent/live'; export * from './src/agent/automationControl'; export * from './src/agent/automationJournal'; export * from './src/agent/engine'; export {Turn} from './src/agent/turn'; export * from './src/agent/queue'; export * from './src/agent/autorun'; export * from './src/agent/automations'; export * from './src/lib/backend'; export {setToken} from './src/lib/token';`,
         resolveDir: resolve('.'),
       },
       outfile,
@@ -66,7 +66,9 @@ export async function harness() {
               loader: 'js',
             }))
             b.onLoad({ filter: /\/agent\/engine\.ts$/ }, async (a) => ({
-              contents: (await readFile(a.path, 'utf8')) + '\nexport {runTurn, syncSegs, verifyCommand};',
+              contents:
+                (await readFile(a.path, 'utf8')) +
+                '\nexport {runTurn, syncSegs, verifyCommand, refreshTurn};',
               loader: 'ts',
             }))
           },

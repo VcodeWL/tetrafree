@@ -6,7 +6,7 @@ import { sendMessage, stopTurn, isRunning, resolveModel } from './engine'
 import { backendOnline } from '../lib/backend'
 import { loadMcp, hasMcpConfig } from '../lib/mcp'
 import { wanted } from '../lib/market'
-import { enqueue, clearQueue, useQueue } from './queue'
+import { enqueue, clearQueue, queueGet } from './queue'
 import { loopStart, loopStop, loopActive, useLoops } from './loop'
 import { parseMatch, matchHooks } from './match'
 import { parseAuto, autoHooks, AUTOPILOT_FILE, FOCUS } from './autopilot'
@@ -24,8 +24,6 @@ import {
 } from './slash'
 
 const S = () => useStore.getState()
-const say = (chatId: ID, text: string) =>
-  S().pushMsg(chatId, { id: uid('m'), kind: 'sys', text, at: Date.now() })
 
 const NEED_ARGS = new Set(['plan', 'explain', 'memory', 'skill'])
 const CAP = 20000
@@ -77,11 +75,15 @@ function skillExtra(s: Skill, args: string) {
 export type Outcome = { kind: 'none' } | { kind: 'done'; keep?: boolean } | { kind: 'send'; extra: string }
 
 /** Разбирает «/…» и либо исполняет команду сразу (done), либо готовит развёрнутый запрос агенту (send). */
-export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []): Outcome {
+export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = [], forPid?: ID): Outcome {
   const cmd = parseSlash(text)
   if (!cmd) return { kind: 'none' }
   const st = S()
-  const pid = st.projectId
+  const pid = forPid ?? st.projectId
+  if (!pid || st.projectId !== pid || !getChat(pid, chatId)) return { kind: 'done', keep: true }
+  const say = (_chatId: ID, text: string) => {
+    if (getChat(pid, _chatId)) S().pushMsg(_chatId, { id: uid('m'), kind: 'sys', text, at: Date.now() }, pid)
+  }
   const files = st.projects.find((p) => p.id === pid)?.files || {}
   const { name, args } = cmd
   const done: Outcome = { kind: 'done' }
@@ -93,9 +95,9 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
     }
     switch (name) {
       case 'stop': {
-        const had = isRunning(chatId) || loopActive(chatId)
-        clearQueue(chatId)
-        stopTurn(chatId)
+        const had = isRunning(chatId, pid) || loopActive(chatId, pid)
+        clearQueue(chatId, pid)
+        stopTurn(chatId, pid)
         say(
           chatId,
           had ? 'Остановлено: агент и цикл /loop, очередь сообщений очищена' : 'Сейчас нечего останавливать',
@@ -106,13 +108,17 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
         say(chatId, helpText(files))
         return done
       case 'clear':
-        S().pushMsg(chatId, {
-          id: uid('m'),
-          kind: 'sys',
-          text: 'Контекст очищен — агент начинает с чистого листа. Переписка выше осталась на экране, но модель её больше не видит',
-          at: Date.now(),
-          reset: true,
-        })
+        S().pushMsg(
+          chatId,
+          {
+            id: uid('m'),
+            kind: 'sys',
+            text: 'Контекст очищен — агент начинает с чистого листа. Переписка выше осталась на экране, но модель её больше не видит',
+            at: Date.now(),
+            reset: true,
+          },
+          pid,
+        )
         return done
       case 'memory': {
         if (!pid) return done
@@ -195,14 +201,14 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
       }
       case 'loop': {
         if (/^(stop|стоп|off)$/i.test(args)) {
-          say(chatId, loopStop(chatId) ? 'Цикл остановлен' : 'Цикл не запущен')
+          say(chatId, loopStop(chatId, undefined, pid) ? 'Цикл остановлен' : 'Цикл не запущен')
           return done
         }
-        if (loopActive(chatId)) {
+        if (loopActive(chatId, pid)) {
           toast({ title: 'Цикл уже идёт', desc: '/loop stop — остановить', icon: 'warn' })
           return done
         }
-        if (isRunning(chatId) || (useQueue.getState().q[chatId] || []).length) {
+        if (isRunning(chatId, pid) || queueGet(chatId, pid).length) {
           toast({ title: 'Агент ещё работает', desc: 'Запусти /loop, когда он закончит', icon: 'warn' })
           return done
         }
@@ -225,11 +231,11 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
       case 'autopilot': {
         if (!pid) return done
         const keep: Outcome = { kind: 'done', keep: true }
-        if (loopActive(chatId)) {
+        if (loopActive(chatId, pid)) {
           toast({ title: 'Цикл уже идёт', desc: '/stop — остановить', icon: 'warn' })
           return keep
         }
-        if (isRunning(chatId) || (useQueue.getState().q[chatId] || []).length) {
+        if (isRunning(chatId, pid) || queueGet(chatId, pid).length) {
           toast({ title: 'Агент ещё работает', desc: `Запусти /${name}, когда он закончит`, icon: 'warn' })
           return keep
         }
@@ -319,18 +325,26 @@ export function resolveSlash(chatId: ID, text: string, atts: Attachment[] = []):
 }
 
 /** Отправка из композера: команда → её исполнение, иначе обычное сообщение (в очередь, если агент занят) */
-export function submit(chatId: ID, text: string, atts: Attachment[], running: boolean): 'keep' | 'clear' {
-  const r = resolveSlash(chatId, text, atts)
+export function submit(
+  chatId: ID,
+  text: string,
+  atts: Attachment[],
+  running: boolean,
+  forPid?: ID,
+): 'keep' | 'clear' {
+  const pid = forPid ?? S().projectId
+  if (!pid || S().projectId !== pid || !getChat(pid, chatId)) return 'keep'
+  const r = resolveSlash(chatId, text, atts, pid)
   if (r.kind === 'done') {
     if (r.keep) return 'keep'
-    S().setDraft(chatId, '')
+    S().setDraft(chatId, '', pid)
     return 'clear'
   }
   const extra = r.kind === 'send' ? r.extra : ''
   if (running) {
-    enqueue(chatId, text.trim(), atts, extra)
-    S().setDraft(chatId, '')
-  } else sendMessage(chatId, text, atts, extra)
+    enqueue(chatId, text.trim(), atts, extra, pid)
+    S().setDraft(chatId, '', pid)
+  } else sendMessage(chatId, text, atts, extra, 0, { pid })
   return 'clear'
 }
 

@@ -295,3 +295,43 @@ test('loop preparation can update its note without invalidating the same live se
   assert.equal(a.useLoops.getState().loops.chat.note, 'Контекст подготовлен')
   a.stopEverything()
 })
+
+test('clone loop controls/read/note/end are fail-closed outside the stored project', async () => {
+  const a = await fresh()
+  const sent: string[] = [],
+    said: string[] = []
+  a.setLoopRunner({
+    send: (_chat: string, _opts: unknown, pid?: string) => {
+      sent.push(pid!)
+      return true
+    },
+    busy: () => false,
+    projectOpen: (pid: string) => pid === state.projectId,
+    say: (_chat: string, pid: string) => {
+      said.push(pid)
+    },
+  })
+  assert.equal(
+    await a.loopStart('same-chat', 'A', { task: 'Review greeting', max: 3, gap: 1000 }, 'first'),
+    true,
+  )
+  const original = a.loopFor(a.useLoops.getState(), 'A', 'same-chat')!
+  assert.equal(a.loopFor(a.useLoops.getState(), 'B', 'same-chat'), undefined)
+  assert.equal(a.loopActive('same-chat', 'B'), false)
+  assert.equal(a.loopStop('same-chat', 'wrong origin', 'B'), false)
+  a.loopNote('same-chat', 'foreign note', 'B')
+  a.loopPassEnded('same-chat', 'LOOP_DONE', false, 'B')
+  assert.equal(a.loopFor(a.useLoops.getState(), 'A', 'same-chat'), original)
+  assert.deepEqual(said, [])
+  state.projectId = 'B'
+  for (const notify of listeners) notify(state)
+  assert.equal(a.loopActive('same-chat', 'A'), false)
+  assert.equal(
+    await a.loopStart('same-chat', 'B', { task: 'Review greeting B', max: 2, gap: 1000 }, 'second'),
+    true,
+  )
+  a.loopStop('same-chat', undefined, 'A')
+  assert.equal(a.loopActive('same-chat', 'B'), true)
+  a.stopEverything()
+  assert.deepEqual(sent, ['A', 'B'])
+})

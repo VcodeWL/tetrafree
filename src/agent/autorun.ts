@@ -116,7 +116,7 @@ export async function fireAuto(pid: ID, a: Auto, ctx: Ctx, why: string) {
       const runId = pendingRuns.get(k)
       if (runId) finishAutomation(runId, 'failed', 'error')
       const chatId = watching.get(k) || autoChats.get(k)
-      setRunning(pid, a, !!chatId && isRunning(chatId))
+      setRunning(pid, a, !!chatId && isRunning(chatId, pid))
       mark(pid, a, result, false)
     } catch {
       // A failed store/listener must not turn error reporting into another rejection.
@@ -166,7 +166,7 @@ async function fireAutoInner(
   const info = useAutos.getState().runs[k]
   if (info?.running) {
     const previousChat = watching.get(k) || autoChats.get(k)
-    if (!previousChat || isRunning(previousChat)) return fail('предыдущий запуск ещё идёт', true)
+    if (!previousChat || isRunning(previousChat, pid)) return fail('предыдущий запуск ещё идёт', true)
     watching.delete(k)
     setRunning(pid, a, false)
   }
@@ -224,7 +224,7 @@ async function fireAutoInner(
     finishAutomation(journalId, 'failed', 'dispatch')
     return fail('не удалось создать чат')
   }
-  if (isRunning(chat.id)) {
+  if (isRunning(chat.id, pid)) {
     finishAutomation(journalId, 'blocked', 'dispatch')
     return fail('агент в этом чате занят', true)
   }
@@ -236,6 +236,13 @@ async function fireAutoInner(
     prompt: expand(a.do.agent, c),
     automation: {
       id: journalId,
+      allowed: () => {
+        if (!useAutos.getState().approved[hash]) return false
+        const liveText = project(pid)?.files[AUTO_FILE]
+        if (liveText === fileText) return true
+        const live = parseAutomations(liveText).list.find((x) => x.id === a.id)
+        return !!live?.enabled && JSON.stringify(live.raw) === JSON.stringify(a.raw)
+      },
       costLimit: a.costLimit,
       monthlyLimit: a.monthlyLimit,
       onDone: (outcome, reason) => {
@@ -288,7 +295,7 @@ function tick() {
   const now = Date.now()
   /* завершившиеся запуски агента: снимаем «идёт» и на 20 с глушим слежение за файлами (свои же правки) */
   for (const [k, chatId] of [...watching]) {
-    if (!k.startsWith(pid + ':') || isRunning(chatId)) continue
+    if (!k.startsWith(pid + ':') || isRunning(chatId, pid)) continue
     watching.delete(k)
     quietUntil.set(k, now + 20_000)
     useAutos.setState((s) => ({

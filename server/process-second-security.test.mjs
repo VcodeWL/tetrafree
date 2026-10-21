@@ -457,7 +457,43 @@ test('server integration retains ownership and never fabricates completion on ca
   assert.ok(source.includes('treeStopped: tree.stopped'))
   assert.ok(source.includes('const tree = await owned.stop()'))
   assert.ok(source.includes('serverProcesses.shutdown()'))
-  assert.match(source, /requestScope\s*\.run\(controller\.signal/)
+  const httpSource = await fs.readFile(new URL('./http-request.mjs', import.meta.url), 'utf8')
+  // The request scope moved, not the cancellation/ownership guarantee.
+  assert.match(source, /import\s*\{[^}]*\brunRequest\b[^}]*\}\s*from ['"]\.\/http-request\.mjs['"]/)
+  assert.match(source, /return runRequest\(req, res, \(\) => handle\(req, res, access\.isLocal\), next\)/)
+  assert.match(httpSource, /requestScope\s*\.run\(controller\.signal/)
+  const { runRequest, requestScope } = await import('./http-request.mjs')
+  const req = new EventEmitter()
+  req.complete = true
+  const res = new EventEmitter()
+  const observed = []
+  let handled = 0,
+    nextCalls = 0
+  await runRequest(
+    req,
+    res,
+    async () => {
+      handled++
+      observed.push(requestScope.getStore())
+      await Promise.resolve()
+      observed.push(requestScope.getStore())
+      // An exec/SSE handler returns before the owned response/process finishes.
+    },
+    () => {
+      nextCalls++
+    },
+  )
+  assert.equal(handled, 1)
+  assert.equal(nextCalls, 0)
+  assert.ok(observed[0] instanceof AbortSignal)
+  assert.equal(observed[1], observed[0])
+  assert.equal(observed[0].aborted, false)
+  req.emit('close') // completed upload is not process cancellation
+  assert.equal(observed[0].aborted, false)
+  res.emit('close') // unfinished response must still cancel after handler return
+  assert.equal(observed[0].aborted, true)
+  assert.equal(req.listenerCount('aborted'), 0)
+  assert.equal(res.listenerCount('close'), 0)
   assert.ok(source.includes("serverProcesses.own(child, 'exec'"))
   assert.ok(!source.includes('String(e?.message || e)'))
 })

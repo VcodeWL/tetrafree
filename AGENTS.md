@@ -129,3 +129,13 @@ npm run build
 - Не заменять mount-safe navigation intent фиксированным setTimeout. Lazy consumers должны получить pid/target-bound initial intent.
 - `stopEverything()` оставляет автоматизации paused. History whitelist/стоимость — без prompt/file/key/URL. Ledger оценочный, не billing guarantee.
 - Native close/quit/update final checkpoint — до остановки backend/install. Forced kill/power-loss/native acceptance нельзя объявлять проверенными portable fixtures.
+
+
+## Изоляция проектов и диагностика (3.3)
+
+- Исторические ID чатов могут совпадать в копиях. Runtime keys и все UI-вызовы queue/controller/retry/apply/revert/live должны нести captured pid. Не remap исторические ID ради обхода проблемы.
+- Черновики читаются через chatDraft helper. Неоднозначный legacy draft не удалять и не подставлять автоматически; восстановление — явное копирование пользователем.
+- getTokenRevision() предотвращает ABA; равенство строк токена не доказывает актуальность сессии. После await повторять проверку контекста и авторизации.
+- captureSyncHealth — наблюдение eligible текстовых файлов и project-local checkpoint, не гарантия всего диска/облака/атомарности. Не использовать global lastSync как доказательство для текущего проекта.
+- Диагностика — только allowlist JSON через diagnostics builder. Никаких UA, raw errors, имён, путей, ID, model/provider URLs, контента, токенов. Preview до явного экспорта, без upload.
+- HTTP body limit измеряется по байтам UTF-8; transport 413/408/499 не превращать в пустой успешный запрос. После drain/await учитывать disconnect и актуальность authority.

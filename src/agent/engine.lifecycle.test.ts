@@ -116,6 +116,7 @@ const H = {
   state,
   toasts: [] as unknown[],
   notices: [] as unknown[],
+  bootstrap: async () => ({ tools: {}, notes: {} }),
   stream: async (_o: StreamOpts) => {},
   mcp: async (..._args: unknown[]) => ({ ok: true, text: 'benign MCP result' }),
   web: async (..._args: unknown[]) => ({ ok: true, text: 'benign web result', label: 'unit' }),
@@ -146,6 +147,7 @@ function reset(tier: Tier = 'Уведомить') {
   state.providers[0].kind = 'ollama'
   state.providers[0].apiKey = ''
   H.notices = []
+  H.bootstrap = async () => ({ tools: {}, notes: {} })
   state.projects = [project('A'), project('B')]
   state.projectId = 'A'
   state.model = 'local:unit'
@@ -159,7 +161,7 @@ function reset(tier: Tier = 'Уведомить') {
   H.stream = async () => {}
   H.mcp = async () => ({ ok: true, text: 'benign MCP result' })
   H.web = async () => ({ ok: true, text: 'benign web result', label: 'unit' })
-  api.clearQueue('c')
+  api.clearQueue('c', 'A')
   api.useAutos.setState({ approved: {}, runs: {} })
   api.useBackend.setState({ status: 'online', info: { local: true } as BackendInfo })
   api.setToken('unit-token')
@@ -449,11 +451,11 @@ test('A13 project switched before finish retains queued message', async () => {
   H.stream = async () => gate.promise
   const running = start()
   await tick()
-  api.enqueue('c', 'queued unit task', [])
+  api.enqueue('c', 'queued unit task', [], undefined, 'A')
   state.projectId = 'B'
   gate.resolve()
   await running
-  assert.equal(api.peekQueue('c').text, 'queued unit task')
+  assert.equal(api.peekQueue('c', 'A').text, 'queued unit task')
 })
 
 test('A13 project switched during queue pause retains queued message', async () => {
@@ -466,13 +468,13 @@ test('A13 project switched during queue pause retains queued message', async () 
   }
   const running = start()
   await tick()
-  api.enqueue('c', 'queued unit task', [])
+  api.enqueue('c', 'queued unit task', [], undefined, 'A')
   gate.resolve()
   await running
   state.projectId = 'B'
   await new Promise((r) => setTimeout(r, 400))
   assert.equal(calls, 1)
-  assert.equal(api.peekQueue('c').text, 'queued unit task')
+  assert.equal(api.peekQueue('c', 'A').text, 'queued unit task')
 })
 
 test('A14 Stop in queue pause cancels timer and clears requested queue', async () => {
@@ -485,13 +487,13 @@ test('A14 Stop in queue pause cancels timer and clears requested queue', async (
   }
   const running = start()
   await tick()
-  api.enqueue('c', 'queued unit task', [])
+  api.enqueue('c', 'queued unit task', [], undefined, 'A')
   gate.resolve()
   await running
   api.stopTurn('c')
   await new Promise((r) => setTimeout(r, 400))
   assert.equal(calls, 1)
-  assert.equal(api.peekQueue('c'), undefined)
+  assert.equal(api.peekQueue('c', 'A'), undefined)
 })
 
 test('A14 clear plus new enqueue cannot reuse an old queue timer', async () => {
@@ -504,14 +506,14 @@ test('A14 clear plus new enqueue cannot reuse an old queue timer', async () => {
   }
   const running = start()
   await tick()
-  api.enqueue('c', 'old task', [])
+  api.enqueue('c', 'old task', [], undefined, 'A')
   gate.resolve()
   await running
-  api.clearQueue('c')
-  api.enqueue('c', 'replacement task', [])
+  api.clearQueue('c', 'A')
+  api.enqueue('c', 'replacement task', [], undefined, 'A')
   await new Promise((r) => setTimeout(r, 400))
   assert.equal(calls, 1)
-  assert.equal(api.peekQueue('c').text, 'replacement task')
+  assert.equal(api.peekQueue('c', 'A').text, 'replacement task')
 })
 
 test('queue item removed only when the next request is accepted', async () => {
@@ -524,12 +526,12 @@ test('queue item removed only when the next request is accepted', async () => {
   }
   const running = start()
   await tick()
-  api.enqueue('c', 'queued task', [])
+  api.enqueue('c', 'queued task', [], undefined, 'A')
   gate.resolve()
   await running
   await new Promise((r) => setTimeout(r, 400))
   assert.equal(calls, 2)
-  assert.equal(api.peekQueue('c'), undefined)
+  assert.equal(api.peekQueue('c', 'A'), undefined)
 })
 
 test('queue failure to resolve a model retains item', async () => {
@@ -538,12 +540,12 @@ test('queue failure to resolve a model retains item', async () => {
   H.stream = async () => gate.promise
   const running = start()
   await tick()
-  api.enqueue('c', 'queued task', [])
+  api.enqueue('c', 'queued task', [], undefined, 'A')
   gate.resolve()
   await running
   state.model = 'missing:model'
   await new Promise((r) => setTimeout(r, 400))
-  assert.equal(api.peekQueue('c').text, 'queued task')
+  assert.equal(api.peekQueue('c', 'A').text, 'queued task')
 })
 
 async function approvedAuto(raw: Record<string, unknown>) {
@@ -1131,10 +1133,10 @@ test('stop-all aborts engine and clears queued dispatch even after immediate exp
   }
   const run = api.runTurn('A', 'c', 'Review greeting', 'Builder', 'Уведомить', [])
   await started.promise
-  api.enqueue('c', 'queued review', [])
+  api.enqueue('c', 'queued review', [], undefined, 'A')
   api.stopEverything()
   assert.equal(signal?.aborted, true)
-  assert.equal(api.peekQueue('c'), undefined)
+  assert.equal(api.peekQueue('c', 'A'), undefined)
   api.resumeAutomations()
   gate.resolve()
   await run
@@ -1239,7 +1241,7 @@ test('failed automatic run can be manually retried immediately without waiting f
 test('stop-all removes already parked queue timer; resume cannot revive its queued dispatch', async () => {
   reset()
   H.stream = async () => {}
-  api.enqueue('c', 'Review queued greeting', [])
+  api.enqueue('c', 'Review queued greeting', [], undefined, 'A')
   await api.runTurn('A', 'c', 'Review greeting', 'Builder', 'Уведомить', [])
   assert.equal(api.isRunning('c'), true)
   api.stopEverything()
@@ -1291,4 +1293,431 @@ test('automatic tool continuation reserves again and stops before a second unaff
   assert.equal(calls, 1)
   assert.equal(api.useAutomationJournal.getState().runs[0].reason, 'budget')
   assert.equal(api.useAutomationJournal.getState().runs[0].reserved, 0.16)
+})
+
+// Next audit: desired behavior, not bad-behavior witnesses.
+function commandCard() {
+  getProject().chats[0].messages.push({
+    id: 'retry-message',
+    kind: 'agent',
+    agent: 'Builder',
+    text: '',
+    at: 0,
+    parts: [
+      { k: 'cmd', id: 'retry-part', cmd: 'echo greeting', state: 'error', out: 'prior output', code: 1 },
+    ],
+  })
+}
+function retryPart() {
+  const m = getProject().chats[0].messages.find((m) => m.id === 'retry-message')!
+  assert.equal(m.kind, 'agent')
+  return m.kind === 'agent' ? m.parts![0] : undefined
+}
+test('N01 stopRetry late rejection must not overwrite a replacement command card', async () => {
+  reset()
+  commandCard()
+  const gate = deferred<Response>(),
+    started = deferred()
+  globalThis.fetch = async () => {
+    started.resolve()
+    return gate.promise
+  }
+  const run = api.retryCommand('c', 'retry-message', 'retry-part')
+  await started.promise
+  api.stopRetry('retry-part')
+  state.patchMsg(
+    'c',
+    'retry-message',
+    {
+      parts: [
+        {
+          k: 'cmd',
+          id: 'retry-part',
+          cmd: 'echo another greeting',
+          state: 'error',
+          out: 'replacement output',
+          code: 7,
+        },
+      ],
+    },
+    'A',
+  )
+  gate.reject(Error('unit cancelled transport'))
+  await run
+  const p = retryPart()
+  assert.ok(p?.k === 'cmd')
+  assert.equal(p.out, 'replacement output')
+  assert.equal(p.code, 7)
+})
+test('N02 project A-to-B-to-A cancels pending command retry and rejects late successful EOF', async () => {
+  reset()
+  commandCard()
+  const gate = deferred<Response>(),
+    started = deferred()
+  globalThis.fetch = async () => {
+    started.resolve()
+    return gate.promise
+  }
+  const run = api.retryCommand('c', 'retry-message', 'retry-part')
+  await started.promise
+  state.projectId = 'B'
+  state.projectId = 'A'
+  gate.resolve(response())
+  await run
+  const p = retryPart()
+  assert.ok(p?.k === 'cmd')
+  assert.notEqual(p.state, 'done')
+})
+test('N03 late apply confirmation cannot approve a changed proposal payload against unchanged files', () => {
+  reset('Эскалация')
+  getProject().files['greeting.txt'] = 'original'
+  const T = turn('Эскалация')
+  T.begin('p', 'edit', 'greeting.txt')
+  T.endWrite('p', 'greeting.txt', 'first proposal')
+  saveTurn(T)
+  getProject().files['greeting.txt'] = 'human text'
+  api.applyProposed('c', 'm')
+  assert.ok(modal)
+  const approve = modal!.run
+  const m = getProject().chats[0].messages.find((m) => m.id === 'm')!
+  assert.equal(m.kind, 'agent')
+  if (m.kind === 'agent')
+    m.parts = m.parts!.map((p) => (p.k === 'file' ? { ...p, after: 'replacement proposal' } : p))
+  approve()
+  assert.equal(getProject().files['greeting.txt'], 'human text')
+})
+test('N04 late revert confirmation cannot authorize changed before-image evidence', () => {
+  reset()
+  getProject().files['greeting.txt'] = 'original'
+  const T = turn()
+  T.begin('p', 'edit', 'greeting.txt')
+  T.endWrite('p', 'greeting.txt', 'agent text')
+  saveTurn(T)
+  getProject().files['greeting.txt'] = 'human text'
+  api.revertTurn('c', 'm')
+  assert.ok(modal)
+  const approve = modal!.run
+  const m = getProject().chats[0].messages.find((m) => m.id === 'm')!
+  assert.equal(m.kind, 'agent')
+  if (m.kind === 'agent')
+    m.parts = m.parts!.map((p) =>
+      p.k === 'file'
+        ? {
+            ...p,
+            agentGuard: {
+              before: { 'greeting.txt': 'replacement before' },
+              after: { 'greeting.txt': 'agent text' },
+            },
+          }
+        : p,
+    )
+  approve()
+  assert.equal(getProject().files['greeting.txt'], 'human text')
+})
+test('N05 stop-all triggered by reservation observers cannot enter the model adapter afterwards', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit admission stop',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+  })
+  let calls = 0
+  H.stream = async () => {
+    calls++
+  }
+  let stopped = false
+  const off = api.useAutomationJournal.subscribe((s: { runs: { outcome: string }[] }) => {
+    if (!stopped && s.runs[0]?.outcome === 'running' && getProject().chats.some((c) => c.running)) {
+      stopped = true
+      api.stopEverything()
+    }
+  })
+  try {
+    await api.fireAuto('A', a, {}, 'unit')
+    await tick()
+    assert.equal(calls, 0)
+  } finally {
+    off()
+    api.resumeAutomations()
+  }
+})
+
+// Characterization before extracting the pure policy seams from engine.
+test('policy characterization: fixed verification priority and no filename interpolation', () => {
+  reset()
+  assert.equal(
+    api.verifyCommand(
+      {
+        'package.json':
+          '{"scripts":{"test":"echo greeting","check":"check","typecheck":"types","lint":"lint"}}',
+      },
+      ['greeting.js'],
+    ),
+    'npm run typecheck --silent',
+  )
+  assert.equal(
+    api.verifyCommand({ 'package.json': '{"scripts":{"test":"echo no test specified","lint":"lint"}}' }, []),
+    'npm run lint --silent',
+  )
+  assert.equal(api.verifyCommand({ 'package.json': 'invalid' }, ['hello world.py']), null)
+})
+test('policy characterization: exact request reserve uses UTF-8 bytes and capped output, usage remains estimate', async () => {
+  reset()
+  state.providers[0].kind = 'custom'
+  state.providers[0].apiKey = 'unit-key'
+  state.settings.priceCustom = { unit: { inp: 2, out: 5 } }
+  const a = await approvedAuto({
+    name: 'Unit UTF8 policy',
+    when: { manual: true },
+    do: { agent: 'Проверь приветствие' },
+    costLimit: 1,
+  })
+  H.stream = async (o) => o.onDelta('Привет')
+  await api.fireAuto('A', a, {}, 'unit')
+  await tick()
+  const r = api.useAutomationJournal.getState().runs[0]
+  const chars = 'unit system'.length + 'Проверь приветствие'.length
+  assert.equal(
+    r.reserved,
+    (new TextEncoder().encode('unit systemПроверь приветствие').length * 2 + 16000 * 5) / 1e6,
+  )
+  const m = getProject()
+    .chats.find((c) => c.id !== 'c')!
+    .messages.find((m) => m.kind === 'agent')!
+  assert.ok(m.kind === 'agent')
+  assert.equal(m.usage?.inTok, Math.round(chars / 3.2))
+  assert.equal(m.usage?.outTok, Math.round('Привет'.length / 3.2))
+})
+
+test('N06 revoked automation approval during MCP bootstrap cannot dispatch the model afterwards', async () => {
+  reset()
+  const a = await approvedAuto({
+    name: 'Unit pending approval',
+    when: { manual: true },
+    do: { agent: 'Review greeting' },
+  })
+  const gate = deferred<{ tools: Record<string, never>; notes: Record<string, never> }>(),
+    started = deferred()
+  H.bootstrap = async () => {
+    started.resolve()
+    return gate.promise
+  }
+  let calls = 0
+  H.stream = async () => {
+    calls++
+  }
+  await api.fireAuto('A', a, {}, 'unit')
+  await started.promise
+  api.useAutos.setState({ approved: {} })
+  gate.resolve({ tools: {}, notes: {} })
+  await tick()
+  assert.equal(calls, 0)
+})
+
+function cloneProjectWithHistoricalIds() {
+  const clone = structuredClone(getProject('A'))
+  clone.id = 'B'
+  clone.name = 'B'
+  state.projects[1] = clone
+}
+test('N07 clone runtime controllers do not cross-cancel and late output stays in its origin project', async () => {
+  reset()
+  cloneProjectWithHistoricalIds()
+  const gates = [deferred(), deferred()],
+    started = [deferred(), deferred()],
+    calls: StreamOpts[] = []
+  H.stream = async (o) => {
+    const i = calls.push(o) - 1
+    started[i].resolve()
+    await gates[i].promise
+    o.onDelta('<write path="greeting.txt">origin ' + i + '</write>')
+  }
+  const a = api.runTurn('A', 'c', 'Review greeting A', 'Builder', 'Уведомить', [])
+  await started[0].promise
+  state.projectId = 'B'
+  const b = api.runTurn('B', 'c', 'Review greeting B', 'Builder', 'Уведомить', [])
+  await started[1].promise
+  const aWasAborted = calls[0].signal.aborted
+  api.stopTurn('c', 'B')
+  const bStopped = calls[1].signal.aborted
+  gates[0].resolve()
+  gates[1].resolve()
+  await Promise.all([a, b])
+  assert.equal(aWasAborted, false)
+  assert.equal(bStopped, true)
+  assert.equal(getProject('A').files['greeting.txt'], 'origin 0')
+  assert.equal(getProject('B').files['greeting.txt'], undefined)
+})
+test('N08 clone B never consumes project A queued prompt', async () => {
+  reset()
+  cloneProjectWithHistoricalIds()
+  api.enqueue('c', 'Project A private greeting', [], undefined, 'A')
+  state.projectId = 'B'
+  let calls = 0
+  H.stream = async () => {
+    calls++
+  }
+  await api.runTurn('B', 'c', 'Review greeting B', 'Builder', 'Уведомить', [])
+  await new Promise((r) => setTimeout(r, 400))
+  assert.equal(calls, 1)
+  assert.equal(api.peekQueue('c', 'A')?.text, 'Project A private greeting')
+  assert.equal(api.peekQueue('c', 'B'), undefined)
+  api.clearQueue('c', 'A')
+})
+test('N09 live endChat scopes cleanup even when cloned chats share their historical id', () => {
+  reset()
+  api.live.start({ pid: 'A', chatId: 'c', path: 'a.txt', text: 'A', caret: 1, agent: 'Builder', op: 'edit' })
+  api.live.start({ pid: 'B', chatId: 'c', path: 'b.txt', text: 'B', caret: 1, agent: 'Builder', op: 'edit' })
+  api.live.endChat('c', 'A')
+  assert.equal(
+    Object.values(api.useLive.getState().files).some((f) => (f as { pid: string }).pid === 'B'),
+    true,
+  )
+  api.live.endChat('c', 'B')
+})
+test('N10 command retry lock and stop are isolated by pid/chat/message/part origin', async () => {
+  reset()
+  commandCard()
+  cloneProjectWithHistoricalIds()
+  const gates = [deferred<Response>(), deferred<Response>()],
+    signals: AbortSignal[] = []
+  globalThis.fetch = async (url, o) => {
+    if (String(url).endsWith('/kill')) return new Response('{}')
+    const i = signals.push(o!.signal!) - 1
+    return gates[i].promise
+  }
+  const a = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await tick()
+  state.projectId = 'B'
+  const b = api.retryCommand('c', 'retry-message', 'retry-part', 'B')
+  await tick()
+  const count = signals.length
+  api.stopRetry('retry-part', 'A', 'c', 'retry-message')
+  const bStopped = signals[1]?.aborted
+  gates[0].resolve(response())
+  gates[1].resolve(response())
+  await Promise.all([a, b])
+  assert.equal(count, 2)
+  assert.equal(bStopped, false)
+})
+test('N11 stale origin-bound apply never retargets the clone selected after UI render', () => {
+  reset('Эскалация')
+  getProject().files['greeting.txt'] = 'original'
+  const T = turn('Эскалация')
+  T.begin('p', 'edit', 'greeting.txt')
+  T.endWrite('p', 'greeting.txt', 'agent proposal')
+  saveTurn(T)
+  cloneProjectWithHistoricalIds()
+  state.projectId = 'B'
+  api.applyProposed('c', 'm', 'p', undefined, false, undefined, 'A')
+  assert.equal(getProject('B').files['greeting.txt'], 'original')
+  assert.equal(getProject('A').files['greeting.txt'], 'original')
+})
+
+test('N12 partial retry stop origin is a no-op when two messages share a part ID', async () => {
+  reset()
+  commandCard()
+  const first = getProject().chats[0].messages[0]
+  getProject().chats[0].messages.push({ ...structuredClone(first), id: 'second-message' } as Message)
+  const gates = [deferred<Response>(), deferred<Response>()],
+    signals: AbortSignal[] = []
+  globalThis.fetch = async (url, o) => {
+    if (String(url).endsWith('/kill')) return new Response('{}')
+    const i = signals.push(o!.signal!) - 1
+    return gates[i].promise
+  }
+  const one = api.retryCommand('c', 'retry-message', 'retry-part', 'A')
+  await tick()
+  const two = api.retryCommand('c', 'second-message', 'retry-part', 'A')
+  await tick()
+  api.stopRetry('retry-part', 'A', 'c')
+  const ambiguous = signals.map((s) => s.aborted)
+  api.stopRetry('retry-part', 'A', 'c', 'retry-message')
+  const exact = signals.map((s) => s.aborted)
+  gates[0].resolve(response())
+  gates[1].resolve(response())
+  await Promise.all([one, two])
+  assert.deepEqual(ambiguous, [false, false])
+  assert.deepEqual(exact, [true, false])
+})
+test('N13 live cleanup without a known origin fails closed', () => {
+  reset()
+  api.live.start({
+    pid: 'A',
+    chatId: 'c',
+    path: 'greeting.txt',
+    text: 'greeting',
+    caret: 0,
+    agent: 'Builder',
+    op: 'edit',
+  })
+  const before = api.useLive.getState().files
+  api.live.endChat('c')
+  assert.equal(api.useLive.getState().files, before)
+  api.live.endChat('c', 'A')
+})
+
+import { AUTOMATION_MAX_TOKENS, requestReservation, usageEstimate, verifyCommand } from './enginePolicy'
+test('pure policies: reservation distinguishes known zero, local, unknown/invalid tariffs and image allowance', () => {
+  const messages = [{ content: 'Привет', images: ['unit-image'] }, { content: 'greeting' }]
+  const textBytes = new TextEncoder().encode('systemПриветgreeting').length
+  assert.equal(AUTOMATION_MAX_TOKENS, 16000)
+  assert.equal(
+    requestReservation('system', messages, false, { inp: 2, out: 5 }),
+    ((textBytes + 12000) * 2 + 16000 * 5) / 1e6,
+  )
+  assert.equal(requestReservation('system', messages, false, { inp: 0, out: 0 }), 0)
+  for (const price of [null, { inp: -1, out: 0 }, { inp: 1, out: NaN }, { inp: Infinity, out: 1 }])
+    assert.equal(requestReservation('system', messages, false, price), null)
+  assert.equal(requestReservation('system', messages, true, null), 0)
+  assert.deepEqual(usageEstimate({ inChars: 32, steps: 2 }, 64, 'unit', false), {
+    inTok: 10,
+    outTok: 20,
+    steps: 2,
+    mid: 'unit',
+    free: false,
+  })
+  assert.equal(verifyCommand({}, ['hello world.py']), null)
+})
+
+test('policy characterization: review state precedence, totals and version retention remain stable', () => {
+  const cases: {
+    states: Extract<Part, { k: 'file' }>['state'][]
+    state: string
+    files: number
+    version?: number
+  }[] = [
+    { states: ['proposed'], state: 'proposed', files: 1 },
+    { states: ['proposed', 'done', 'error'], state: 'partial', files: 2, version: 8 },
+    { states: ['done', 'reverted'], state: 'applied', files: 1 },
+    { states: ['reverted', 'error'], state: 'reverted', files: 0 },
+    { states: ['rejected', 'error'], state: 'rejected', files: 0 },
+    { states: [], state: 'rejected', files: 0 },
+  ]
+  for (const c of cases) {
+    reset()
+    const T = turn()
+    T.parts = c.states.map((state, i) => ({
+      k: 'file',
+      id: 'p' + i,
+      op: 'edit',
+      path: 'greeting' + i + '.txt',
+      state,
+      add: 2,
+      del: 1,
+      lines: 1,
+    }))
+    saveTurn(T)
+    state.patchMsg('c', 'm', { turn: { state: 'proposed', files: 0, add: 0, del: 0, version: 5 } }, 'A')
+    api.refreshTurn('A', 'c', 'm', c.version)
+    const m = getProject().chats[0].messages[0]
+    assert.ok(m.kind === 'agent')
+    assert.deepEqual(m.turn, {
+      state: c.state,
+      version: c.version ?? 5,
+      files: c.files,
+      add: c.files * 2,
+      del: c.files,
+    })
+  }
 })

@@ -197,9 +197,9 @@ export function App() {
         !st.palette &&
         !document.querySelector('.dd') &&
         st.center.kind === 'chat' &&
-        isRunning(st.center.id)
+        isRunning(st.center.id, st.projectId || undefined)
       ) {
-        stopTurn(st.center.id)
+        stopTurn(st.center.id, st.projectId || undefined)
         return
       }
       if (document.querySelector('.hk-edit.rec')) return /* идёт запись нового сочетания */
@@ -299,7 +299,7 @@ export function App() {
     /* не даём случайно закрыть окно посреди работы агента */
     const bu = (e: BeforeUnloadEvent) => {
       const p = useStore.getState().projects.find((x) => x.id === useStore.getState().projectId)
-      if (p?.chats.some((c) => isRunning(c.id))) {
+      if (p?.chats.some((c) => isRunning(c.id, p.id))) {
         e.preventDefault()
         e.returnValue = ''
       }

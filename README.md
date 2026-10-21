@@ -54,7 +54,7 @@ React 18, TypeScript, Vite, zustand, Tauri 2; сервер — Node без за�
 
 ### Документация
 
-[Приёмка и ограничения 3.2.0](docs/audit/3.2.0/README.md) · [Аудит и ремонт 3.1.5](docs/audit/3.1.5/README.md)
+[Диагностика и аудит 3.3.0](docs/audit/3.3.0/README.md) · [Приёмка и ограничения 3.2.0](docs/audit/3.2.0/README.md) · [Аудит и ремонт 3.1.5](docs/audit/3.1.5/README.md)
 
 [Подробности и безопасность](docs/DETAILS.md) · [Архитектура](ARCHITECTURE.md) · [Инструкции для агентов](AGENTS.md) · [Дорожная карта](ROADMAP.md) · [Список изменений](CHANGELOG.md)
 

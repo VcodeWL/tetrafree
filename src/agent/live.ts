@@ -39,9 +39,12 @@ export const live = {
       return { files: f }
     })
   },
-  endChat(chatId: ID) {
+  endChat(chatId: ID, pid?: ID) {
+    if (!pid) return // Unknown origin must never clear buffers in another project.
     useLive.setState((s) => ({
-      files: Object.fromEntries(Object.entries(s.files).filter(([, v]) => v.chatId !== chatId)),
+      files: Object.fromEntries(
+        Object.entries(s.files).filter(([, v]) => v.chatId !== chatId || v.pid !== pid),
+      ),
     }))
   },
 }

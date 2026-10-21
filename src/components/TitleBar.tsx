@@ -5,7 +5,7 @@ import { isDesktop, winClose, winMinimize, winToggleMax } from '../lib/desktop'
 import { Logo } from './ui/primitives'
 import { Icon } from './ui/Icon'
 import { modKey, ago } from '../lib/util'
-import { useBackend } from '../lib/backend'
+import { captureSyncHealth, syncHealthLabel, useSyncStatus } from '../lib/syncStatus'
 import { useAccount } from '../lib/account'
 import { usePeers } from '../lib/team'
 import { useNotifs } from '../lib/notifs'
@@ -83,56 +83,41 @@ function Bell() {
 /* Что сейчас происходит с данными: диск, облако, связь с сервером. Один взгляд — и понятно, всё ли сохранено и видят ли коллеги */
 function SyncPill() {
   const p = useProject()
-  const b = useBackend()
+  useSyncStatus((s) => s.revision)
   const user = useAccount((a) => a.user)
   const cs = usePeers((x) => (p ? x.sync[p.id] : undefined))
   const live = usePeers((x) => (p ? !!x.live[p.id] : false))
-  if (!user) return null
-  let cls = '',
-    label = '',
-    tip = '',
-    spin = false
-  if (b.status === 'checking') {
-    label = 'Подключаюсь…'
-    spin = true
-    tip = 'Ищу сервер TetraFree'
-  } else if (b.status === 'offline') {
-    cls = 'err'
-    label = 'Нет сервера'
-    tip = 'Сервер не отвечает. Работаю локально, изменения сохраняются в браузере и отправятся позже.'
-  } else if (p?.cloud) {
-    if (cs?.error) {
-      cls = 'err'
-      label = 'Ошибка облака'
-      tip = cs.error
-    } else if (cs?.syncing || b.syncing) {
-      label = 'Синхронизация'
-      spin = true
-      tip = 'Обмениваюсь изменениями с командой'
-    } else if (live) {
-      cls = 'live'
-      label = 'Команда онлайн'
-      tip = 'Правки коллег приходят мгновенно' + (cs?.at ? ' · последняя сверка ' + ago(cs.at) : '')
-    } else {
-      cls = 'poll'
-      label = 'Облако · раз в 5 с'
-      tip = 'Поток событий не подключён, проверяю раз в 5 секунд'
-    }
-  } else if (b.syncing) {
-    label = 'Сохраняю на диск'
-    spin = true
-    tip = 'Синхронизация с папкой проекта'
-  } else if (b.lastError) {
-    cls = 'err'
-    label = 'Ошибка диска'
-    tip = b.lastError
-  } else return null
+  const health = captureSyncHealth(p?.id)
+  const disk = syncHealthLabel(health)
+  if (!user || !p) return null
+  let label = disk.text,
+    tip = disk.detail,
+    cls = disk.c,
+    spin = disk.c === 'sync'
+  if (p.cloud) {
+    spin = !!cs?.syncing
+    cls = cs?.error ? 'err' : live ? 'live' : 'poll'
+    label = cs?.error
+      ? 'Облако: нужна проверка'
+      : spin
+        ? 'Обмениваюсь с облаком…'
+        : live
+          ? 'Облачное соединение открыто'
+          : 'Облако: периодическая сверка'
+    tip =
+      'Подключение не подтверждает доставку всех правок.' +
+      (cs?.at ? ' Последний обмен ' + ago(cs.at) + '.' : '') +
+      ' ' +
+      disk.detail
+  }
   return (
     <button
       className={'syncpill ' + cls}
       title={tip}
       aria-live="polite"
-      onClick={() => p?.cloud && useStore.getState().openModal({ type: 'settings', section: 'members' })}
+      onClick={() =>
+        useStore.getState().openModal({ type: 'settings', section: p.cloud ? 'members' : 'backend' })
+      }
     >
       {spin ? <i className="bspin" /> : <i className="sd" />}
       {label}

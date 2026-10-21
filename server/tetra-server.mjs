@@ -15,11 +15,19 @@ import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import crypto from 'node:crypto'
 import { StringDecoder } from 'node:string_decoder'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { assertGitMetadata, gitInvocation } from './git-safety.mjs'
 import { captureProcess } from './owned-process.mjs'
-import { publicFailure } from './public-errors.mjs'
-const requestScope = new AsyncLocalStorage()
+import { publicError, publicFailure } from './public-errors.mjs'
+import {
+  requestScope,
+  readBody,
+  json,
+  requestAccess,
+  runRequest,
+  responseHeaders,
+  streamResponse,
+  assertRequestActive,
+} from './http-request.mjs'
 import { inside, realInside, fnv, matchesExpected, withProjectLock } from './fs-safety.mjs'
 export { realInside, fnv } from './fs-safety.mjs'
 import {
@@ -234,34 +242,6 @@ function pipeFile(abs, res) {
   res.on('close', () => rs.destroy())
   rs.pipe(res)
 }
-const json = (res, code, body) => {
-  res.writeHead(code, {
-    'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': '*',
-  })
-  res.end(JSON.stringify(body))
-}
-const readBody = (req) =>
-  new Promise((ok, fail) => {
-    let b = ''
-    req.setEncoding('utf8')
-    req.on('data', (d) => {
-      b += d
-      if (b.length > 50e6) {
-        fail(Object.assign(new Error('Слишком большой запрос'), { status: 413 }))
-        req.destroy()
-      }
-    })
-    req.on('end', () => {
-      try {
-        /* null вместо тела ломал деструктуризацию в обработчиках (500 с текстом исключения) */
-        ok((b ? JSON.parse(b) : {}) ?? {})
-      } catch {
-        fail(Object.assign(new Error('Тело запроса — не корректный JSON'), { status: 400 }))
-      }
-    })
-    req.on('error', fail)
-  })
 const MIME = {
   html: 'text/html',
   css: 'text/css',
@@ -284,11 +264,22 @@ const pendingExec = new Map()
 const cancelledRuns = new Map()
 const CANCEL_TTL = 15 * 60 * 1000
 const CANCEL_LIMIT = 1024
+function requireAccount(req) {
+  assertRequestActive()
+  const account = authed(req)
+  if (!account) throw publicError(401, 'Нужно войти в аккаунт')
+  return account
+}
+async function readAuthorizedBody(req) {
+  const body = await readBody(req)
+  requireAccount(req)
+  return body
+}
 function execKey(req, runId) {
   if (runId === undefined || runId === null || runId === '') return ''
   if (typeof runId !== 'string' || runId.length > 160)
     throw Object.assign(new Error('Неверный runId'), { status: 400 })
-  return authed(req).session.id + ':' + runId
+  return requireAccount(req).session.id + ':' + runId
 }
 function pruneCancelled() {
   for (const [key, exp] of cancelledRuns) if (exp <= Date.now()) cancelledRuns.delete(key)
@@ -315,11 +306,13 @@ async function handle(req, res, isLocal) {
   const u = new URL(req.url, 'http://x')
   if (stopping) return json(res, 503, { error: { message: 'Сервер завершает работу' } })
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'access-control-allow-origin': '*',
-      'access-control-allow-headers': 'authorization,content-type',
-      'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-    })
+    res.writeHead(
+      204,
+      responseHeaders(res, {
+        'access-control-allow-headers': 'authorization,content-type',
+        'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+      }),
+    )
     return res.end()
   }
 
@@ -355,25 +348,24 @@ async function handle(req, res, isLocal) {
     if (!authed(req)) return json(res, 401, { error: { message: 'Нужно войти в аккаунт' } })
   }
 
-  if (await ptyRoutes(req, res, u, { json, readBody, projectDir })) return
-  if (await secretRoutes(req, res, u, { json, readBody }, vault)) return
-  if (await webRoutes(req, res, u, { json, readBody })) return
+  if (await ptyRoutes(req, res, u, { json, readBody: readAuthorizedBody, projectDir })) return
+  if (await secretRoutes(req, res, u, { json, readBody: readAuthorizedBody }, vault)) return
+  if (await webRoutes(req, res, u, { json, readBody: readAuthorizedBody })) return
   if (
     await mcpRoutes(
       req,
       res,
       u,
-      { json, readBody, projectDir },
+      { json, readBody: readAuthorizedBody, projectDir },
       { approvalsFile: path.join(path.dirname(ROOT), 'mcp-approved.json'), pool: mcpPool },
     )
   )
     return
 
   if (u.pathname === '/api/preview' && req.method === 'POST') {
-    const a = authed(req),
-      body = await readBody(req)
+    const body = await readAuthorizedBody(req)
     const dir = await projectDir(body.id, body.name, body.folder)
-    return json(res, 200, await preview.issue(dir, a.session.id, body.path || ''))
+    return json(res, 200, await preview.issue(dir, requireAccount(req).session.id, body.path || ''))
   }
 
   /* обзор папок для выбора места проекта: список подпапок + сведения о самой папке */
@@ -439,7 +431,7 @@ async function handle(req, res, isLocal) {
   }
   /* проверка пути до создания проекта: можно ли писать, что там лежит */
   if (u.pathname === '/api/project/check' && req.method === 'POST') {
-    const { folder } = await readBody(req)
+    const { folder } = await readAuthorizedBody(req)
     let abs
     try {
       abs = checkFolder(folder)
@@ -470,7 +462,7 @@ async function handle(req, res, isLocal) {
   }
   /* клонировать репозиторий в новую или пустую папку (затем она открывается как обычный проект) */
   if (u.pathname === '/api/git-clone' && req.method === 'POST') {
-    const { url, folder } = await readBody(req)
+    const { url, folder } = await readAuthorizedBody(req)
     const c = checkRemoteUrl(url)
     if (!c.ok) return json(res, 200, { ok: false, reason: c.reason })
     let abs
@@ -499,7 +491,7 @@ async function handle(req, res, isLocal) {
   }
   /* показать папку проекта (или файл в ней) в проводнике ОС */
   if (u.pathname === '/api/fs/reveal' && req.method === 'POST') {
-    const { id, name, folder, rel } = await readBody(req)
+    const { id, name, folder, rel } = await readAuthorizedBody(req)
     const dir = await projectDir(id, name, folder)
     const target = rel && fs.existsSync(inside(dir, rel)) ? inside(dir, rel) : dir
     await realInside(dir, target)
@@ -525,7 +517,7 @@ async function handle(req, res, isLocal) {
   }
   /* отдельное окно терминала ОС в папке проекта (Windows Terminal, иначе PowerShell) */
   if (u.pathname === '/api/fs/open-terminal' && req.method === 'POST') {
-    const { id, name, folder } = await readBody(req)
+    const { id, name, folder } = await readAuthorizedBody(req)
     const dir = await projectDir(id, name, folder)
     fs.mkdirSync(dir, { recursive: true })
     const l = terminalLaunch(dir)
@@ -551,7 +543,7 @@ async function handle(req, res, isLocal) {
     return json(res, 200, { ok: true })
   }
   if (u.pathname === '/api/editors/check' && req.method === 'POST') {
-    const ed = customEditor((await readBody(req)).exe)
+    const ed = customEditor((await readAuthorizedBody(req)).exe)
     return json(
       res,
       200,
@@ -564,7 +556,7 @@ async function handle(req, res, isLocal) {
     )
   }
   if (u.pathname === '/api/fs/open-in' && req.method === 'POST') {
-    const { id, name, folder, editor, rel, line, exe: customExe } = await readBody(req)
+    const { id, name, folder, editor, rel, line, exe: customExe } = await readAuthorizedBody(req)
     const ed = editor === 'custom' ? customEditor(customExe) : EDITORS.find((e) => e.id === editor)
     if (!ed)
       return json(res, 200, {
@@ -607,7 +599,7 @@ async function handle(req, res, isLocal) {
   }
   /* путь для проекта, созданного до 2.0 (лежал в ROOT/<имя>) */
   if (u.pathname === '/api/project/resolve' && req.method === 'POST') {
-    const { id, name } = await readBody(req)
+    const { id, name } = await readAuthorizedBody(req)
     return json(res, 200, { ok: true, dir: await projectDir(id, name) })
   }
 
@@ -615,7 +607,7 @@ async function handle(req, res, isLocal) {
   if (u.pathname === '/api/backup' && (req.method === 'POST' || req.method === 'GET')) {
     const dir = path.join(path.dirname(ROOT), 'backups')
     if (req.method === 'POST') {
-      const { data } = await readBody(req)
+      const { data } = await readAuthorizedBody(req)
       if (!data || data.app !== 'tetrafree' || !Array.isArray(data.projects))
         return json(res, 400, { ok: false, reason: 'Это не копия TetraFree' })
       await fsp.mkdir(dir, { recursive: true })
@@ -654,7 +646,7 @@ async function handle(req, res, isLocal) {
 
   /* инкрементальные правки */
   if (u.pathname === '/api/fs/batch' && req.method === 'POST') {
-    const body = await readBody(req)
+    const body = await readAuthorizedBody(req)
     const { id, name, folder } = body
     /* поля приходят от клиента: всё, что не словарь/массив, считаем пустым (иначе «remove: 5» давало 500) */
     const write = body.write && typeof body.write === 'object' && !Array.isArray(body.write) ? body.write : {}
@@ -777,7 +769,7 @@ async function handle(req, res, isLocal) {
     })
   }
   if (u.pathname === '/api/fs/read' && req.method === 'POST') {
-    const { id, name, folder, paths = [] } = await readBody(req)
+    const { id, name, folder, paths = [] } = await readAuthorizedBody(req)
     const dir = await projectDir(id, name, folder)
     const out = {}
     for (const rel of paths) {
@@ -794,7 +786,15 @@ async function handle(req, res, isLocal) {
 
   /* shell: NDJSON-стрим {t:'o'|'e', d} … {t:'x', code, cwd} */
   if (u.pathname === '/api/exec' && req.method === 'POST') {
-    const { id, name, folder, cmd: rawCmd, cwd = '', timeout: rawTimeout = 600, runId } = await readBody(req)
+    const {
+      id,
+      name,
+      folder,
+      cmd: rawCmd,
+      cwd = '',
+      timeout: rawTimeout = 600,
+      runId,
+    } = await readAuthorizedBody(req)
     const runKey = execKey(req, runId)
     pruneCancelled()
     if (runKey && (running.has(runKey) || pendingExec.has(runKey)))
@@ -844,6 +844,7 @@ async function handle(req, res, isLocal) {
         args = ['/d', '/v:off', '/s', '/c', '""%TF_EXEC_WRAPPER%""']
       }
       if (state.cancelled || req.aborted || res.destroyed || stopping) return cancelledReply()
+      requireAccount(req)
       if (!serverProcesses.available('exec') || execChildren.size >= 32)
         throw Object.assign(new Error('Слишком много команд'), { status: 429 })
       const child = spawn(
@@ -1001,7 +1002,7 @@ async function handle(req, res, isLocal) {
     }
   }
   if (u.pathname === '/api/exec/kill' && req.method === 'POST') {
-    const { runId } = await readBody(req)
+    const { runId } = await readAuthorizedBody(req)
     const key = execKey(req, runId)
     if (!key) return json(res, 400, { error: { message: 'Нужен runId для отмены' } })
     pruneCancelled()
@@ -1021,7 +1022,7 @@ async function handle(req, res, isLocal) {
   /* git */
   if (u.pathname.startsWith('/api/git/') && req.method === 'POST') {
     const op = u.pathname.slice(9)
-    const body = await readBody(req)
+    const body = await readAuthorizedBody(req)
     const dir = await projectDir(body.id, body.name, body.folder)
     if (!(await ensureGit(dir))) return json(res, 200, { ok: false, reason: 'git не установлен' })
     const clip = (t) => (t.length > MAX_DIFF ? t.slice(0, MAX_DIFF) + '\n… diff обрезан' : t)
@@ -1341,29 +1342,30 @@ async function handle(req, res, isLocal) {
 
   /* прокси к LLM: стримит ответ как есть */
   if (u.pathname === '/api/proxy' && req.method === 'POST') {
-    const { url, method = 'POST', headers = {}, body } = await readBody(req)
+    const { url, method = 'POST', headers = {}, body } = await readAuthorizedBody(req)
     if (!/^https?:\/\//.test(url)) return json(res, 400, { error: { message: 'Некорректный URL' } })
-    const ac = new AbortController()
-    res.on('close', () => ac.abort())
+    const signal = requestScope.getStore()
     try {
       const h = { ...headers }
       delete h['anthropic-dangerous-direct-browser-access']
-      const r = await fetch(url, { method, headers: h, body, signal: ac.signal })
-      res.writeHead(r.status, {
-        'content-type': r.headers.get('content-type') || 'application/octet-stream',
-        'cache-control': 'no-cache',
-        'access-control-allow-origin': '*',
-        'x-accel-buffering': 'no',
-      })
+      const r = await fetch(url, { method, headers: h, body, signal })
+      assertRequestActive()
+      res.writeHead(
+        r.status,
+        responseHeaders(res, {
+          'content-type': r.headers.get('content-type') || 'application/octet-stream',
+          'cache-control': 'no-cache',
+          'x-accel-buffering': 'no',
+        }),
+      )
       if (!r.body) return res.end()
-      for await (const chunk of r.body) res.write(chunk)
-      res.end()
+      await streamResponse(res, r.body, { signal })
     } catch (e) {
       if (!res.headersSent)
         json(res, 502, {
           error: publicFailure(e, 'Бэкенд не смог связаться с провайдером', 502, 'proxy').error,
         })
-      else res.end()
+      else if (!res.destroyed && !res.writableEnded) res.destroy()
     }
     return
   }
@@ -1375,53 +1377,12 @@ async function handle(req, res, isLocal) {
 export function tetraMiddleware() {
   return (req, res, next) => {
     if (!req.url.startsWith('/api/') && !req.url.startsWith('/preview/')) return next()
-    /* локальные функции (диск, shell) — только с этого компьютера; аккаунты и команды — ещё и с хостов из TF_ALLOWED_HOSTS */
-    const host = String(req.headers.host || '').replace(/:\d+$/, '')
-    const origin = String(req.headers.origin || '')
-    const extra = String(process.env.TF_ALLOWED_HOSTS || '')
-      .split(',')
-      .map((x) => x.trim())
-      .filter(Boolean)
-    const LOCALS = ['localhost', '127.0.0.1', '[::1]', 'tauri.localhost']
-    const localHost = LOCALS.includes(host)
-    const okHost = localHost || extra.includes(host)
-    const originHost = origin.replace(/^[a-z]+:\/\//, '').replace(/:\d+$/, '')
-    const localOrigin =
-      !origin ||
-      /^(https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|tauri\.localhost)(:\d+)?|tauri:\/\/localhost)$/.test(
-        origin,
-      ) ||
-      (extra.includes(originHost) && originHost === host)
-    if (!okHost || !localOrigin)
+    const access = requestAccess(req, res)
+    if (!access.allowed)
       return json(res, 403, {
         error: { message: 'TetraFree backend принимает запросы только с этого компьютера' },
       })
-    /* заголовок Host подделывается, поэтому «локально» — это ещё и петля на уровне сокета (важно при HOST=0.0.0.0) */
-    const addr = String(req.socket?.remoteAddress || '')
-    const loopback = addr === '::1' || addr === '127.0.0.1' || addr.startsWith('::ffff:127.') || addr === ''
-    const isLocal = localHost && loopback
-    const controller = new AbortController()
-    const abort = () => controller.abort()
-    req.once('aborted', abort)
-    res.once('close', () => {
-      if (!res.writableEnded) abort()
-    })
-    requestScope
-      .run(controller.signal, () => handle(req, res, isLocal))
-      .then((r) => {
-        if (r === false) next()
-      })
-      .catch((e) => {
-        if (!res.headersSent) {
-          const failure = publicFailure(
-            e,
-            'Не удалось выполнить операцию сервера',
-            Number.isInteger(e?.status) && e.status >= 400 && e.status <= 599 ? e.status : 500,
-            'server',
-          )
-          json(res, failure.status, { error: failure.error })
-        } else res.end()
-      })
+    return runRequest(req, res, () => handle(req, res, access.isLocal), next)
   }
 }
 

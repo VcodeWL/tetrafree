@@ -564,7 +564,11 @@ export async function accountRoutes(req, res, u, io) {
     return false
   const body =
     req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
-      ? await io.readBody(req).catch(() => ({}))
+      ? await io.readBody(req).catch((error) => {
+          // Transport failure is not an intentional empty body (e.g. DELETE).
+          if ([413, 408, 499].includes(error?.status)) throw error
+          return {}
+        })
       : {}
   const out = (b, code = 200) => io.json(res, code, b)
   const me = () => {

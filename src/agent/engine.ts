@@ -1,7 +1,7 @@
 /* Движок агента. Один ход (Turn) = одно сообщение агента, внутри которого живые части:
    текст, шаги, карточки файлов (создаёт / правит / удаляет), команды. Всё применяется к проекту
    по мере того, как модель пишет, и в конце собирается в одну версию. */
-import { dequeue, peekQueue, enqueue, useQueue, clearQueue, queueGeneration } from './queue'
+import { dequeue, peekQueue, enqueue, queueGet, clearQueue, clearAllQueues, queueGeneration } from './queue'
 import {
   currentImage,
   image,
@@ -19,14 +19,17 @@ import {
 } from './automationControl'
 import { finishAutomation, reserveAutomation, type RunReason } from './automationJournal'
 import { priceFor } from '../lib/usage'
+import { runtimeKey, retryKey } from './runtimeKey'
+import { AUTOMATION_MAX_TOKENS, requestReservation, usageEstimate, verifyCommand } from './enginePolicy'
 import { dangerOf } from './danger'
-import { Turn, tally, commitFiles } from './turn'
+import { Turn, commitFiles } from './turn'
+import { reviewedTurn } from './turnPolicy'
 import { history, systemPrompt } from './prompt'
 import { agentPathError } from '../lib/paths'
 import { fileOf, putFile, expandDelete, countLines } from './projectfs'
 import { diffStat } from '../lib/diff'
 import { useStore, getChat, toast } from '../store'
-import type { Attachment, ID, Message, Part, Tier, TurnChanges } from '../types'
+import type { Attachment, ID, Message, Part, Tier } from '../types'
 import { uid } from '../lib/util'
 import { streamChat, type ChatMsg } from './llm'
 import { parseStream, cleanBody, parsePairs, applyPairs, summarizeForHistory, type Seg } from './protocol'
@@ -43,18 +46,21 @@ import { mcpAction } from './mcptool'
 const S = () => useStore.getState()
 const controllers = new Map<ID, AbortController>()
 const queueTimers = new Map<ID, ReturnType<typeof setTimeout>>()
-function cancelQueuedTimer(chatId: ID) {
-  const timer = queueTimers.get(chatId)
+function cancelQueuedTimer(chatId: ID, pid: ID) {
+  const key = runtimeKey(pid, chatId)
+  const timer = queueTimers.get(key)
   if (timer !== undefined) clearTimeout(timer)
-  queueTimers.delete(chatId)
+  queueTimers.delete(key)
 }
-export const isRunning = (chatId: ID) => controllers.has(chatId) || queueTimers.has(chatId)
-export function stopTurn(chatId: ID) {
-  loopStop(chatId, 'остановлено вручную')
-  cancelQueuedTimer(chatId)
-  clearQueue(chatId)
-  autoFix.delete(chatId)
-  controllers.get(chatId)?.abort()
+export const isRunning = (chatId: ID, pid = S().projectId) =>
+  !!pid && (controllers.has(runtimeKey(pid, chatId)) || queueTimers.has(runtimeKey(pid, chatId)))
+export function stopTurn(chatId: ID, pid = S().projectId) {
+  if (!pid) return
+  loopStop(chatId, 'остановлено вручную', pid)
+  cancelQueuedTimer(chatId, pid)
+  clearQueue(chatId, pid)
+  autoFix.delete(runtimeKey(pid, chatId))
+  controllers.get(runtimeKey(pid, chatId))?.abort()
 }
 
 export function resolveModel() {
@@ -78,30 +84,10 @@ function turnMsg(chatId: ID, msgId: ID, pid: ID) {
 function refreshTurn(pid: ID, chatId: ID, msgId: ID, version?: number) {
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
-  const files = m.parts.filter((p): p is FilePart => p.k === 'file')
-  const live_ = files.filter((f) => f.state !== 'error')
-  const proposed = live_.filter((f) => f.state === 'proposed'),
-    done = live_.filter((f) => f.state === 'done'),
-    rev = live_.filter((f) => f.state === 'reverted')
-  const state: TurnChanges['state'] = proposed.length
-    ? done.length
-      ? 'partial'
-      : 'proposed'
-    : done.length
-      ? 'applied'
-      : rev.length
-        ? 'reverted'
-        : 'rejected'
   S().patchMsg(
     chatId,
     msgId,
-    {
-      turn: {
-        state,
-        version: version ?? m.turn?.version,
-        ...tally(files.filter((f) => f.state === 'done' || f.state === 'proposed')),
-      },
-    } as Partial<Message>,
+    { turn: reviewedTurn(m.parts, m.turn?.version, version) } as Partial<Message>,
     pid,
   )
 }
@@ -113,15 +99,19 @@ export function applyProposed(
   partId?: ID,
   pickedText?: string,
   force = false,
-  approval?: { pid: ID; snapshots: Record<ID, FileImage> },
+  approval?: { pid: ID; snapshots: Record<ID, FileImage>; cards?: string },
+  forPid?: ID,
 ) {
-  const pid = S().projectId!
+  const pid = forPid ?? S().projectId
+  if (!pid || S().projectId !== pid) return
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
   const targets = m.parts.filter(
     (p): p is FilePart => p.k === 'file' && p.state === 'proposed' && (!partId || p.id === partId),
   )
   if (!targets.length) return
+  const cards = JSON.stringify(targets)
+  if (approval?.cards !== undefined && (approval.pid !== pid || approval.cards !== cards)) return
   const snapshots = Object.fromEntries(
     targets.map((t) => [t.id, currentImage(pid, t, (t as GuardedFile).agentGuard?.before)]),
   )
@@ -144,7 +134,7 @@ export function applyProposed(
       confirm: 'Сохранить копию и применить',
       run: () => {
         if (S().projectId !== pid) return
-        applyProposed(chatId, msgId, partId, pickedText, true, { pid, snapshots })
+        applyProposed(chatId, msgId, partId, pickedText, true, { pid, snapshots, cards }, pid)
       },
     })
     return
@@ -192,8 +182,9 @@ export function applyProposed(
   const n = applied.length ? commitFiles(pid, chatId, m.agent, applied, '', 'Применено: ') : undefined
   refreshTurn(pid, chatId, msgId, n)
 }
-export function rejectProposed(chatId: ID, msgId: ID, partId?: ID) {
-  const pid = S().projectId!
+export function rejectProposed(chatId: ID, msgId: ID, partId?: ID, forPid?: ID) {
+  const pid = forPid ?? S().projectId
+  if (!pid || S().projectId !== pid) return
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
   const parts = m.parts.map((p) =>
@@ -209,13 +200,17 @@ export function revertTurn(
   chatId: ID,
   msgId: ID,
   force = false,
-  approval?: { pid: ID; snapshot: FileImage },
+  approval?: { pid: ID; snapshot: FileImage; cards?: string },
+  forPid?: ID,
 ) {
-  const pid = S().projectId!
+  const pid = forPid ?? S().projectId
+  if (!pid || S().projectId !== pid) return
   const m = turnMsg(chatId, msgId, pid)
   if (!m?.parts) return
   const files = m.parts.filter((p): p is FilePart => p.k === 'file' && p.state === 'done')
   if (!files.length) return
+  const cards = JSON.stringify(files)
+  if (approval?.cards !== undefined && (approval.pid !== pid || approval.cards !== cards)) return
   const p = S().projects.find((x) => x.id === pid)!
   const prev = p.versions.find((v) => v.n === (m.turn?.version ?? 0) - 1)?.snapshot
   const allPaths = [
@@ -245,7 +240,7 @@ export function revertTurn(
       confirm: 'Сохранить копию и откатить',
       run: () => {
         if (S().projectId !== pid) return
-        revertTurn(chatId, msgId, true, { pid, snapshot })
+        revertTurn(chatId, msgId, true, { pid, snapshot, cards }, pid)
       },
     })
     return
@@ -316,6 +311,8 @@ export interface AutomationExecution {
   estimate?: number | null
   reason?: RunReason
   onDone?: (outcome: AutomationOutcome, reason: RunReason) => void
+  /** Revalidate consent at async/effect boundaries, not only at scheduler dispatch. */
+  allowed?: () => boolean
 }
 
 /* ------------------------------------------------------------------ отправка */
@@ -338,7 +335,7 @@ export function sendMessage(
   } = {},
 ): boolean {
   const st = S()
-  const pid = opts.pid || st.projectId
+  const pid = opts.pid ?? st.projectId
   if (!pid || !getChat(pid, chatId)) return false
   if (opts.automation && (!automationAllowed() || st.projectId !== pid)) return false
   const t = text.trim()
@@ -368,7 +365,7 @@ export function sendMessage(
         },
     pid,
   )
-  if (st.projectId === pid) st.setDraft(chatId, '')
+  if (st.projectId === pid) st.setDraft(chatId, '', pid)
   const chat = getChat(pid, chatId)
   const agent = chat?.agents[0]
   if (!agent) {
@@ -440,10 +437,11 @@ async function runTurn(
     automation?: AutomationExecution
   } = {},
 ) {
-  cancelQueuedTimer(chatId)
-  controllers.get(chatId)?.abort()
+  const key = runtimeKey(pid, chatId)
+  cancelQueuedTimer(chatId, pid)
+  controllers.get(key)?.abort()
   const ctl = new AbortController()
-  controllers.set(chatId, ctl)
+  controllers.set(key, ctl)
   const st = S()
   const chat = getChat(pid, chatId)!
   const { provider, model, label } = resolveModel()
@@ -492,9 +490,11 @@ async function runTurn(
           if (s.projectId !== pid) ctl.abort()
         })
       : () => {}
-  const current = () => controllers.get(chatId) === ctl
+  const current = () => controllers.get(key) === ctl
   const valid = () =>
-    current() && (!(opts.automation || opts.loop) || (automationAllowed(epoch) && S().projectId === pid))
+    current() &&
+    (!(opts.automation || opts.loop) || (automationAllowed(epoch) && S().projectId === pid)) &&
+    (opts.automation?.allowed?.() ?? true)
   const T = new Turn(pid, chatId, msgId, agent, tier, laneId, ctl, valid)
   let summary = ''
   let failed = false
@@ -539,7 +539,7 @@ async function runTurn(
   } catch (e) {
     const aborted = T.aborted
     T.stop()
-    if (current()) live.endChat(chatId)
+    if (current()) live.endChat(chatId, pid)
     T.flush(true)
     if (aborted) {
       T.finish('')
@@ -578,40 +578,46 @@ async function runTurn(
     T.stop()
     const owner = current()
     if (owner) {
-      controllers.delete(chatId)
+      controllers.delete(key)
       S().setChat(chatId, { running: false }, pid)
     }
     S().setLanes((l) => l.filter((x) => x.id !== laneId), pid)
     // Keep the item in the queue until the callback actually accepts it.
-    if (owner && !ctl.signal.aborted && peekQueue(chatId) && getChat(pid, chatId) && S().projectId === pid) {
-      const generation = queueGeneration(chatId)
+    if (
+      owner &&
+      !ctl.signal.aborted &&
+      peekQueue(chatId, pid) &&
+      getChat(pid, chatId) &&
+      S().projectId === pid
+    ) {
+      const generation = queueGeneration(chatId, pid)
       const timer = setTimeout(() => {
-        if (queueTimers.get(chatId) !== timer) return
-        queueTimers.delete(chatId)
+        if (queueTimers.get(key) !== timer) return
+        queueTimers.delete(key)
         if (
-          generation !== queueGeneration(chatId) ||
+          generation !== queueGeneration(chatId, pid) ||
           ctl.signal.aborted ||
-          controllers.has(chatId) ||
+          controllers.has(key) ||
           S().projectId !== pid ||
           !getChat(pid, chatId)
         )
           return
-        const nx = peekQueue(chatId)
+        const nx = peekQueue(chatId, pid)
         if (!nx) return
-        const sent = sendMessage(chatId, nx.text, nx.atts, nx.extra || '', autoFix.has(chatId) ? 1 : 0, {
+        const sent = sendMessage(chatId, nx.text, nx.atts, nx.extra || '', autoFix.has(key) ? 1 : 0, {
           pid,
         })
         if (sent) {
-          dequeue(chatId, nx.id)
-          autoFix.delete(chatId)
+          dequeue(chatId, nx.id, pid)
+          autoFix.delete(key)
         }
       }, 350)
-      queueTimers.set(chatId, timer)
+      queueTimers.set(key, timer)
     }
     /* проход /loop закончился: цикл решает, идти ли дальше (во время паузы между проходами ход могут занять очередь и человек) */
     if (owner && opts.loop) {
-      if (ctl.signal.aborted) loopStop(chatId, 'ход прерван')
-      else loopPassEnded(chatId, T.parts.map((p) => (p.k === 'text' ? p.text : '')).join('\n'), failed)
+      if (ctl.signal.aborted) loopStop(chatId, 'ход прерван', pid)
+      else loopPassEnded(chatId, T.parts.map((p) => (p.k === 'text' ? p.text : '')).join('\n'), failed, pid)
     }
   }
 }
@@ -667,27 +673,9 @@ async function liveLoop(
   try {
     return await liveLoopInner(T, prompt, attachments, provider, modelId, label, ctx, acct, imgs, automation)
   } finally {
-    if (automation)
-      automation.estimate = costOf(
-        {
-          inTok: Math.round(acct.inChars / 3.2),
-          outTok: Math.round(T.chars / 3.2),
-          steps: acct.steps,
-          mid: modelId,
-          free: provider.kind === 'ollama',
-        },
-        S().settings.priceCustom,
-      )
-    if (acct.steps)
-      T.patch({
-        usage: {
-          inTok: Math.round(acct.inChars / 3.2),
-          outTok: Math.round(T.chars / 3.2),
-          steps: acct.steps,
-          mid: modelId,
-          free: provider.kind === 'ollama',
-        },
-      } as Partial<Message>)
+    const usage = usageEstimate(acct, T.chars, modelId, provider.kind === 'ollama')
+    if (automation) automation.estimate = costOf(usage, S().settings.priceCustom)
+    if (acct.steps) T.patch({ usage } as Partial<Message>)
     if (!T.aborted) budgetWarn()
   }
 }
@@ -741,13 +729,7 @@ async function liveLoopInner(
       step > 0 &&
       lim &&
       lim > 0 &&
-      monthSpent({
-        inTok: Math.round(acct.inChars / 3.2),
-        outTok: Math.round(T.chars / 3.2),
-        steps: acct.steps,
-        mid: modelId,
-        free: provider.kind === 'ollama',
-      }) >= lim
+      monthSpent(usageEstimate(acct, T.chars, modelId, provider.kind === 'ollama')) >= lim
     ) {
       toast({
         title: 'Агент остановлен по лимиту расходов',
@@ -768,19 +750,12 @@ async function liveLoopInner(
     let acc = ''
     const sysPrompt = systemPrompt(project(), agent, attachments, mcpText)
     if (automation) {
-      const prices = priceFor(modelId, S().settings.priceCustom)
-      // UTF-8 bytes + capped output: deliberately conservative reservation, not provider billing.
-      const bytes =
-        new TextEncoder().encode(sysPrompt + messages.map((m) => m.content).join('')).length +
-        messages.reduce((sum, m) => sum + (m.images?.length || 0), 0) * 12000
-      const priced =
-        prices &&
-        Number.isFinite(prices.inp) &&
-        prices.inp >= 0 &&
-        Number.isFinite(prices.out) &&
-        prices.out >= 0
-      const reserve =
-        provider.kind === 'ollama' ? 0 : priced ? (bytes * prices.inp + 16000 * prices.out) / 1e6 : null
+      const reserve = requestReservation(
+        sysPrompt,
+        messages,
+        provider.kind === 'ollama',
+        priceFor(modelId, S().settings.priceCustom),
+      )
       const reason = reserveAutomation(automation.id, reserve, {
         run: automation.costLimit,
         month: automation.monthlyLimit,
@@ -796,6 +771,7 @@ async function liveLoopInner(
         )
       }
     }
+    T.guard() // Reservation/storage observers may synchronously stop or revoke this run.
     acct.steps++
     acct.inChars += sysPrompt.length + messages.reduce((a, m) => a + m.content.length, 0)
     const opIds = new Map<number, ID>()
@@ -809,7 +785,7 @@ async function liveLoopInner(
         system: sysPrompt,
         messages,
         signal: T.ctl.signal,
-        maxTokens: automation ? 16000 : undefined,
+        maxTokens: automation ? AUTOMATION_MAX_TOKENS : undefined,
         onOpen: () => {
           if (!T.aborted) T.patch({ thinking: 'Модель отвечает' })
         },
@@ -917,20 +893,7 @@ async function liveLoopInner(
 }
 
 /** Проверка после правок: подбираем команду по проекту, запускаем по-настоящему; при падении один раз просим агента исправить */
-function verifyCommand(files: Record<string, string>, changed: string[]): string | null {
-  try {
-    const pkg = JSON.parse(files['package.json'] || 'null')
-    const sc = pkg?.scripts || {}
-    for (const k of ['typecheck', 'lint', 'test'])
-      if (sc[k] && !(k === 'test' && /no test specified/.test(sc[k]))) return `npm run ${k} --silent`
-  } catch {
-    /* package.json битый — проверим ниже */
-  }
-  // No shell quoting of user-controlled filenames. Standalone JS/Python checks
-  // wait for a structured argv server endpoint; fixed package scripts still work.
-  void changed
-  return null
-}
+
 async function verifyAfter(T: Turn, chatId: ID, pid: ID, depth: number) {
   T.guard()
   const changed = T.parts
@@ -963,6 +926,8 @@ async function verifyAfter(T: Turn, chatId: ID, pid: ID, depth: number) {
       chatId,
       `Автопроверка \`${cmd}\` упала (код ${r.code}). Исправь ошибки, не ломая остальное:\n\n${tail}`,
       [],
+      undefined,
+      pid,
     )
     S().toast({
       title: 'Проверка не прошла',
@@ -970,7 +935,7 @@ async function verifyAfter(T: Turn, chatId: ID, pid: ID, depth: number) {
       icon: 'warn',
       tone: 'warn',
     })
-    autoFix.add(chatId)
+    autoFix.add(runtimeKey(pid, chatId))
   }
 }
 const autoFix = new Set<ID>()
@@ -1037,58 +1002,104 @@ async function runCommand(
 }
 
 /* ---- повтор отдельной команды из карточки хода ---- */
-const retryCtl = new Map<ID, AbortController>()
-export const stopRetry = (partId: ID) => retryCtl.get(partId)?.abort()
+interface RetryRun {
+  ctl: AbortController
+  pid: ID
+  chatId: ID
+  msgId: ID
+  partId: ID
+}
+const retryCtl = new Map<string, RetryRun>()
+export function stopRetry(partId: ID, pid = S().projectId, chatId?: ID, msgId?: ID) {
+  if (!pid) return
+  const matches = [...retryCtl.values()].filter(
+    (r) =>
+      r.pid === pid &&
+      r.partId === partId &&
+      (chatId === undefined || r.chatId === chatId) &&
+      (msgId === undefined || r.msgId === msgId),
+  )
+  if (matches.length === 1) matches[0].ctl.abort()
+}
 
 /** Перезапуск одной команды агента (кнопка «Повторить» на карточке). Результат пишется в ту же карточку. */
-export async function retryCommand(chatId: ID, msgId: ID, partId: ID) {
-  const pid = S().projectId
-  if (!pid || retryCtl.has(partId)) return
-  if (isRunning(chatId)) {
+export async function retryCommand(chatId: ID, msgId: ID, partId: ID, forPid?: ID) {
+  const pid = forPid ?? S().projectId
+  if (!pid || S().projectId !== pid) return
+  const key = retryKey(pid, chatId, msgId, partId)
+  if (retryCtl.has(key)) return
+  if (isRunning(chatId, pid)) {
     toast({ title: 'Агент ещё работает', desc: 'Дождись конца хода или нажми «Стоп».', icon: 'warn' })
     return
   }
-  const patch = (x: Partial<Extract<Part, { k: 'cmd' }>>) => {
-    const m = getChat(pid, chatId)?.messages.find((q) => q.id === msgId)
-    if (!m || m.kind !== 'agent' || !m.parts) return
+  type CommandPart = Extract<Part, { k: 'cmd' }>
+  const read = () => {
+    const m = turnMsg(chatId, msgId, pid)
+    const p = m?.parts?.find((q) => q.id === partId)
+    return p?.k === 'cmd' ? p : undefined
+  }
+  let expected = read()
+  if (!expected) return
+  const cmd = expected.cmd
+  const ctl = new AbortController()
+  retryCtl.set(key, { ctl, pid, chatId, msgId, partId })
+  const ownsCard = () => retryCtl.get(key)?.ctl === ctl && read() === expected
+  const valid = () => {
+    if (ctl.signal.aborted || S().projectId !== pid || !ownsCard()) {
+      ctl.abort()
+      return false
+    }
+    return true
+  }
+  const guard = () => {
+    if (!valid()) throw new DOMException('Выполнение отменено', 'AbortError')
+  }
+  const patch = (x: Partial<CommandPart>) => {
+    // A deleted/replaced card is never the target of late output or cancellation.
+    if (!ownsCard()) return
+    const m = turnMsg(chatId, msgId, pid)!
+    const next = { ...expected!, ...x }
+    expected = next // Set before notifying synchronous store observers.
     S().patchMsg(
       chatId,
       msgId,
-      { parts: m.parts.map((q) => (q.id === partId && q.k === 'cmd' ? { ...q, ...x } : q)) },
+      { parts: m.parts!.map((q) => (q.id === partId && q.k === 'cmd' ? next : q)) },
       pid,
     )
   }
-  const m0 = getChat(pid, chatId)?.messages.find((q) => q.id === msgId)
-  const part = m0 && m0.kind === 'agent' ? m0.parts?.find((q) => q.id === partId) : undefined
-  if (!part || part.k !== 'cmd') return
-  const ctl = new AbortController()
-  retryCtl.set(partId, ctl)
-  patch({ state: 'running', out: '', code: undefined })
-  const proj = S().projects.find((q) => q.id === pid)!
+  const unsubscribe = useStore.subscribe(() => {
+    if (!valid()) ctl.abort()
+  })
   let out = ''
   try {
+    patch({ state: 'running', out: '', code: undefined })
+    guard()
+    const proj = S().projects.find((q) => q.id === pid)
+    if (!proj) throw new DOMException('Проект закрыт', 'AbortError')
     if (backendOnline()) {
-      const r = await bExec(proj, part.cmd, {
+      const r = await bExec(proj, cmd, {
         signal: ctl.signal,
         timeout: 300,
         onOut: (d) => {
-          if (ctl.signal.aborted) return
+          if (!valid()) return
           out += d
           patch({ out: out.slice(-20000) })
         },
       })
-      if (ctl.signal.aborted) throw new DOMException('Выполнение отменено', 'AbortError')
+      guard()
       patch({ state: r.code === 0 ? 'done' : 'error', code: r.code, out: out.slice(-20000), real: true })
     } else {
       patch({ state: 'error', code: 127, out: 'Сервер TetraFree не подключён — команду выполнить нельзя.' })
     }
   } catch (e) {
+    valid()
     patch({
       state: 'error',
       out: (out + (ctl.signal.aborted ? '\n^C остановлено' : '\n' + String(e))).trim().slice(-20000),
     })
   } finally {
-    retryCtl.delete(partId)
+    unsubscribe()
+    if (retryCtl.get(key)?.ctl === ctl) retryCtl.delete(key)
   }
 }
 
@@ -1239,9 +1250,9 @@ function notifyEscalation(pid: ID, chatId: ID, agent: string, label: string) {
 }
 
 setLoopRunner({
-  send: (chatId, o) =>
-    sendMessage(chatId, o.text, [], o.extra, 0, { silent: o.silent, loop: true, imgs: o.imgs }),
-  busy: (chatId) => isRunning(chatId) || (useQueue.getState().q[chatId] || []).length > 0,
+  send: (chatId, o, pid) =>
+    sendMessage(chatId, o.text, [], o.extra, 0, { silent: o.silent, loop: true, imgs: o.imgs, pid }),
+  busy: (chatId, pid) => isRunning(chatId, pid) || queueGet(chatId, pid).length > 0,
   projectOpen: (pid) => S().projectId === pid,
   say: (chatId, pid, text) => S().pushMsg(chatId, { id: uid('m'), kind: 'sys', text, at: Date.now() }, pid),
 })
@@ -1249,8 +1260,9 @@ setLoopRunner({
 // One cancellation hub; imports remain one-way (control does not import the engine).
 registerAutomationStopper(() => {
   for (const ctl of controllers.values()) ctl.abort()
-  for (const ctl of retryCtl.values()) ctl.abort()
-  for (const id of [...queueTimers.keys()]) cancelQueuedTimer(id)
-  for (const id of Object.keys(useQueue.getState().q)) clearQueue(id)
+  for (const r of retryCtl.values()) r.ctl.abort()
+  for (const timer of queueTimers.values()) clearTimeout(timer)
+  queueTimers.clear()
+  clearAllQueues()
   autoFix.clear()
 })

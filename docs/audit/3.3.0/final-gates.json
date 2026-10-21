@@ -1,0 +1,45 @@
+{
+  "version": "3.3.0",
+  "node": "22.23.3",
+  "baselineCommit": "20641ff908166ac93d5c4afe6bf20c6ebd2218ac",
+  "globalCheck": {
+    "serverScriptTests": 184,
+    "clientTests": 727,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "typesLintFormat": "passed through npm run check"
+  },
+  "build": "passed",
+  "dependencyAudit": {
+    "production": 0,
+    "allIncludingDev": 0
+  },
+  "cargoMetadataLocked": "passed (not native compilation)",
+  "browser": {
+    "new": 8,
+    "legacy": 8,
+    "coldLazy": 2,
+    "errors": []
+  },
+  "monkey": {
+    "seed": 33020,
+    "durationMs": 60000,
+    "actions": 92,
+    "filteredUniqueErrors": 0,
+    "note": "Legacy harness filters network/resource/401/ERR_ entries; not a native or exhaustive proof."
+  },
+  "independentScoped": {
+    "runtime": 24,
+    "serverHTTP": 58,
+    "parentIntegration": 17
+  },
+  "sourceChangesDuringFinalGate": [],
+  "trackedSourceConfigCount": 406,
+  "limits": [
+    "Windows runtime and installed artifacts not verified",
+    "Real OAuth/SMTP/MCP/model providers not verified",
+    "No power-loss/cross-window/OS-atomic-CAS guarantee",
+    "No claim that all bugs are eliminated"
+  ]
+}

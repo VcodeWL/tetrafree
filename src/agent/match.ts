@@ -85,7 +85,7 @@ export function matchHooks(c: MatchCtx): Hooks {
       const d = await compareImages(c.ref, shot)
       const prev = scores[scores.length - 1]
       scores.push(d.score)
-      loopNote(st.chatId, `сходство ${pct(d.score)} из ${pct(c.spec.threshold)}`)
+      loopNote(st.chatId, `сходство ${pct(d.score)} из ${pct(c.spec.threshold)}`, st.pid)
       if (d.score >= c.spec.threshold)
         return { stop: `совпало на ${pct(d.score)} (цель ${pct(c.spec.threshold)})` }
       const best = Math.max(...scores)

@@ -1,6 +1,8 @@
 /* Один ход агента: живые части сообщения, применение изменений к проекту, итог хода */
 import type { FileOp, ID, Lane, Message, Part, Tier, TurnChanges } from '../types'
 import { fireTrigger } from './ci'
+import { tally } from './turnPolicy'
+export { tally } from './turnPolicy'
 import { diffStat } from '../lib/diff'
 import { live } from './live'
 import { useStore, getChat, toast } from '../store'
@@ -275,7 +277,7 @@ export class Turn {
   finish(summary: string): TurnChanges | undefined {
     this.stop()
     this.closeSteps()
-    if (this.current()) live.endChat(this.chatId)
+    if (this.current()) live.endChat(this.chatId, this.pid)
     this.parts = this.parts.map((p) =>
       p.k === 'file' && p.state === 'writing'
         ? { ...p, state: 'error', error: 'Остановлено' }
@@ -318,12 +320,6 @@ export class Turn {
     return ch
   }
 }
-
-export const tally = (files: Extract<Part, { k: 'file' }>[]) => ({
-  files: files.filter((f) => f.state !== 'error').length,
-  add: files.reduce((a, f) => a + (f.state === 'error' ? 0 : f.add), 0),
-  del: files.reduce((a, f) => a + (f.state === 'error' ? 0 : f.del), 0),
-})
 
 export function commitFiles(
   pid: ID,
