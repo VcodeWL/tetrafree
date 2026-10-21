@@ -12301,3 +12301,192 @@ html .diagnostics-json {
   font-size: 11px;
   line-height: 1.5;
 }
+
+/* Background operations: local live projection; no simulated progress or auto-retry. */
+html .ops-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin: 18px 0 12px;
+}
+html .ops-toolbar label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  color: var(--t3);
+  font-size: 11px;
+}
+html .ops-toolbar select,
+html .ops-toolbar input {
+  color: var(--t1);
+  background: var(--bg2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+  max-width: 220px;
+  font: inherit;
+}
+html .ops-search {
+  flex: 1;
+}
+html .ops-search input {
+  max-width: none;
+}
+html .ops-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+html .ops-filters .mono {
+  color: var(--t3);
+  margin-left: 5px;
+  font-size: 10px;
+}
+html .ops-policy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  color: var(--t3);
+  font-size: 11px;
+}
+html .ops-list {
+  max-height: 48vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg2);
+}
+html .ops-row {
+  display: flex;
+  gap: 12px;
+  padding: 15px;
+  border-bottom: 1px solid var(--line);
+}
+html .ops-row:last-child {
+  border-bottom: 0;
+}
+html .ops-kind {
+  color: var(--accent);
+  padding-top: 2px;
+  flex-shrink: 0;
+}
+html .ops-body {
+  min-width: 0;
+  flex: 1;
+}
+html .ops-title {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+html .ops-title b {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+html .ops-state {
+  flex-shrink: 0;
+  color: var(--t3);
+  font-size: 10px;
+  padding: 3px 6px;
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+}
+html .ops-state.running {
+  color: var(--accent);
+}
+html .ops-state.failed,
+html .ops-state.attention,
+html .ops-warning {
+  color: #d9b677;
+}
+html .ops-project {
+  color: var(--t4);
+  font-size: 10px;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+html .ops-body p {
+  color: var(--t3);
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 7px 0 0;
+}
+html .ops-body p.ops-warning {
+  color: #d9b677;
+}
+html .ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+html .ops-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 32px 22px;
+  align-items: center;
+  text-align: center;
+  color: var(--t3);
+  font-size: 12px;
+}
+html .ops-empty span {
+  color: var(--t4);
+  font-size: 11px;
+  max-width: 420px;
+  line-height: 1.5;
+}
+html .ops-confirm {
+  border: 1px solid var(--line3);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface2);
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+html .ops-confirm p {
+  color: var(--t3);
+  line-height: 1.5;
+  margin: 8px 0;
+}
+html .ops-confirm .btn + .btn {
+  margin-left: 8px;
+}
+html .ops-notice {
+  color: var(--t2);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 10px 0;
+}
+html .ops-footnote {
+  color: var(--t4);
+  font-size: 10px;
+  line-height: 1.6;
+  margin-top: 12px;
+}
+html.light .ops-state.failed,
+html.light .ops-state.attention,
+html.light .ops-warning,
+html.light .ops-body p.ops-warning {
+  color: #906020;
+}
+@media (max-width: 650px) {
+  html .ops-toolbar {
+    flex-wrap: wrap;
+  }
+  html .ops-toolbar label {
+    flex: 1;
+  }
+  html .ops-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+}
