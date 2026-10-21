@@ -29,7 +29,7 @@ export const initialUI = (): UI => ({
   projectId: null,
   center: { kind: 'empty' },
   mode: 'dev',
-  rightOpen: true,
+  rightOpen: false,
   rightTab: 'code',
   activeFile: null,
   dirty: {},

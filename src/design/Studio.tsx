@@ -1,3 +1,4 @@
+import { designShortcutAllowed } from './shortcuts'
 /* Режим «Дизайн»: реальный сайт проекта на холсте. Три подрежима — Холст (правка как в Figma),
    Превью (живая страница со скриптами) и Код (HTML рядом с холстом). Файл проекта — общий источник правды. */
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -74,6 +75,7 @@ export function Studio() {
   const [base, setBase] = useState(html)
   const [flash, setFlash] = useState(0)
   const ins = useMenu()
+  const scope = useRef<HTMLDivElement>(null)
   const prev = useRef<{ page: string | null; pid: string }>({ page: null, pid: '' })
 
   /* смена страницы / проекта */
@@ -108,10 +110,18 @@ export function Studio() {
   /* горячие клавиши */
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement
+      const app = useStore.getState()
       if (
-        t.closest('input,textarea,select,[contenteditable]') ||
-        document.querySelector('.modal-root, .overlay')
+        !designShortcutAllowed(
+          e,
+          scope.current,
+          !!app.modal ||
+            app.palette ||
+            app.screen !== 'workspace' ||
+            app.mode !== 'design' ||
+            app.projectId !== useDesign.getState().pid ||
+            !!document.querySelector('.modal-wrap, .pal-wrap, .dd, [role="dialog"], [role="menu"]'),
+        )
       )
         return
       const mod = e.ctrlKey || e.metaKey
@@ -194,7 +204,19 @@ export function Studio() {
   if (!page) return <EmptyStudio />
   const frames: Device[] = d.sub === 'code' ? ['desktop'] : d.frames
   return (
-    <div className="studio">
+    <div
+      className="studio"
+      ref={scope}
+      tabIndex={-1}
+      onPointerDownCapture={(e) => {
+        if (
+          !(e.target as HTMLElement).closest(
+            'input,textarea,select,button,a,[contenteditable],[role="treeitem"],[role="tab"]',
+          )
+        )
+          scope.current?.focus({ preventScroll: true })
+      }}
+    >
       <div className="st-tb">
         <div className="st-sub" role="tablist" aria-label="Подрежим дизайна">
           {SUBS.map(([k, t, ic]) => (
@@ -297,7 +319,7 @@ export function Studio() {
         )}
       </div>
 
-      <div className={'st-body sub-' + d.sub}>
+      <div className={'st-body sub-' + d.sub} role="region" aria-label="Рабочая область дизайна" tabIndex={0}>
         {d.sub === 'canvas' && <Rail sel={!!sel} />}
         {d.sub !== 'preview' && (
           <aside className="st-left" aria-label="Слои и страницы">

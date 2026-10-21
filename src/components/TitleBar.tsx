@@ -1,3 +1,4 @@
+import { ProjectIcon } from './ui/ProjectIcon'
 import { AutomationControls } from '../agent/AutomationControls'
 import { openPalette } from '../lib/palette'
 import { useStore, useProject } from '../store'
@@ -155,6 +156,7 @@ export function TitleBar() {
               onClick={() => useStore.getState().toLauncher()}
               title={`Сменить проект (${modKey}+O)`}
             >
+              <ProjectIcon name={p.icon} size={18} />
               {p.name}
               <Icon name="chevd" size={12} />
             </button>
@@ -163,9 +165,10 @@ export function TitleBar() {
       </div>
       <div className="tb-c" data-tauri-drag-region>
         {ws && (
-          <button className="tb-search" onClick={() => openPalette()}>
+          <button className="tb-search" aria-label="Поиск и команды" onClick={() => openPalette()}>
             <Icon name="search" size={13} />
-            Поиск и команды<span className="k">{modKey} K</span>
+            <span className="tb-search-label">Поиск и команды</span>
+            <span className="k">{modKey} K</span>
           </button>
         )}
       </div>

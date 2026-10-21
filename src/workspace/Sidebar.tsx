@@ -1,3 +1,4 @@
+import { ProjectIcon } from '../components/ui/ProjectIcon'
 import { clone } from '../lib/clone'
 import { useUnseenRelease } from '../lib/whatsnew'
 import { Resizer } from '../components/ui/Resizer'
@@ -9,7 +10,7 @@ import { DOC_TEMPLATES, buildBlocks } from '../data/docTemplates'
 import { exportChat } from '../lib/chatExport'
 import { Icon } from '../components/ui/Icon'
 import { Menu, MenuHead, MenuItem, MenuSep, useMenu } from '../components/ui/Menu'
-import { ago, modKey, localDay } from '../lib/util'
+import { ago, modKey, localDay, plural } from '../lib/util'
 import { digest } from '../lib/today'
 import { ME } from '../data/seed'
 import { useMemo } from 'react'
@@ -53,32 +54,34 @@ export function Sidebar() {
     <aside className="side" aria-label="Боковая панель">
       <SideResizer />
       <div className="side-proj">
-        <div
+        <button
           className="pj-row"
-          role="button"
-          tabIndex={0}
+          type="button"
           onClick={() => st().toLauncher()}
           title={`К списку проектов (${modKey}+O)${p.path ? '\n' + p.path : ''}`}
         >
-          <span className="pj-ico">
-            <Icon name={p.icon} size={17} />
+          <span className={'pj-ico' + (p.icon === 'sparkle' ? ' project-default' : '')}>
+            <ProjectIcon name={p.icon} size={28} />
           </span>
-          <div className="pj-txt">
-            <div className="pn">{p.name}</div>
-            <div className="pby">создатель · {people[p.creator]?.name}</div>
-          </div>
+          <span className="pj-txt">
+            <span className="pn">{p.name}</span>
+            <span className="pby">Рабочее пространство</span>
+          </span>
           <span className="chev">
             <Icon name="chevl" size={15} />
           </span>
-        </div>
+        </button>
         <div className="pj-meta">
           <div className="avstack">
             {p.members.slice(0, 5).map((m) => (
               <PersonAv key={m} id={m} size={23} />
             ))}
           </div>
-          <span className="more">
-            {p.members.length > 5 ? '+' + (p.members.length - 5) : ''} все видят все чаты
+          <span
+            className="more"
+            title={`Создатель: ${people[p.creator]?.name || 'Участник'}. Все участники проекта видят все чаты.`}
+          >
+            {p.members.length} {plural(p.members.length, ['участник', 'участника', 'участников'])}
           </span>
           <button
             className="iconbtn sm"
@@ -113,14 +116,14 @@ export function Sidebar() {
       <div className="side-scroll">
         <div className="sg-head">
           Чаты
-          <span
+          <button
             className="add"
-            role="button"
+            type="button"
             title={`Новый чат (${modKey}+Shift+A)`}
             onClick={() => st().openModal({ type: 'newChat' })}
           >
             <Icon name="plus" size={14} />
-          </span>
+          </button>
         </div>
         {[...p.chats]
           .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned))
@@ -163,9 +166,9 @@ export function Sidebar() {
         )}
         <div className="sg-head">
           Документы
-          <span className="add" role="button" title="Новый документ" onClick={tm.open}>
+          <button className="add" type="button" title="Новый документ" onClick={tm.open}>
             <Icon name="plus" size={14} />
-          </span>
+          </button>
         </div>
         {p.docs.map((d) => (
           <div

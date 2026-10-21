@@ -22,6 +22,8 @@ export function Menu({
   width?: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLElement | null>(null)
+  const restore = useRef(true)
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
 
   useLayoutEffect(() => {
@@ -49,13 +51,59 @@ export function Menu({
   }, [anchor, place])
 
   useEffect(() => {
+    const el = ref.current
+    trigger.current = document.activeElement as HTMLElement | null
+    restore.current = true
+    const items = () =>
+      Array.from(el?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') || [])
+    const first = el?.querySelector<HTMLElement>('.ddi.sel:not([aria-disabled="true"])') || items()[0]
+    const focusFrame = requestAnimationFrame(() => (first || el)?.focus({ preventScroll: true }))
     const down = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        restore.current = false
+        onClose()
+      }
     }
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        e.preventDefault()
         e.stopPropagation()
         onClose()
+        return
+      }
+      if (!el?.contains(document.activeElement)) return
+      const rows = items()
+      const i = rows.indexOf(document.activeElement as HTMLElement)
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+        e.preventDefault()
+        e.stopPropagation()
+        const next =
+          e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? rows.length - 1
+              : (i + (e.key === 'ArrowUp' ? -1 : 1) + rows.length) % rows.length
+        rows[next]?.focus({ preventScroll: true })
+      } else if (e.key === 'Tab') {
+        e.preventDefault()
+        e.stopPropagation()
+        restore.current = false
+        const owner = trigger.current?.closest('[role="dialog"]') || document
+        const candidates = Array.from(
+          owner.querySelectorAll<HTMLElement>(
+            'button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter(
+          (node) =>
+            !el.contains(node) &&
+            node.tabIndex >= 0 &&
+            node.getClientRects().length > 0 &&
+            !node.closest('[inert]'),
+        )
+        const at = candidates.indexOf(trigger.current as HTMLElement)
+        const next = candidates[at + (e.shiftKey ? -1 : 1)] || trigger.current
+        onClose()
+        next?.focus({ preventScroll: true })
       }
     }
     const t = setTimeout(() => document.addEventListener('pointerdown', down, true))
@@ -63,9 +111,16 @@ export function Menu({
     window.addEventListener('resize', onClose)
     return () => {
       clearTimeout(t)
+      cancelAnimationFrame(focusFrame)
       document.removeEventListener('pointerdown', down, true)
       document.removeEventListener('keydown', key, true)
       window.removeEventListener('resize', onClose)
+      if (
+        restore.current &&
+        trigger.current?.isConnected &&
+        (el?.contains(document.activeElement) || document.activeElement === document.body)
+      )
+        trigger.current.focus({ preventScroll: true })
     }
   }, [onClose])
 
@@ -74,6 +129,7 @@ export function Menu({
       ref={ref}
       className={'dd ' + className}
       role="menu"
+      tabIndex={-1}
       style={{
         left: pos?.left ?? -9999,
         top: pos?.top ?? -9999,
@@ -111,6 +167,13 @@ export function MenuItem({
       role="menuitem"
       tabIndex={-1}
       aria-disabled={disabled}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          e.stopPropagation()
+          if (!disabled) onClick?.()
+        }
+      }}
       className={'ddi' + (danger ? ' danger' : '') + (sel ? ' sel' : '') + (disabled ? ' dis' : '')}
       onClick={() => {
         if (!disabled) onClick?.()

@@ -111,6 +111,8 @@ export function ChatView({ chat }: { chat: Chat }) {
         <button
           className={'iconbtn' + (rightOpen ? ' on' : '')}
           title={rightOpen ? 'Скрыть панель кода' : 'Показать панель кода'}
+          aria-label={rightOpen ? 'Скрыть панель кода' : 'Показать панель кода'}
+          aria-expanded={rightOpen}
           onClick={() => st().setRight({ rightOpen: !rightOpen })}
         >
           <Icon name="sidebar" size={16} style={{ transform: 'scaleX(-1)' }} />

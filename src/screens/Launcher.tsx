@@ -1,3 +1,4 @@
+import { ProjectIcon } from '../components/ui/ProjectIcon'
 import { clone } from '../lib/clone'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
@@ -310,7 +311,7 @@ export function Launcher() {
             >
               <span className="glow" />
               <span className="pico">
-                <Icon name={p.icon} size={22} />
+                <ProjectIcon name={p.icon} size={28} />
               </span>
               <div className="pmid">
                 <h3 aria-level={2}>

@@ -1,6 +1,7 @@
+import { GradientRibbon } from '../components/ui/GradientRibbon'
 import { useState } from 'react'
 import { useStore, useProject } from '../store'
-import { Logo } from '../components/ui/primitives'
+import { ActionButton } from '../components/ui/ActionButton'
 import { Icon, type IconName } from '../components/ui/Icon'
 import { ModelPicker } from './Composer'
 import { sendMessage, resolveModel } from '../agent/engine'
@@ -38,9 +39,7 @@ export function Hero() {
   }
   return (
     <div className="hero">
-      <div className="hlogo">
-        <Logo size={58} />
-      </div>
+      <div className="hero-eyebrow">Твой проект. Твои решения.</div>
       <h1>
         {['Что', 'соберём', 'в'].map((w, i) => (
           <span key={w}>
@@ -56,18 +55,23 @@ export function Hero() {
           ?
         </span>
       </h1>
-      <p>Опиши задачу — builder изменит файлы проекта, а ты примешь или отклонишь правки.</p>
+      <p>От идеи к работающему коду. Опиши задачу — агент поможет с изменениями.</p>
       {!live && (
         <div className="diff-note hero-note">
           <Icon name="key" size={14} />
           Агенту нужна модель. Подключи ключ Anthropic или OpenAI либо локальную Ollama.
-          <button className="btn sm pri" onClick={() => useStore.getState().openModal({ type: 'provider' })}>
+          <ActionButton
+            variant="primary"
+            size="small"
+            onClick={() => useStore.getState().openModal({ type: 'provider' })}
+          >
             Подключить модель
-          </button>
+          </ActionButton>
         </div>
       )}
       <div className="hero-comp">
         <div className={'comp-box hero-box' + (foc ? ' foc' : '')}>
+          <GradientRibbon />
           <textarea
             rows={2}
             value={v}
@@ -87,9 +91,15 @@ export function Hero() {
           <div className="comp-bar">
             <ModelPicker />
             <span className="comp-hint">Enter — начать чат</span>
-            <button className="btn pri send" onClick={() => go(v)} disabled={!v.trim()} aria-label="Начать">
+            <ActionButton
+              variant="primary"
+              className="send"
+              onClick={() => go(v)}
+              disabled={!v.trim()}
+              aria-label="Начать"
+            >
               <Icon name="send" size={17} />
-            </button>
+            </ActionButton>
           </div>
         </div>
       </div>
@@ -103,6 +113,15 @@ export function Hero() {
           </button>
         ))}
       </div>
+      <ActionButton
+        variant="quiet"
+        size="small"
+        className="hero-files"
+        onClick={() => useStore.getState().setRight({ rightOpen: true, rightTab: 'code' })}
+      >
+        <Icon name="code" size={14} />
+        Открыть файлы проекта
+      </ActionButton>
     </div>
   )
 }

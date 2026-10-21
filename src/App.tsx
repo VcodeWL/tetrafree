@@ -365,10 +365,9 @@ export function App() {
   }, [])
 
   return (
-    <MotionConfig reducedMotion={settings.reducedMotion ? 'always' : 'never'}>
-      <Ambient still={settings.reducedMotion} />
+    <MotionConfig reducedMotion={settings.reducedMotion ? 'always' : 'user'}>
+      <Ambient />
       <UpdateGate />
-      <div className="grain" />
       <div className="app">
         <TitleBar />
         <div className="app-body">

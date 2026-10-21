@@ -1,3 +1,5 @@
+import { GradientRibbon } from '../components/ui/GradientRibbon'
+import { ActionButton } from '../components/ui/ActionButton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { Icon, BrandIcon } from '../components/ui/Icon'
@@ -346,6 +348,7 @@ export function Composer({
           add(e.dataTransfer.files)
         }}
       >
+        <GradientRibbon />
         {sugOpen && (
           <div className="slash-pop" role="listbox" aria-label="Команды">
             {sugg.map((c, i) => (
@@ -492,37 +495,40 @@ export function Composer({
             {enterToSend ? 'Enter — отправить · Shift+Enter — строка' : 'Ctrl+Enter — отправить'}
           </span>
           {running && (draft.trim() || atts.length > 0) && (
-            <button
+            <ActionButton
               type="button"
-              className="btn pri send"
+              variant="primary"
+              className="send"
               onClick={send}
               aria-label="В очередь"
               title="Отправить после текущего хода"
             >
               <Icon name="send" size={17} />
-            </button>
+            </ActionButton>
           )}
           {running ? (
-            <button
+            <ActionButton
               type="button"
-              className="btn send stopb"
+              variant="danger"
+              className="send stopb"
               onClick={() => {
                 if (pid) stopTurn(chatId, pid)
               }}
               aria-label="Остановить"
             >
               <Icon name="stop" size={15} />
-            </button>
+            </ActionButton>
           ) : (
-            <button
+            <ActionButton
               type="button"
-              className="btn pri send"
+              variant="primary"
+              className="send"
               onClick={send}
               disabled={!draft.trim() && !atts.length}
               aria-label="Отправить"
             >
               <Icon name="send" size={17} />
-            </button>
+            </ActionButton>
           )}
         </div>
         {drag && (
