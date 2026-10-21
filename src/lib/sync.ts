@@ -15,13 +15,22 @@ import {
   bResolve,
   isAbsPath,
   fnv,
+  captureBackendContextRevision,
 } from './backend'
 
 import { folderLost } from './paths'
 import { makeIgnore } from './ignore'
-import * as persistence from '../store/persistence'
 import { recoveryPath } from './syncRecovery'
-import { getToken } from './token'
+import { getToken, getTokenRevision } from './token'
+import {
+  beginSyncHealth,
+  resolvedSyncHealth,
+  finishSyncHealth,
+  invalidateSyncHealth,
+  checkpointProject,
+  captureSyncHealth,
+} from './syncStatus'
+export { captureSyncHealth } from './syncStatus'
 import { createSyncJournal, journalReplayPolicy, type SyncIntent } from './syncJournal'
 
 type DiskLocal = Record<string, string>
@@ -72,15 +81,24 @@ const saveBase = (pid: string) => {
 const generations = new Map<string, number>()
 /** Забыть, что было «одинаковым» на диске и в приложении (после смены папки или осознанного восстановления) */
 export function forgetBase(pid: string) {
+  invalidateSyncHealth(pid)
   resetIntents.add(pid)
   generations.set(pid, (generations.get(pid) || 0) + 1)
   baseline.set(pid, {})
   saveBase(pid)
 }
 const lostWarned = new Set<string>()
-const synced = new Set<string>()
+const synced = new Map<string, string>()
+const syncIdentity = (pid: string) =>
+  JSON.stringify([
+    S().projects.find((p) => p.id === pid)?.path,
+    useBackend.getState().base,
+    captureBackendContextRevision(),
+    getTokenRevision(),
+    generations.get(pid) || 0,
+  ])
 /** Была ли хоть одна успешная сверка проекта с диском (до неё файлы на диске ещё не видны приложению) */
-export const hasSynced = (pid: string) => synced.has(pid)
+export const hasSynced = (pid: string) => syncEnabled() && synced.get(pid) === syncIdentity(pid)
 /** путь → хеш версии (или 'rm'), которую не удалось записать на диск */
 const badPaths = new Map<string, Record<string, string>>()
 
@@ -106,7 +124,9 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
   if (!proj || !syncEnabled()) return null
   const generation = generations.get(pid) || 0
   const backend = useBackend.getState().base,
-    token = getToken()
+    token = getToken(),
+    tokenRevision = getTokenRevision(),
+    backendEpoch = captureBackendContextRevision()
   let folder = proj.path
   const current = () => S().projects.find((p) => p.id === pid)
   const valid = () =>
@@ -114,11 +134,16 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     (generations.get(pid) || 0) === generation &&
     useBackend.getState().base === backend &&
     getToken() === token &&
+    getTokenRevision() === tokenRevision &&
+    captureBackendContextRevision() === backendEpoch &&
     syncEnabled()
   const assertContext = () => {
     if (!valid()) throw new Error('Контекст синхронизации изменился; checkpoint не продвинут')
   }
   busy.add(pid)
+  const health = beginSyncHealth(pid)
+  let completed = false,
+    healthPending = false
   useBackend.setState({ syncing: true })
   let failed: { path: string; code: string; error: string }[] = []
   const sum = { pushed: 0, pulled: 0, removed: 0, conflicts: 0, truncated: false }
@@ -132,6 +157,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       }, pid)
       proj = S().projects.find((p) => p.id === pid)!
       folder = proj.path
+      resolvedSyncHealth(pid, health)
     }
     const scope = JSON.stringify([backend, folder, pid]),
       journalKey = diskJournalKey(pid, scope)
@@ -173,7 +199,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
         icon: 'warn',
         tone: 'warn',
       })
-      await persistence.flushPersistence()
+      await checkpointProject(pid)
       throw new Error('Неоднозначное disk journal recovery; требуется явное восстановление')
     }
     if (loaded.recovered && intent && journalReplayPolicy(intent, loaded.recovered) === 'replay') {
@@ -205,6 +231,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
           action: {
             label: 'Записать файлы заново',
             run: () => {
+              if (!valid()) return
               forgetBase(pid)
               lostWarned.delete(pid)
               void reconcile(pid)
@@ -325,7 +352,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       if (Object.keys(copies).length) {
         S().up((p) => Object.assign(p.files, copies), pid)
         // A failed/unavailable checkpoint blocks overwrite/delete: recovery must survive restart first.
-        await persistence.flushPersistence()
+        await checkpointProject(pid)
         assertContext()
       }
     }
@@ -337,7 +364,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     const mkdirs = emptyNow.filter((d) => !madeDirs.has(d))
     const rmdirs = [...madeDirs].filter((d) => !pj.dirs.includes(d))
     if (Object.keys(write).length || remove.length || mkdirs.length || rmdirs.length) {
-      await persistence.flushPersistence()
+      await checkpointProject(pid)
       assertContext()
       const expectedHashes = Object.fromEntries(
         [...Object.keys(write), ...remove].map((k) => [k, disk[k] ?? null]),
@@ -478,7 +505,7 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
       assertContext()
     }
     try {
-      await persistence.flushPersistence()
+      await checkpointProject(pid)
     } catch (error) {
       if (intent && valid()) await diskJournal.save(journalKey, { ...intent, local: { ...current()!.files } })
       throw error
@@ -512,11 +539,13 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
     if (last && committed.get(pid) !== last.n) {
       if (committed.has(pid))
         void bCommit(proj, `v${last.n}: ${last.title}`)
-          .then(() => mirrorPush(pid))
+          .then(() => {
+            if (valid()) return mirrorPush(pid)
+          })
           .catch(() => {})
       committed.set(pid, last.n)
     }
-    synced.add(pid)
+    synced.set(pid, syncIdentity(pid))
     useBackend.setState({ lastSync: Date.now(), lastError: undefined })
     if (failed.length) {
       const why = (c: string) =>
@@ -544,13 +573,35 @@ export async function reconcile(pid: string, opts: { quiet?: boolean } = {}) {
         icon: 'warn',
         tone: 'warn',
       })
+    // Health is an observation, not a baseline mutation. A no-write pass may still
+    // have raced a local edit: never stamp the newest file ref as verified blindly.
+    const live = current()!
+    healthPending =
+      queued.has(pid) ||
+      live.dirs !== proj.dirs ||
+      [...new Set([...Object.keys(live.files), ...Object.keys(next)])].some(
+        (k) => !hidden(k) && (live.files[k] === undefined ? undefined : fnv(live.files[k])) !== next[k],
+      )
+    completed = true
     return sum
   } catch (e) {
-    useBackend.setState({ lastError: (e as Error).message })
+    if (valid()) useBackend.setState({ lastError: (e as Error).message })
     return null
   } finally {
+    finishSyncHealth(
+      pid,
+      health,
+      completed
+        ? {
+            failedFiles: failed.length,
+            conflicts: sum.conflicts,
+            truncated: sum.truncated,
+            pending: healthPending,
+          }
+        : undefined,
+    )
     busy.delete(pid)
-    useBackend.setState({ syncing: false })
+    useBackend.setState({ syncing: busy.size > 0 })
     if (queued.delete(pid)) schedule(pid, 150)
   }
 }
@@ -562,8 +613,13 @@ async function mirrorPush(pid: string) {
   const p = S().projects.find((x) => x.id === pid)
   if (!p?.mirror || pushing.has(pid)) return
   pushing.add(pid)
+  const identity = syncIdentity(pid),
+    mirror = p.mirror
+  const valid = () =>
+    syncIdentity(pid) === identity && S().projects.find((x) => x.id === pid)?.mirror === mirror
   try {
     const r = await bGit<{ ok: boolean; reason?: string }>('push', p)
+    if (!valid()) return
     if (r.ok) {
       mirrorWarned = ''
     } else if (r.reason !== mirrorWarned) {
@@ -618,6 +674,21 @@ function schedule(pid: string, ms = 300) {
   )
 }
 
+/** Safe explicit retry; no baseline/journal reset, no duplicate request while this pid is running. */
+export async function retryProjectSync(pid: string) {
+  if (!captureSyncHealth(pid).canRetry) return null
+  if (syncEnabled()) {
+    badPaths.delete(pid) // Explicit retry permits unchanged files after permissions/disk space were repaired.
+    return reconcile(pid)
+  }
+  try {
+    await checkpointProject(pid)
+  } catch {
+    /* status reports failed checkpoint; no false disk ACK */
+  }
+  return null
+}
+
 export const resyncNow = async () => {
   const pid = S().projectId
   return pid ? reconcile(pid) : null
@@ -645,7 +716,11 @@ export function startSync() {
     }
   })
   useBackend.subscribe((b, prev) => {
-    if (b.status === 'online' && prev.status !== 'online') kick()
+    if (
+      b.status === 'online' &&
+      (prev.status !== 'online' || b.base !== prev.base || b.info?.local !== prev.info?.local)
+    )
+      kick()
   })
   poll = setInterval(() => {
     if (document.hidden || !syncEnabled()) return

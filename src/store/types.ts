@@ -49,6 +49,7 @@ export type ModalState =
   | { type: 'uilib' }
   | { type: 'trash' }
   | { type: 'recovery' }
+  | { type: 'diagnostics' }
   | { type: 'replay'; chatId: ID; msgId: ID }
   | { type: 'blame'; path: string }
   | { type: 'confirm'; title: string; body: string; danger?: boolean; confirm: string; run: () => void }
@@ -131,7 +132,7 @@ export interface Actions {
   pushMsg: (chatId: ID, m: Message, pid?: ID) => void
   patchMsg: (chatId: ID, msgId: ID, patch: Partial<Message>, pid?: ID) => void
   setChat: (chatId: ID, patch: Partial<Chat>, pid?: ID) => void
-  setDraft: (chatId: ID, v: string) => void
+  setDraft: (chatId: ID, v: string, pid?: ID) => void
   createDoc: (pid?: ID) => ID
   /** добавить готовые документы (импорт); открывает первый */
   addDocs: (docs: { title: string; blocks: Block[] }[], pid?: ID) => void

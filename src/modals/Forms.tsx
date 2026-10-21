@@ -740,6 +740,10 @@ export function TaskModal({ id, status }: { id?: string; status?: TaskStatus }) 
       sendMessage(
         cid,
         `Возьми задачу #${t.key}: ${t.title}${t.desc ? '\n\n' + t.desc : ''}${t.due ? `\n\nСрок: ${t.due}` : ''}`,
+        [],
+        '',
+        0,
+        { pid },
       )
     }, 60)
   }

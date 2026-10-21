@@ -457,7 +457,7 @@ function build(): Item[] {
           })
           st().setCenter({ kind: 'chat', id: cid })
         }
-        sendMessage(cid, fillTemplate(t, file))
+        sendMessage(cid, fillTemplate(t, file), [], '', 0, { pid: p.id })
       },
       undefined,
       t.hint,

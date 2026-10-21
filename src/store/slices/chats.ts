@@ -1,5 +1,6 @@
 import type { Actor, Message } from '../../types'
 import { ME } from '../../data/seed'
+import { draftKey, hasDraftTarget } from '../../lib/chatDraft'
 import { uid } from '../../lib/util'
 import { tomb, find, chatOf } from '../helpers'
 import type { SetState, Actions } from '../types'
@@ -131,9 +132,12 @@ export const chatsActions = (
       const c = chatOf(find(s, pid), chatId)
       if (c) Object.assign(c, patch)
     }),
-  setDraft: (chatId, v) =>
+  setDraft: (chatId, v, pid) =>
     set((s) => {
-      s.drafts[chatId] = v
+      const target = pid ?? s.projectId
+      if (!target || !hasDraftTarget(s, target, chatId)) return
+      // Keep an explicit empty entry: deleting it could resurrect the legacy draft.
+      s.drafts[draftKey(target, chatId)] = v
     }),
 
   restoreChat: (c, index, pid) =>

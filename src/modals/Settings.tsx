@@ -10,13 +10,14 @@ import { Icon, BrandIcon, type IconName } from '../components/ui/Icon'
 import { Avatar, Switch, Kbd, Segmented } from '../components/ui/primitives'
 import { Modal } from '../components/ui/Modal'
 import { ME } from '../data/seed'
-import { isEmail, ago, modKey, download, copyText } from '../lib/util'
+import { isEmail, ago, modKey, download } from '../lib/util'
 import { pipelinesOf, runPipeline, scheduleStatus } from '../agent/ci'
 import { describeSchedule } from '../agent/triggers'
 import { HOTKEYS } from '../lib/hotkeys'
 import { ACTIONS, effective, comboOf, check, parts } from '../lib/keymap'
 import { useBackend, detectBackend, setBackendUrl } from '../lib/backend'
-import { resyncNow } from '../lib/sync'
+import { retryProjectSync } from '../lib/sync'
+import { captureSyncHealth, syncHealthLabel, useSyncStatus } from '../lib/syncStatus'
 import type { Person, Settings as SettingsT } from '../types'
 import { AccountSecurity, MembersPanel } from './AccountPanels'
 import { api, logout, useAccount } from '../lib/account'
@@ -1037,6 +1038,7 @@ function StorageRow() {
 }
 
 function BackendSection() {
+  useSyncStatus((s) => s.revision)
   const backupIn = useRef<HTMLInputElement>(null)
   const b = useBackend()
   const set = useStore((x) => x.setSetting)
@@ -1044,6 +1046,8 @@ function BackendSection() {
   const av = useStore((x) => x.settings.autoVerify !== false)
   const url = useStore((x) => x.settings.backendUrl || '')
   const project = useProject()
+  const health = captureSyncHealth(project?.id)
+  const status = syncHealthLabel(health)
   const [draft, setDraft] = useState(url)
   const [busy, setBusy] = useState(false)
   const autoBk = useStore((x) => x.settings.autoBackup)
@@ -1215,39 +1219,52 @@ function BackendSection() {
         </div>
         <Switch on={sync} onChange={(v) => set('backendSync', v)} label="Синхронизация" />
       </div>
-      {project && b.status === 'online' && (
+      {project && (
         <div className="srow">
           <div className="sl">
             <div className="t">Проект «{project.name}»</div>
             <div className="d">
-              {b.syncing
-                ? 'Синхронизация…'
-                : b.lastSync
-                  ? `Последняя сверка ${ago(b.lastSync)}`
-                  : 'Ещё не сверялся'}
-              {b.lastError ? ` · ошибка: ${b.lastError}` : ''}
+              {status.text}
+              {health.lastDiskCheckAt ? ` · ${ago(health.lastDiskCheckAt)}` : ''}
             </div>
+            <div className="d">{status.detail}</div>
           </div>
           <button
             className="btn sm"
-            disabled={busy || !sync}
+            disabled={busy || !health.canRetry}
             onClick={async () => {
+              const pid = project.id
               setBusy(true)
-              const r = await resyncNow()
-              setBusy(false)
-              toast({
-                title: r ? 'Сверка выполнена' : 'Не удалось сверить',
-                desc: r ? `на диск: ${r.pushed} · с диска: ${r.pulled}` : useBackend.getState().lastError,
-                icon: r ? 'check' : 'warn',
-                tone: r ? 'ok' : 'err',
-              })
+              try {
+                await retryProjectSync(pid)
+                if (useStore.getState().projectId !== pid) return
+                const latest = syncHealthLabel(captureSyncHealth(pid))
+                toast({ title: latest.text, desc: latest.detail, icon: 'info' })
+              } catch {
+                if (useStore.getState().projectId === pid)
+                  toast({
+                    title: 'Сверка не завершена',
+                    desc: 'Данные и recovery сохранены. Повтори проверку подключения.',
+                    icon: 'warn',
+                    tone: 'err',
+                  })
+              } finally {
+                setBusy(false)
+              }
             }}
           >
             <Icon name="refresh" size={13} />
-            Сверить сейчас
+            Повторить безопасно
           </button>
         </div>
       )}
+      <div className="set-actions">
+        <button className="btn sm" onClick={() => useStore.getState().openModal({ type: 'diagnostics' })}>
+          <Icon name="info" size={13} />
+          Локальная диагностика
+        </button>
+      </div>
+
       <div className="srow">
         <div className="sl">
           <div className="t">Проверять правки агента</div>
@@ -1367,26 +1384,6 @@ function BackendSection() {
   )
 }
 
-/** Сводка для отчёта об ошибке: версия, система, сервер, проект. Ключей и содержимого файлов нет. */
-function diagnostics() {
-  const s = useStore.getState()
-  const b = useBackend.getState()
-  const p = s.projects.find((x) => x.id === s.projectId)
-  const i = b.info
-  return [
-    `TetraFree ${APP_VERSION}`,
-    `Окно: ${navigator.userAgent}`,
-    `Сервер: ${b.status}${i ? ` · v${i.version} · node ${i.node} · ${i.platform} · shell ${i.shell} · git ${i.git ? 'да' : 'нет'} · pty ${i.pty ? 'да' : 'нет'}` : ''}`,
-    b.lastError ? `Последняя ошибка синхронизации: ${b.lastError}` : '',
-    `Проектов: ${s.projects.length}; провайдеров: ${s.providers.length}; модель: ${s.model || 'не выбрана'}`,
-    p
-      ? `Проект: ${p.name} · ${p.path || 'путь не определён'} · файлов ${Object.keys(p.files).length} · версий ${p.versions.length}`
-      : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-}
-
 function WhatsNew() {
   useEffect(() => {
     markSeen()
@@ -1395,20 +1392,9 @@ function WhatsNew() {
     <>
       <h2>Что нового</h2>
       <div className="set-actions">
-        <button
-          className="btn sm"
-          onClick={() => {
-            copyText(diagnostics())
-            toast({
-              title: 'Диагностика скопирована',
-              desc: 'Без ключей и содержимого файлов',
-              icon: 'copy',
-              tone: 'ok',
-            })
-          }}
-        >
-          <Icon name="copy" size={13} />
-          Скопировать диагностику
+        <button className="btn sm" onClick={() => useStore.getState().openModal({ type: 'diagnostics' })}>
+          <Icon name="info" size={13} />
+          Диагностика без личных данных
         </button>
       </div>
       <p className="sd">

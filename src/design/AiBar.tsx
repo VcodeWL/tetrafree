@@ -61,7 +61,7 @@ export function AiBar({ page }: { page: string }) {
 
   const send = (text: string) => {
     const t = text.trim()
-    if (!t || running) return
+    if (!t || running || useStore.getState().projectId !== p.id) return
     const id = designChatId(true)
     if (!id) return
     const ctx =
@@ -71,7 +71,7 @@ export function AiBar({ page }: { page: string }) {
         : '')
     setDismissed(null)
     setV('')
-    sendMessage(id, t, [], ctx)
+    sendMessage(id, t, [], ctx, 0, { pid: p.id })
   }
 
   let status = ''
@@ -105,7 +105,7 @@ export function AiBar({ page }: { page: string }) {
           <b>designer</b>
           <span>{status}</span>
           <span className="grow" />
-          <button className="btn sm" onClick={() => chat && stopTurn(chat.id)}>
+          <button className="btn sm" onClick={() => chat && stopTurn(chat.id, p.id)}>
             <Icon name="stop" size={12} />
             Стоп
           </button>
@@ -124,7 +124,10 @@ export function AiBar({ page }: { page: string }) {
             </span>
           )}
           {last.turn?.state === 'applied' && (
-            <button className="linkbtn" onClick={() => chat && revertTurn(chat.id, last.id)}>
+            <button
+              className="linkbtn"
+              onClick={() => chat && revertTurn(chat.id, last.id, undefined, undefined, p.id)}
+            >
               Откатить
             </button>
           )}

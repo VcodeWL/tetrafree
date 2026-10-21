@@ -19,6 +19,12 @@ function compile(file: string, imports: Record<string, unknown>, react: unknown)
   new Function('require', 'module', 'exports', 'React', js)(
     (n: string) => {
       if (n in imports) return imports[n]
+      if (n === '../lib/diagnosticSnapshot')
+        return {
+          captureDiagnostics() {
+            throw new Error('Recovery loading must not collect diagnostics')
+          },
+        }
       if (n.startsWith('./')) return {} // All dynamically imported modals remain cold for synchronous SSR.
       throw new Error('Unexpected dependency ' + n)
     },

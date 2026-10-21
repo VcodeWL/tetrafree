@@ -1,6 +1,7 @@
 /* Навигация не зависит от скорости загрузки UI. Один goto, подтверждаемый редактором;
    текст compose сразу становится черновиком, а не потеряемым DOM-событием. */
 import { useStore } from './index'
+import { readChatDraft } from '../lib/chatDraft'
 
 const MAX_AGE = 60_000
 let pending: { pid: string; file: string; line: number; text: string; until: number } | undefined
@@ -69,9 +70,9 @@ export function composeToChat(pid: string, chatId: string, text: string): boolea
   const s = useStore.getState()
   const p = s.projects.find((p) => p.id === pid)
   if (s.screen !== 'workspace' || s.projectId !== pid || !p?.chats.some((c) => c.id === chatId)) return false
-  const current = s.drafts[chatId] || ''
+  const current = readChatDraft(s, pid, chatId)
   // Prefill must not erase an unsent user draft.
-  s.setDraft(chatId, current ? current + '\n\n' + text : text)
+  s.setDraft(chatId, current ? current + '\n\n' + text : text, pid)
   useStore.getState().setCenter({ kind: 'chat', id: chatId })
   window.dispatchEvent(new CustomEvent('tf:compose-focus', { detail: { pid, chatId } }))
   return true

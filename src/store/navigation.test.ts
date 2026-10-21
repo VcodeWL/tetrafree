@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import ts from 'typescript'
+import * as chatDraft from '../lib/chatDraft'
+import { chatsActions } from './slices/chats'
+import type { Full } from './types'
 
 type Consumer = (line: number) => void
 interface Navigation {
@@ -32,8 +35,8 @@ function fixture() {
       state.rightOpen = true
       emit()
     },
-    setDraft(chat: string, text: string) {
-      state.drafts[chat] = text
+    setDraft(chat: string, text: string, pid?: string) {
+      chatsActions((fn) => fn(state as unknown as Full)).setDraft(chat, text, pid)
       emit()
     },
     setCenter(center: { kind: string; id: string }) {
@@ -65,7 +68,7 @@ function fixture() {
     ) {}
   }
   new Function('require', 'module', 'exports', 'window', 'CustomEvent', 'Date', js)(
-    () => ({ useStore }),
+    (id: string) => (id.endsWith('/chatDraft') ? chatDraft : { useStore }),
     mod,
     mod.exports,
     { dispatchEvent: (e: unknown) => events.push(e) },
@@ -87,17 +90,20 @@ function fixture() {
 
 test('cold compose persists immediately without Composer and preserves unsent draft', () => {
   const f = fixture()
+  f.state.projects[1].chats = []
   f.state.drafts.same = 'unsent'
   assert.equal(f.nav.composeToChat('A', 'same', 'request'), true)
-  assert.equal(f.state.drafts.same, 'unsent\n\nrequest')
+  assert.equal(chatDraft.readChatDraft(f.state, 'A', 'same'), 'unsent\n\nrequest')
+  assert.equal(f.state.drafts.same, 'unsent')
   assert.deepEqual(f.state.center, { kind: 'chat', id: 'same' })
   assert.equal(f.events.length, 1)
 })
 test('compose retains original draft bytes including trailing newlines', () => {
   const f = fixture()
+  f.state.projects[1].chats = []
   f.state.drafts.same = 'unsent\n\n\n'
   f.nav.composeToChat('A', 'same', 'request')
-  assert.equal(f.state.drafts.same, 'unsent\n\n\n\n\nrequest')
+  assert.equal(chatDraft.readChatDraft(f.state, 'A', 'same'), 'unsent\n\n\n\n\nrequest')
 })
 test('compose refuses stale pid, missing chat and non-workspace without writes/navigation', () => {
   for (const kind of ['pid', 'chat', 'screen']) {
@@ -193,12 +199,14 @@ test('production askAgent prefill uses original project and needs no mounted eve
   const mod = { exports: {} as { askAgent?: (text: string) => void } }
   new Function('exports', 'useStore', 'composeToChat', js)(mod.exports, f.useStore, f.nav.composeToChat)
   mod.exports.askAgent!('cold request')
-  assert.equal(f.state.drafts.same, 'cold request')
+  assert.equal(chatDraft.readChatDraft(f.state, 'A', 'same'), 'cold request')
   f.state.projects[0].chats = []
   f.state.projectId = 'B'
   // existing B chat rather than stale A center; no createChat fallback required.
   mod.exports.askAgent!('B request')
-  assert.equal(f.state.drafts.same, 'cold request\n\nB request')
+  assert.equal(chatDraft.readChatDraft(f.state, 'B', 'same'), 'B request')
+  assert.equal(chatDraft.readChatDraft(f.state, 'A', 'same'), '')
+  assert.equal(f.state.drafts[chatDraft.draftKey('A', 'same')], 'cold request')
 })
 
 test('production search result rejects stale pid and queues live file goto until mount', () => {
@@ -305,6 +313,8 @@ test('real Composer focus consumption does not overwrite persisted prefill and r
     'pid',
     'chatId',
     'setDraft',
+    'isCurrentDraftTarget',
+    'readChatDraft',
     'ta',
     'window',
     effectSource('../workspace/Composer.tsx', 'tf:compose-focus'),
@@ -313,6 +323,8 @@ test('real Composer focus consumption does not overwrite persisted prefill and r
     'A',
     'same',
     f.state.setDraft,
+    chatDraft.isCurrentDraftTarget,
+    chatDraft.readChatDraft,
     {
       current: {
         focus() {},
@@ -327,12 +339,28 @@ test('real Composer focus consumption does not overwrite persisted prefill and r
     },
   ) as () => void
   listeners.get('tf:compose-focus')!({ detail: { pid: 'A', chatId: 'same' } })
-  assert.equal(f.state.drafts.same, 'prefill')
+  assert.equal(f.state.drafts[chatDraft.draftKey('A', 'same')], 'prefill')
   assert.deepEqual(ranges, [7])
+  listeners.get('tf:compose')!({ detail: { chatId: 'same', text: 'unscoped stale payload' } })
+  assert.equal(f.state.drafts[chatDraft.draftKey('A', 'same')], 'prefill')
   f.state.projectId = 'B'
   listeners.get('tf:compose')!({ detail: { pid: 'A', chatId: 'same', text: 'stale' } })
   listeners.get('tf:compose')!({ detail: { chatId: 'same', text: 42 } })
-  assert.equal(f.state.drafts.same, 'prefill')
+  assert.equal(f.state.drafts[chatDraft.draftKey('A', 'same')], 'prefill')
   off()
   assert.equal(listeners.size, 0)
+})
+
+test('compose prefill isolates duplicate ids and never copies ambiguous legacy into another project', () => {
+  const f = fixture()
+  f.state.drafts.same = 'PRIVATE LEGACY'
+  assert.equal(f.nav.composeToChat('A', 'same', 'A request'), true)
+  f.state.projectId = 'B'
+  assert.equal(f.nav.composeToChat('B', 'same', 'B request'), true)
+  assert.equal(chatDraft.readChatDraft(f.state, 'A', 'same'), 'A request')
+  assert.equal(chatDraft.readChatDraft(f.state, 'B', 'same'), 'B request')
+  assert.equal(f.state.drafts.same, 'PRIVATE LEGACY')
+  const before = { ...f.state.drafts }
+  assert.equal(f.nav.composeToChat('A', 'same', 'stale request'), false)
+  assert.deepEqual(f.state.drafts, before)
 })

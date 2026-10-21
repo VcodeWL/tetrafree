@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { create } from 'zustand'
 function fixture() {
   let token: string | null = 'token-a'
+  let tokenRevision = 0
   const backend = create(() => ({ base: 'http://a', status: 'online' }))
   let syncs = 0
   const root = {
@@ -36,7 +37,9 @@ function fixture() {
         : id === './token'
           ? {
               getToken: () => token,
+              getTokenRevision: () => tokenRevision,
               setToken: (v: string | null) => {
+                if (token !== v) tokenRevision++
                 token = v
               },
               authHeader: () => ({}),
@@ -66,6 +69,7 @@ function fixture() {
     user,
     syncs: () => syncs,
     setToken: (v: string) => {
+      if (token !== v) tokenRevision++
       token = v
     },
     deferMe: (fn: () => Promise<unknown>) => {

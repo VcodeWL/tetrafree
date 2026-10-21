@@ -2,7 +2,7 @@
 import { useStore } from '../store'
 import { flushPersistence, capturePersistenceGeneration } from '../store/persistence'
 import { authHeader } from './token'
-import { useAccount, confirmedAccountId, verifySession } from './account'
+import { useAccount, confirmedAccountId, verifySession, captureSession } from './account'
 import { backendOnline, useBackend } from './backend'
 import {
   vaultScope,
@@ -22,7 +22,11 @@ import {
 import { readVaultOutbox } from './vaultOutbox'
 import type { Provider } from '../types'
 
-configureVaultIdentity(confirmedAccountId, () => capturePersistenceGeneration().hydrated)
+configureVaultIdentity(
+  confirmedAccountId,
+  () => capturePersistenceGeneration().hydrated,
+  () => captureSession().epoch,
+)
 
 type Mode = 'dpapi' | 'file'
 type Context = {
@@ -84,6 +88,7 @@ export type VaultRecoveryState = { blocked: boolean; checking: boolean; error: s
 let recoveryState: VaultRecoveryState = { blocked: false, checking: false, error: null }
 let recoveredScope: string | undefined
 let recoveryFlight: Promise<void> | undefined
+let recoveryFlightAuthority: string | undefined
 const recoveryListeners = new Set<() => void>()
 function recoveryStatus(patch: Partial<VaultRecoveryState>) {
   const next = { ...recoveryState, ...patch }
@@ -142,7 +147,19 @@ export function subscribeVaultRecovery(listener: () => void) {
  * modifying raw metadata or a possibly different account's fallback. Login can retry this API.
  */
 export function prepareVaultRecovery(): Promise<void> {
-  if (recoveryFlight) return recoveryFlight
+  let authority: string
+  try {
+    authority = JSON.stringify([vaultScope(), readVaultOutbox().generation])
+  } catch (error) {
+    refreshRecovery()
+    return Promise.reject(error)
+  }
+  if (recoveryFlight) {
+    if (recoveryFlightAuthority === authority) return recoveryFlight
+    // A pending preparation for another session/journal cannot acknowledge this request.
+    return recoveryFlight.catch(() => {}).then(() => prepareVaultRecovery())
+  }
+  recoveryFlightAuthority = authority
   refreshRecovery()
   recoveryStatus({ checking: true, error: null })
   recoveryFlight = (async () => {
@@ -251,14 +268,26 @@ async function push(c: Context) {
   let changed = false
   try {
     const synced = vaultSynced()
-    const now = new Map(useStore.getState().providers.map((p) => [p.id, p.apiKey]))
-    for (const [id, key] of now) {
-      const generation = vaultIntentGeneration(id)
+    // Capture value AND intent in the same synchronous snapshot, before any provider awaits.
+    const now = new Map(
+      useStore
+        .getState()
+        .providers.map((p) => [p.id, { key: p.apiKey, generation: vaultIntentGeneration(p.id) }]),
+    )
+    for (const [id, { key, generation }] of now) {
+      const latest = () =>
+        current(c) &&
+        generation === vaultIntentGeneration(id) &&
+        useStore.getState().providers.some((p) => p.id === id && p.apiKey === key)
+      if (!latest()) {
+        c.again = true
+        continue
+      }
       if (key && !vaultClearIntent(id) && synced.get(id) !== key) {
         // A replacement must have an app checkpoint before its server ACK retires a tombstone.
         const checkpointRevision = capturePersistenceGeneration().current
         await flushPersistence()
-        if (!current(c) || generation !== vaultIntentGeneration(id)) {
+        if (!latest()) {
           c.again = true
           continue
         }
@@ -267,8 +296,7 @@ async function push(c: Context) {
           continue
         }
         await api(c, '/api/secrets/set', { id, value: key })
-        if (generation === vaultIntentGeneration(id) && acknowledgeVaultReplacement(id, generation))
-          synced.set(id, key)
+        if (latest() && acknowledgeVaultReplacement(id, generation)) synced.set(id, key)
         else c.again = true // never acknowledge a stale SET after a local ABA
         changed = true
       } else if (!key && (synced.has(id) || pendingVaultDeletes().includes(id))) {

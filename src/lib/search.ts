@@ -25,6 +25,22 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
   if (q.length < 2) return []
   const st = useStore.getState
   const out: Hit[] = []
+  // Search results are closures; detached/imported projects may share object IDs.
+  const openCurrent = (exists: (current: Project) => boolean, open: () => void) => {
+    const s = st()
+    if (s.screen !== 'workspace' || s.projectId !== p.id) return
+    const current = s.projects.find((item) => item.id === p.id)
+    if (!current || !exists(current)) {
+      s.toast({
+        title: 'Результат поиска устарел',
+        desc: 'Повтори поиск: исходный объект изменён или удалён.',
+        icon: 'search',
+        tone: 'warn',
+      })
+      return
+    }
+    open()
+  }
   const full = () => out.length >= limit
   for (const [file, text] of Object.entries(p.files)) {
     if (full()) break
@@ -44,9 +60,13 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
         group: 'Код',
         label: clip(text.slice(ls, le), i - ls, q.length),
         sub: `${file}:${line}`,
-        run: () => {
-          gotoFile(p.id, file, line)
-        },
+        run: () =>
+          openCurrent(
+            (current) => current.files[file] === text,
+            () => {
+              gotoFile(p.id, file, line)
+            },
+          ),
       })
       from = le + 1
       n++
@@ -63,7 +83,16 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
         group: 'Документы',
         label: d.title,
         sub: clip(d.title + '\n' + body, i, q.length),
-        run: () => st().setCenter({ kind: 'doc', id: d.id }),
+        run: () =>
+          openCurrent(
+            (current) =>
+              current.docs.some(
+                (item) =>
+                  item.id === d.id &&
+                  (item.title + '\n' + item.blocks.map(blockText).join('\n')).toLowerCase().includes(q),
+              ),
+            () => st().setCenter({ kind: 'doc', id: d.id }),
+          ),
       })
   }
   for (const t of p.tasks) {
@@ -76,7 +105,14 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
         group: 'Задачи',
         label: '#' + t.key + ' ' + t.title,
         sub: clip(t.title + ' ' + t.desc, i, q.length),
-        run: () => st().openModal({ type: 'task', id: t.id }),
+        run: () =>
+          openCurrent(
+            (current) =>
+              current.tasks.some(
+                (item) => item.id === t.id && (item.title + ' ' + item.desc).toLowerCase().includes(q),
+              ),
+            () => st().openModal({ type: 'task', id: t.id }),
+          ),
       })
   }
   for (const c of p.chats) {
@@ -91,7 +127,22 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
           group: 'Чаты',
           label: clip(txt, i, q.length),
           sub: c.title,
-          run: () => st().setCenter({ kind: 'chat', id: c.id }),
+          run: () =>
+            openCurrent(
+              (current) =>
+                current.chats.some(
+                  (chat) =>
+                    chat.id === c.id &&
+                    chat.messages.some(
+                      (item) =>
+                        item.id === m.id &&
+                        'text' in item &&
+                        typeof item.text === 'string' &&
+                        item.text.toLowerCase().includes(q),
+                    ),
+                ),
+              () => st().setCenter({ kind: 'chat', id: c.id }),
+            ),
         })
         n++
       }
@@ -106,7 +157,12 @@ export function searchProject(p: Project, query: string, limit = 80): Hit[] {
         group: 'Память',
         label: clip(m.text, i, q.length),
         sub: m.kind === 'decision' ? 'решение' : 'факт',
-        run: () => st().openModal({ type: 'activity' }),
+        run: () =>
+          openCurrent(
+            (current) =>
+              current.memory.some((item) => item.id === m.id && item.text.toLowerCase().includes(q)),
+            () => st().openModal({ type: 'activity' }),
+          ),
       })
   }
   return out

@@ -7,6 +7,7 @@ import { editorSession } from './editorSession'
 import * as merge from './merge3'
 import * as folds from './folds'
 import * as trash from './trash'
+import * as chatDraft from './chatDraft'
 
 interface Tree {
   type: string
@@ -243,6 +244,7 @@ test('UI06/07: actual workspace key handlers save and finish; Russian layout com
   ).outputText
   new Function('require', 'module', 'exports', navigationCode)(
     (name: string) => {
+      if (name === '../lib/chatDraft') return chatDraft
       assert.equal(name, './index', 'unexpected navigation dependency')
       return { useStore: store }
     },

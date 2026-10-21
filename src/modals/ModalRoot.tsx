@@ -1,3 +1,4 @@
+import { captureDiagnostics } from '../lib/diagnosticSnapshot'
 import { Modal, MHead } from '../components/ui/Modal'
 import { lazy, Suspense } from 'react'
 import { useStore } from '../store'
@@ -6,6 +7,7 @@ import { NewProjectModal, ProjectFolderModal } from './NewProject'
 
 /* Тяжёлые окна грузятся при первом открытии — запуск приложения от этого быстрее */
 const BlameModal = lazy(() => import('./BlameModal').then((m) => ({ default: m.BlameModal })))
+const DiagnosticsModal = lazy(() => import('./Diagnostics').then((m) => ({ default: m.DiagnosticsModal })))
 const RecoveryModal = lazy(() => import('./RecoveryModal').then((m) => ({ default: m.RecoveryModal })))
 const TrashModal = lazy(() => import('./TrashModal').then((m) => ({ default: m.TrashModal })))
 const SettingsModal = lazy(() => import('./Settings').then((m) => ({ default: m.SettingsModal })))
@@ -93,6 +95,8 @@ function useModalBody() {
       return <TodayModal />
     case 'blame':
       return <BlameModal path={m.path} />
+    case 'diagnostics':
+      return <DiagnosticsModal collect={captureDiagnostics} />
     case 'recovery':
       return <RecoveryModal />
     case 'trash':

@@ -1,7 +1,7 @@
 /* Подтверждение ключа действительно только для этого backend и контекста доступа. */
 import type { Provider } from '../types'
 import { useBackend } from './backend'
-import { getToken } from './token'
+import { getToken, getTokenRevision } from './token'
 import {
   readVaultOutbox,
   enqueueVaultDelete,
@@ -11,7 +11,15 @@ import {
 
 let hydratedRevision: () => number = () => -1
 let identity: (() => string | null) | undefined
-export const vaultScope = () => JSON.stringify([useBackend.getState().base, getToken(), identity?.() ?? null])
+let sessionRevision: () => number = () => 0
+export const vaultScope = () =>
+  JSON.stringify([
+    useBackend.getState().base,
+    getToken(),
+    getTokenRevision(),
+    identity?.() ?? null,
+    sessionRevision(),
+  ])
 let scope = vaultScope()
 let synced = new Map<string, string>()
 /** На смене backend/token прежние подтверждения НЕ разрешают удаление fallback-ключей. */
@@ -26,9 +34,14 @@ export function vaultSynced() {
 /** Identity is supplied by the vault runtime, avoiding account → store → settings cycles.
  * Until a signed-in account is known, durable mutations fail closed. No bearer is persisted.
  */
-export function configureVaultIdentity(resolve: () => string | null, hydrated: () => number = () => -1) {
+export function configureVaultIdentity(
+  resolve: () => string | null,
+  hydrated: () => number = () => -1,
+  session: () => number = () => 0,
+) {
   identity = resolve
   hydratedRevision = hydrated
+  sessionRevision = session
 }
 export function vaultDurableScope(required = true) {
   const account = identity?.()
@@ -60,6 +73,10 @@ type KeyIntent = {
   pendingDelete: boolean
 }
 const intents = new Map<string, KeyIntent>()
+// Metadata proof of this runtime's already-flushed replacement. Token/epoch rotation must
+// not confuse it with a pre-checkpoint intent; hydrated revision is intentionally immutable.
+const replacementProofs = new Map<string, { generation: number; revision: number }>()
+const replacementProofKey = (id: string) => JSON.stringify([vaultDurableScope(false), id])
 let intentGeneration = 0
 const intentKey = (id: string) => JSON.stringify([vaultScope(), id])
 function durable(id?: string) {
@@ -94,15 +111,20 @@ export const vaultClearIntent = (id: string) => {
   const intent = activeIntent(id)
   if (intent) return intent.clear
   const entry = durable(id)[0]
-  return (
-    !!entry && !(entry.replacementRevision !== undefined && hydratedRevision() >= entry.replacementRevision)
-  )
+  const proof = replacementProofs.get(replacementProofKey(id))
+  const confirmedReplacement =
+    entry?.replacementRevision !== undefined &&
+    (hydratedRevision() >= entry.replacementRevision ||
+      (proof?.generation === entry.generation && proof.revision === entry.replacementRevision))
+  return !!entry && !confirmedReplacement
 }
 export const vaultRemoteFillBlocked = (id: string) => vaultClearIntent(id) || !!durable(id)[0]
 export function prepareVaultReplacement(id: string, generation: number, revision: number) {
   if (generation !== vaultIntentGeneration(id)) return false
   const scope = vaultDurableScope()
-  return !scope || prepareOutboxReplacement(scope, id, generation, revision)
+  const committed = !scope || prepareOutboxReplacement(scope, id, generation, revision)
+  if (committed && scope) replacementProofs.set(replacementProofKey(id), { generation, revision })
+  return committed
 }
 export const pendingVaultDeletes = () => {
   const ids = new Set(

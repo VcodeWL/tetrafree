@@ -3,7 +3,7 @@
    Если бэкенда нет, приложение хранит файлы только внутри себя; терминала и пайплайнов нет, запросы к LLM идут напрямую. */
 import { create } from 'zustand'
 import type { Project } from '../types'
-import { authHeader, getToken } from './token'
+import { getToken, getTokenRevision } from './token'
 import { isAbsPath } from './paths'
 
 export { joinPath, isAbsPath } from './paths'
@@ -36,11 +36,44 @@ export const serverOnline = () => B().status === 'online'
 /** сервер на этом компьютере и мы вошли: диск, shell, git, превью */
 export const backendOnline = () => B().status === 'online' && !!B().info?.local && !!getToken()
 
+let contextEpoch = 0
+useBackend.subscribe((next, previous) => {
+  if (
+    next.base !== previous.base ||
+    next.status !== previous.status ||
+    next.info?.local !== previous.info?.local
+  )
+    contextEpoch++
+})
+export const captureBackendContextRevision = () => contextEpoch
+/** Capture the request's authority once; never consume a reply or send cleanup through a newer session. */
+function requestContext() {
+  const base = B().base,
+    token = getToken(),
+    epoch = contextEpoch,
+    tokenRevision = getTokenRevision()
+  return {
+    base,
+    headers: token ? { authorization: 'Bearer ' + token } : ({} as Record<string, string>),
+    assert() {
+      if (epoch !== contextEpoch || token !== getToken() || tokenRevision !== getTokenRevision())
+        throw new Error('Контекст сервера или сессии изменился; устаревший ответ не применён')
+    },
+  }
+}
+let detectionEpoch = 0
+let ptyTimer: ReturnType<typeof setTimeout> | undefined
 let custom = ''
 let pollPty = false
 let ptyTries = 0
 export function setBackendUrl(u: string) {
+  contextEpoch++ // A new explicit selection supersedes requests even while already checking.
   custom = u.trim().replace(/\/+$/, '')
+  if (ptyTimer) clearTimeout(ptyTimer)
+  ptyTimer = undefined
+  pollPty = false
+  ptyTries = 0
+  useBackend.setState({ status: 'checking', info: null, lastError: undefined, lastSync: undefined })
   void detectBackend()
 }
 
@@ -59,24 +92,28 @@ async function ping(base: string) {
   }
 }
 export async function detectBackend() {
+  const epoch = ++detectionEpoch
   const cands = custom ? [custom] : ['', 'http://127.0.0.1:3001']
   for (const base of cands) {
     if (base === '' && !/^https?:$/.test(location.protocol)) continue
     const info = await ping(base)
+    if (epoch !== detectionEpoch) return false
     if (info) {
-      useBackend.setState({ status: 'online', base, info, lastError: undefined })
+      useBackend.setState({ status: 'online', base, info })
       /* на Windows терминал собирается в фоне при первом запуске — спросим ещё раз, когда он будет готов */
       if (info.platform === 'win32' && info.pty === false && !pollPty && ptyTries < 6) {
         pollPty = true
         ptyTries++
-        window.setTimeout(() => {
+        ptyTimer = setTimeout(() => {
           pollPty = false
-          void detectBackend()
+          ptyTimer = undefined
+          if (epoch === detectionEpoch) void detectBackend()
         }, 7000)
       }
       return true
     }
   }
+  if (epoch !== detectionEpoch) return false
   useBackend.setState({ status: 'offline', info: null })
   return false
 }
@@ -84,28 +121,43 @@ export async function detectBackend() {
 /** что нужно серверу, чтобы найти папку проекта: путь (если он абсолютный) или старая схема по id/имени */
 export type ProjRef = Pick<Project, 'id' | 'name'> & { path?: string }
 const pj = (p: ProjRef) => ({ id: p.id, name: p.name, ...(isAbsPath(p.path) ? { folder: p.path } : {}) })
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(B().base + path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...authHeader() },
-    body: JSON.stringify(body),
-  })
+async function readReply<T>(r: Response, context: ReturnType<typeof requestContext>): Promise<T> {
+  context.assert()
   const j = await r.json().catch(() => ({}))
+  context.assert()
   if (!r.ok) throw new Error(j.error?.message || 'HTTP ' + r.status)
   return j as T
+}
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const context = requestContext()
+  const r = await fetch(context.base + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...context.headers },
+    body: JSON.stringify(body),
+  })
+  return readReply<T>(r, context)
+}
+async function get<T>(path: string): Promise<T> {
+  const context = requestContext()
+  const r = await fetch(context.base + path, { headers: context.headers })
+  return readReply<T>(r, context)
 }
 
 /** fetch к внешнему API — через бэкенд, если он есть (обходит CORS), иначе напрямую */
 export async function backendFetch(url: string, init: RequestInit & { headers: Record<string, string> }) {
   if (!backendOnline()) return fetch(url, init)
+  const context = requestContext()
   try {
-    return await fetch(B().base + '/api/proxy', {
+    const response = await fetch(context.base + '/api/proxy', {
       method: 'POST',
       signal: init.signal,
-      headers: { 'content-type': 'application/json', ...authHeader() },
+      headers: { 'content-type': 'application/json', ...context.headers },
       body: JSON.stringify({ url, method: init.method || 'POST', headers: init.headers, body: init.body }),
     })
+    context.assert()
+    return response
   } catch (e) {
+    context.assert()
     if ((e as Error).name === 'AbortError') throw e
     return fetch(url, init)
   }
@@ -175,19 +227,16 @@ export const bGit = <T>(
 ) => post<T>('/api/git/' + op, { ...pj(p), ...extra })
 export const bRead = (p: ProjRef, paths: string[]) =>
   post<{ files: Record<string, string | null> }>('/api/fs/read', { ...pj(p), paths })
-export async function bHashes(p: ProjRef) {
-  const r = await fetch(
-    `${B().base}/api/fs/hashes?id=${encodeURIComponent(p.id)}&name=${encodeURIComponent(p.name)}${isAbsPath(p.path) ? '&folder=' + encodeURIComponent(p.path!) : ''}`,
-    { headers: authHeader() },
-  )
-  if (!r.ok) throw new Error('HTTP ' + r.status)
-  return (await r.json()) as {
+export function bHashes(p: ProjRef) {
+  return get<{
     dir: string
     truncated?: boolean
     ignore?: string
     skip?: string[]
     hashes: Record<string, string>
-  }
+  }>(
+    `/api/fs/hashes?id=${encodeURIComponent(p.id)}&name=${encodeURIComponent(p.name)}${isAbsPath(p.path) ? '&folder=' + encodeURIComponent(p.path!) : ''}`,
+  )
 }
 /** Настоящий shell в папке проекта. Вывод — по кускам, по мере появления. */
 export async function bExec(
@@ -197,13 +246,18 @@ export async function bExec(
 ) {
   const aborted = () => new DOMException('Выполнение отменено', 'AbortError')
   if (o.signal?.aborted) throw aborted()
+  const context = requestContext()
   const runId = Math.random().toString(36).slice(2)
   const transport = new AbortController()
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   let timedOut = false
   let terminal = false
   const kill = () => {
-    void post('/api/exec/kill', { runId }).catch(() => {})
+    void fetch(context.base + '/api/exec/kill', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...context.headers },
+      body: JSON.stringify({ runId }),
+    }).catch(() => {})
   }
   const cancel = () => {
     kill() // Server must retain cancellation for a runId not yet launched.
@@ -222,14 +276,15 @@ export async function bExec(
   )
   const guard = () => {
     if (o.signal?.aborted) throw aborted()
+    context.assert()
     if (timedOut) throw new Error('Связь с выполнением команды прервана по таймауту')
   }
   try {
     guard()
-    const r = await fetch(B().base + '/api/exec', {
+    const r = await fetch(context.base + '/api/exec', {
       method: 'POST',
       signal: transport.signal,
-      headers: { 'content-type': 'application/json', ...authHeader() },
+      headers: { 'content-type': 'application/json', ...context.headers },
       body: JSON.stringify({ ...pj(p), cmd, cwd: o.cwd || '', runId, timeout }),
     })
     guard()
@@ -311,9 +366,7 @@ export interface BackupInfo {
 /** Автокопия на диск (с данными) или только список (без данных) */
 export async function bBackup(data?: unknown): Promise<BackupInfo> {
   if (data) return post<BackupInfo>('/api/backup', { data })
-  const r = await fetch(`${B().base}/api/backup`, { headers: authHeader() })
-  if (!r.ok) throw new Error('HTTP ' + r.status)
-  return (await r.json()) as BackupInfo
+  return get<BackupInfo>('/api/backup')
 }
 
 export interface DirInfo {
@@ -327,10 +380,7 @@ export interface DirInfo {
 }
 /** Подпапки и сведения о папке для окна выбора места проекта. dir='' — корни (домой, диски). */
 export async function bBrowse(dir: string): Promise<DirInfo> {
-  const r = await fetch(`${B().base}/api/fs/browse?dir=${encodeURIComponent(dir)}`, { headers: authHeader() })
-  const j = await r.json().catch(() => ({}))
-  if (!r.ok) throw new Error(j.error?.message || 'HTTP ' + r.status)
-  return j as DirInfo
+  return get<DirInfo>(`/api/fs/browse?dir=${encodeURIComponent(dir)}`)
 }
 export interface FolderCheck {
   ok: boolean
@@ -353,9 +403,7 @@ export const bReveal = (p: ProjRef, rel?: string) =>
 
 /** Установленные на компьютере редакторы кода (VS Code, Cursor, Zed…) */
 export async function bEditors(): Promise<{ id: string; name: string }[]> {
-  const r = await fetch(B().base + '/api/editors', { headers: authHeader() })
-  if (!r.ok) throw new Error('HTTP ' + r.status)
-  return ((await r.json()) as { editors: { id: string; name: string }[] }).editors
+  return (await get<{ editors: { id: string; name: string }[] }>('/api/editors')).editors
 }
 /** Открыть проект (или файл на строке) во внешнем редакторе */
 export const bOpenIn = (p: ProjRef, editor: string, rel?: string, line?: number, exe?: string) =>
