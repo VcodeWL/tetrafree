@@ -1,6 +1,7 @@
 import { clone } from '../lib/clone'
+import { draftKey, isCurrentDraftTarget, readChatDraft } from '../lib/chatDraft'
 import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useStore, useProject, getProject } from '../store'
+import { useStore, useProject } from '../store'
 import type { Chat, Message, Tier } from '../types'
 import { TIERS } from '../types'
 import { AgentAvatar, Avatar, Inline, PersonAv, Working } from '../components/ui/primitives'
@@ -60,7 +61,7 @@ export function ChatView({ chat }: { chat: Chat }) {
     chat.creator.kind === 'agent'
       ? 'агент ' + chat.creator.name
       : useStore.getState().people[chat.creator.id]?.name
-  const busy = chat.running && isRunning(chat.id)
+  const busy = chat.running && isRunning(chat.id, p.id)
   return (
     <div className="cwrap">
       <div className="cbar">
@@ -116,8 +117,9 @@ export function ChatView({ chat }: { chat: Chat }) {
         </button>
       </div>
       <AgentStrip chat={chat} />
-      <Thread chat={chat} />
+      <Thread key={`thread:${draftKey(p.id, chat.id)}`} chat={chat} pid={p.id} />
       <Composer
+        key={`composer:${draftKey(p.id, chat.id)}`}
         chatId={chat.id}
         running={busy}
         placeholder={chat.agents.length ? undefined : 'Сначала добавь агента в чат'}
@@ -227,7 +229,7 @@ function AgentStrip({ chat }: { chat: Chat }) {
   )
 }
 
-function Thread({ chat }: { chat: Chat }) {
+function Thread({ chat, pid }: { chat: Chat; pid: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [showDown, setShowDown] = useState(false)
@@ -355,7 +357,7 @@ function Thread({ chat }: { chat: Chat }) {
                   <span>{dayLabel(m.at)}</span>
                 </div>
               )}
-              <Msg m={m} chatId={chat.id} />
+              <Msg m={m} chatId={chat.id} pid={pid} />
             </Fragment>
           )
         })}
@@ -448,43 +450,78 @@ function Thread({ chat }: { chat: Chat }) {
   )
 }
 
-function MsgActions({ m, chatId }: { m: Extract<Message, { kind: 'human' }>; chatId: string }) {
+function MsgActions({
+  m,
+  chatId,
+  pid,
+}: {
+  m: Extract<Message, { kind: 'human' }>
+  chatId: string
+  pid: string
+}) {
   const st = useStore.getState
   const quote = () => {
+    if (!isCurrentDraftTarget(st(), pid, chatId)) return
     const first = m.text.split('\n').filter(Boolean).slice(0, 3).join('\n> ')
-    const cur = st().drafts[chatId] || ''
-    window.dispatchEvent(
-      new CustomEvent('tf:compose', {
-        detail: {
-          chatId,
-          text:
-            (cur ? cur.replace(/\n*$/, '\n\n') : '') +
-            '> ' +
-            (first.length > 280 ? first.slice(0, 280) + '…' : first) +
-            '\n\n',
-        },
-      }),
+    const cur = readChatDraft(st(), pid, chatId)
+    st().setDraft(
+      chatId,
+      (cur ? cur.replace(/\n*$/, '\n\n') : '') +
+        '> ' +
+        (first.length > 280 ? first.slice(0, 280) + '…' : first) +
+        '\n\n',
+      pid,
     )
+    window.dispatchEvent(new CustomEvent('tf:compose-focus', { detail: { pid, chatId } }))
+  }
+  const source = () => {
+    const s = st()
+    if (!isCurrentDraftTarget(s, pid, chatId)) return
+    const current = s.projects
+      .find((p) => p.id === pid)
+      ?.chats.find((c) => c.id === chatId)
+      ?.messages.find((x) => x.id === m.id)
+    return current?.kind === 'human' && current.text === m.text ? current : undefined
   }
   const toTask = () => {
+    if (!source()) return
     const title =
       m.text
         .split('\n')
         .find((x) => x.trim())!
         .replace(/^[#>*\-\s]+/, '')
         .slice(0, 90) || 'Задача из чата'
-    const id = st().saveTask({
-      title,
-      desc: m.text.length > 90 || m.text.includes('\n') ? m.text : '',
-      status: 'backlog',
-    })
-    const key = getProject()?.tasks.find((t) => t.id === id)?.key
+    const id = st().saveTask(
+      {
+        title,
+        desc: m.text.length > 90 || m.text.includes('\n') ? m.text : '',
+        status: 'backlog',
+      },
+      pid,
+    )
+    const task = st()
+      .projects.find((p) => p.id === pid)
+      ?.tasks.find((t) => t.id === id)
+    if (!task) return
+    const key = task.key
     st().toast({
       title: 'Задача создана',
       desc: (key ? '#' + key + ' · ' : '') + title,
       icon: 'task',
       tone: 'ok',
-      action: { label: 'Открыть', run: () => st().openModal({ type: 'task', id }) },
+      action: {
+        label: 'Открыть',
+        run: () => {
+          if (
+            !source() ||
+            !st()
+              .projects.find((p) => p.id === pid)
+              ?.tasks.some((t) => t.id === id)
+          )
+            return
+          st().openModal({ type: 'task', id })
+        },
+      },
     })
   }
   return (
@@ -504,7 +541,11 @@ function MsgActions({ m, chatId }: { m: Extract<Message, { kind: 'human' }>; cha
         className={'msg-copy' + (m.pinned ? ' ok' : '')}
         title={m.pinned ? 'Открепить сообщение' : 'Закрепить сообщение'}
         aria-label={m.pinned ? 'Открепить сообщение' : 'Закрепить сообщение'}
-        onClick={() => st().patchMsg(chatId, m.id, { pinned: !m.pinned })}
+        onClick={() => {
+          const current = source()
+          if (!current || !!current.pinned !== !!m.pinned) return
+          st().patchMsg(chatId, m.id, { pinned: !current.pinned }, pid)
+        }}
       >
         <Icon name="pin" size={12} />
       </button>
@@ -512,7 +553,7 @@ function MsgActions({ m, chatId }: { m: Extract<Message, { kind: 'human' }>; cha
   )
 }
 
-const Msg = memo(function Msg({ m, chatId }: { m: Message; chatId: string }) {
+const Msg = memo(function Msg({ m, chatId, pid }: { m: Message; chatId: string; pid: string }) {
   const people = useStore((s) => s.people)
   if (m.kind === 'sys')
     return (
@@ -534,7 +575,7 @@ const Msg = memo(function Msg({ m, chatId }: { m: Message; chatId: string }) {
             <span className="who-n">{me ? 'Ты' : who?.name}</span>
             <span>{clock(m.at)}</span>
             {m.text && <CopyBtn text={m.text} />}
-            {m.text && <MsgActions m={m} chatId={chatId} />}
+            {m.text && <MsgActions m={m} chatId={chatId} pid={pid} />}
           </div>
           {m.text && (
             <div className="bubble">
@@ -562,6 +603,7 @@ const Msg = memo(function Msg({ m, chatId }: { m: Message; chatId: string }) {
       </div>
     )
   }
-  if (m.kind === 'agent') return <AgentTurn m={m} chatId={chatId} />
+  if (m.kind === 'agent')
+    return <AgentTurn key={JSON.stringify([pid, m.id])} m={m} chatId={chatId} pid={pid} />
   return null
 })

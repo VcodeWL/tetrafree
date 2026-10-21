@@ -168,10 +168,10 @@ export const CodeSurface = memo(function CodeSurface({
       const saved = session.save(last.current, textRef.current)
       last.current = textRef.current = saved.text
       setText(saved.text)
-      if (saved.recovered) editIdle()
-      else editSaved(file)
-    } else if (useEdit.getState().pending) editIdle()
-  }, [file, session])
+      if (saved.recovered) editIdle(p.id)
+      else editSaved(file, p.id)
+    } else if (useEdit.getState().pending) editIdle(p.id)
+  }, [file, session, p.id])
 
   /* изменение пришло снаружи (облако, агент, диск, откат) */
   useEffect(() => {
@@ -213,7 +213,7 @@ export const CodeSurface = memo(function CodeSurface({
   const onChange = (v: string) => {
     textRef.current = v
     setText(v)
-    editPending(file)
+    editPending(file, p.id)
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(flush, 220)
   }

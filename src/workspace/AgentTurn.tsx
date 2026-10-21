@@ -1,7 +1,7 @@
 /* Ход агента в чате: текст, шаги, карточки файлов (как в Cursor / VS Code), команды, итоговая плашка. */
 import { CopyBtn } from '../components/ui/CopyBtn'
 import { memo, useEffect, useMemo, useState } from 'react'
-import { useStore, useProject } from '../store'
+import { useStore } from '../store'
 import type { Message, Part } from '../types'
 import { AgentAvatar, Spin } from '../components/ui/primitives'
 import { Icon } from '../components/ui/Icon'
@@ -36,7 +36,7 @@ const dir = (p: string) => {
 }
 const nm = (p: string) => p.slice(p.lastIndexOf('/') + 1)
 
-export const AgentTurn = memo(function AgentTurn({ m, chatId }: { m: A; chatId: string }) {
+export const AgentTurn = memo(function AgentTurn({ m, chatId, pid }: { m: A; chatId: string; pid: string }) {
   const parts = m.parts
   const legacy = !parts || (!parts.length && !m.streaming)
   const lastText = parts ? [...parts].reverse().find((p) => p.k === 'text')?.id : undefined
@@ -65,6 +65,7 @@ export const AgentTurn = memo(function AgentTurn({ m, chatId }: { m: A; chatId: 
               key={p.id}
               p={p}
               chatId={chatId}
+              pid={pid}
               msg={m}
               caret={!!m.streaming && p.id === lastText && !!lastIsText}
             />
@@ -77,8 +78,8 @@ export const AgentTurn = memo(function AgentTurn({ m, chatId }: { m: A; chatId: 
             Остановлено{m.endedAt && m.startedAt ? ` · ${secs(m.endedAt - m.startedAt)}` : ''}
           </div>
         )}
-        {!m.streaming && (m.stopped || m.error) && <RetryBtn chatId={chatId} msgId={m.id} />}
-        {m.turn && !m.streaming && <TurnBar m={m} chatId={chatId} />}
+        {!m.streaming && (m.stopped || m.error) && <RetryBtn chatId={chatId} msgId={m.id} pid={pid} />}
+        {m.turn && !m.streaming && <TurnBar m={m} chatId={chatId} pid={pid} />}
         {m.usage && !m.streaming && (
           <div className="at-usage" title="Оценка по длине текста: точные цифры показывает провайдер">
             <Icon name="bolt" size={11} />≈ {fmtTok(m.usage.inTok)} на входе · ≈ {fmtTok(m.usage.outTok)} на
@@ -101,9 +102,9 @@ export const AgentTurn = memo(function AgentTurn({ m, chatId }: { m: A; chatId: 
 })
 
 /* «Повторить»: только у последней реплики чата — заново отправляет предыдущий запрос человека */
-function RetryBtn({ chatId, msgId }: { chatId: string; msgId: string }) {
+function RetryBtn({ chatId, msgId, pid }: { chatId: string; msgId: string; pid: string }) {
   const req = useStore((s) => {
-    const c = s.projects.flatMap((p) => p.chats).find((x) => x.id === chatId)
+    const c = s.projects.find((p) => p.id === pid)?.chats.find((x) => x.id === chatId)
     if (!c || c.running) return null
     const i = c.messages.findIndex((x) => x.id === msgId)
     if (i < 0 || i !== c.messages.length - 1) return null
@@ -115,7 +116,7 @@ function RetryBtn({ chatId, msgId }: { chatId: string; msgId: string }) {
   })
   if (!req) return null
   return (
-    <button className="btn sm gho at-retry" onClick={() => sendMessage(chatId, req)}>
+    <button className="btn sm gho at-retry" onClick={() => sendMessage(chatId, req, [], '', 0, { pid })}>
       <Icon name="refresh" size={12} />
       Повторить запрос
     </button>
@@ -184,7 +185,19 @@ function Reasoning({ text, live }: { text: string; live: boolean }) {
   )
 }
 
-function PartView({ p, chatId, msg, caret }: { p: Part; chatId: string; msg: A; caret: boolean }) {
+function PartView({
+  p,
+  chatId,
+  msg,
+  caret,
+  pid,
+}: {
+  p: Part
+  chatId: string
+  msg: A
+  caret: boolean
+  pid: string
+}) {
   if (p.k === 'text')
     return p.text.trim() ? (
       <div className={'bubble' + (caret ? ' streaming' : '')}>
@@ -218,11 +231,11 @@ function PartView({ p, chatId, msg, caret }: { p: Part; chatId: string; msg: A; 
         </span>
       </div>
     )
-  if (p.k === 'cmd') return <CmdCard p={p} chatId={chatId} msgId={msg.id} />
-  return <FileCard p={p} chatId={chatId} msg={msg} />
+  if (p.k === 'cmd') return <CmdCard p={p} chatId={chatId} msgId={msg.id} pid={pid} />
+  return <FileCard p={p} chatId={chatId} msg={msg} pid={pid} />
 }
 
-function CmdCard({ p, chatId, msgId }: { p: CmdPart; chatId: string; msgId: string }) {
+function CmdCard({ p, chatId, msgId, pid }: { p: CmdPart; chatId: string; msgId: string; pid: string }) {
   const [open, setOpen] = useState(p.state === 'running')
   useEffect(() => {
     if (p.state === 'running') setOpen(true)
@@ -247,14 +260,14 @@ function CmdCard({ p, chatId, msgId }: { p: CmdPart; chatId: string; msgId: stri
       {open && (
         <div className="cmd-act">
           {p.state === 'running' ? (
-            <button className="btn sm gho" onClick={() => stopRetry(p.id)}>
+            <button className="btn sm gho" onClick={() => stopRetry(p.id, pid, chatId, msgId)}>
               <Icon name="stop" size={11} />
               Остановить
             </button>
           ) : (
             <button
               className="btn sm gho"
-              onClick={() => void retryCommand(chatId, msgId, p.id)}
+              onClick={() => void retryCommand(chatId, msgId, p.id, pid)}
               title="Запустить эту команду ещё раз на этой машине"
             >
               <Icon name="refresh" size={11} />
@@ -267,8 +280,7 @@ function CmdCard({ p, chatId, msgId }: { p: CmdPart; chatId: string; msgId: stri
   )
 }
 
-function FileCard({ p, chatId, msg }: { p: FilePart; chatId: string; msg: A }) {
-  const pid = useProject()?.id
+function FileCard({ p, chatId, msg, pid }: { p: FilePart; chatId: string; msg: A; pid: string }) {
   const livef = useLiveFile(pid, p.state === 'writing' ? p.path : null)
   const [open, setOpen] = useState(false)
   const st = useStore.getState
@@ -301,7 +313,7 @@ function FileCard({ p, chatId, msg }: { p: FilePart; chatId: string; msg: A }) {
   }, [open, p.state, p.op, p.before, p.after])
   const clickable = p.state !== 'writing' || !!livef
   const openFile = () => {
-    if (p.op !== 'delete' && p.state !== 'error')
+    if (st().projectId === pid && st().screen === 'workspace' && p.op !== 'delete' && p.state !== 'error')
       st().openFile(p.state === 'proposed' && p.op === 'rename' && p.to ? p.path : p.path)
   }
   const canOpen = p.op !== 'delete' && p.state !== 'error' && p.state !== 'reverted' && p.state !== 'rejected'
@@ -358,10 +370,13 @@ function FileCard({ p, chatId, msg }: { p: FilePart; chatId: string; msg: A }) {
         </span>
         {p.state === 'proposed' && (
           <span className="cact">
-            <button className="btn sm pri" onClick={() => applyProposed(chatId, msg.id, p.id)}>
+            <button
+              className="btn sm pri"
+              onClick={() => applyProposed(chatId, msg.id, p.id, undefined, undefined, undefined, pid)}
+            >
               {OPS[p.op][2]}
             </button>
-            <button className="btn sm gho" onClick={() => rejectProposed(chatId, msg.id, p.id)}>
+            <button className="btn sm gho" onClick={() => rejectProposed(chatId, msg.id, p.id, pid)}>
               Оставить
             </button>
           </span>
@@ -396,8 +411,8 @@ function FileCard({ p, chatId, msg }: { p: FilePart; chatId: string; msg: A }) {
           {pick && (
             <PickChanges
               lines={pick}
-              onApply={(text) => applyProposed(chatId, msg.id, p.id, text)}
-              onReject={() => rejectProposed(chatId, msg.id, p.id)}
+              onApply={(text) => applyProposed(chatId, msg.id, p.id, text, undefined, undefined, pid)}
+              onReject={() => rejectProposed(chatId, msg.id, p.id, pid)}
             />
           )}
           {rows === undefined && (
@@ -490,7 +505,7 @@ function PickChanges({
   )
 }
 
-function TurnBar({ m, chatId }: { m: A; chatId: string }) {
+function TurnBar({ m, chatId, pid }: { m: A; chatId: string; pid: string }) {
   const t = m.turn!
   const files = (m.parts || []).filter((p): p is FilePart => p.k === 'file')
   const canRevert = files.some((f) => f.state === 'done')
@@ -529,11 +544,14 @@ function TurnBar({ m, chatId }: { m: A; chatId: string }) {
       <div className="sa">
         {pending > 0 && (
           <>
-            <button className="btn sm pri" onClick={() => applyProposed(chatId, m.id)}>
+            <button
+              className="btn sm pri"
+              onClick={() => applyProposed(chatId, m.id, undefined, undefined, undefined, undefined, pid)}
+            >
               <Icon name="check" size={13} />
               Применить{pending > 1 ? ' все' : ''}
             </button>
-            <button className="btn sm" onClick={() => rejectProposed(chatId, m.id)}>
+            <button className="btn sm" onClick={() => rejectProposed(chatId, m.id, undefined, pid)}>
               Отклонить
             </button>
           </>
@@ -542,7 +560,9 @@ function TurnBar({ m, chatId }: { m: A; chatId: string }) {
           <button
             className="btn sm gho"
             title="Пошаговое воспроизведение хода"
-            onClick={() => st().openModal({ type: 'replay', chatId, msgId: m.id })}
+            onClick={() => {
+              if (st().projectId === pid) st().openModal({ type: 'replay', chatId, msgId: m.id })
+            }}
           >
             <Icon name="play" size={12} />
             Запись
@@ -551,13 +571,15 @@ function TurnBar({ m, chatId }: { m: A; chatId: string }) {
         {t.version && t.state !== 'reverted' && (
           <button
             className="btn sm gho"
-            onClick={() => st().openModal({ type: 'versions', focus: t.version })}
+            onClick={() => {
+              if (st().projectId === pid) st().openModal({ type: 'versions', focus: t.version })
+            }}
           >
             Дифф
           </button>
         )}
         {canRevert && (
-          <button className="btn sm gho" onClick={() => revertTurn(chatId, m.id)}>
+          <button className="btn sm gho" onClick={() => revertTurn(chatId, m.id, undefined, undefined, pid)}>
             <Icon name="undo" size={13} />
             Откатить
           </button>

@@ -339,7 +339,7 @@ export function Sidebar() {
                     st().toast({ title: 'Удаление отменено', desc: 'Открой исходный проект', icon: 'warn' })
                     return
                   }
-                  stopTurn(c.id)
+                  stopTurn(c.id, pid)
                   const p = getProject()!
                   const i = p.chats.findIndex((x) => x.id === c.id)
                   const copy = clone(p.chats[i])

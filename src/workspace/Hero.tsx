@@ -22,7 +22,7 @@ export function Hero() {
   const [foc, setFoc] = useState(false)
   const go = (text: string) => {
     const t = text.trim()
-    if (!t) return
+    if (!t || useStore.getState().projectId !== p.id) return
     const st = useStore.getState()
     if (!resolveModel().live) {
       st.openModal({ type: 'settings', section: 'providers' })
@@ -34,7 +34,7 @@ export function Hero() {
       creator: { kind: 'human', id: 'me' },
       agents: [{ name: 'builder', tier: 'Спросить', sub: [] }],
     })
-    sendMessage(id, t)
+    sendMessage(id, t, [], '', 0, { pid: p.id })
   }
   return (
     <div className="hero">

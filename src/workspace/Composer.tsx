@@ -3,13 +3,19 @@ import { useStore } from '../store'
 import { Icon, BrandIcon } from '../components/ui/Icon'
 import { Menu, MenuHead, MenuItem, MenuSep, useMenu } from '../components/ui/Menu'
 import { sendMessage, stopTurn, resolveModel } from '../agent/engine'
-import { useQueue, dequeue, shiftQueue, moveQueued, prioritize } from '../agent/queue'
+import { useQueue, queueFor, dequeue, shiftQueue, moveQueued, prioritize } from '../agent/queue'
 import { submit } from '../agent/commands'
 import { suggest } from '../agent/slash'
-import { useLoops, loopStop, loopLabel } from '../agent/loop'
+import { useLoops, loopFor, loopStop, loopLabel } from '../agent/loop'
 import { fmtGap } from '../agent/slash'
 import type { Attachment } from '../types'
 import { fmtBytes, uid } from '../lib/util'
+import {
+  copyLegacyDraftText,
+  isCurrentDraftTarget,
+  readChatDraft,
+  recoverableLegacyDraft,
+} from '../lib/chatDraft'
 
 const MAX = 8 * 1024 * 1024
 
@@ -98,13 +104,14 @@ export function Composer({
   placeholder?: string
 }) {
   const pid = useStore((s) => s.projectId)
-  const draft = useStore((s) => s.drafts[chatId] || '')
+  const draft = useStore((s) => readChatDraft(s, pid, chatId))
+  const hasOldDraft = useStore((s) => recoverableLegacyDraft(s, pid, chatId) !== undefined)
   const setDraft = useStore((s) => s.setDraft)
   const enterToSend = useStore((s) => s.settings.enterToSend)
   const [atts, setAtts] = useState<Attachment[]>([])
-  const queue = useQueue((s) => s.q[chatId] || [])
+  const queue = useQueue((s) => queueFor(s, pid ?? '', chatId))
   const files = useStore((s) => s.projects.find((p) => p.id === s.projectId)?.files)
-  const loop = useLoops((s) => s.loops[chatId])
+  const loop = useLoops((s) => loopFor(s, pid ?? '', chatId))
   const [, tick] = useState(0)
   useEffect(() => {
     if (!loop?.nextAt) return
@@ -120,7 +127,7 @@ export function Composer({
   }, [draft])
   const sugOpen = sugg.length > 0 && !hideSug
   const pick = (name: string) => {
-    setDraft(chatId, `/${name} `)
+    if (pid) setDraft(chatId, `/${name} `, pid)
     ta.current?.focus()
   }
   const [foc, setFoc] = useState(false)
@@ -139,32 +146,17 @@ export function Composer({
     ta.current?.focus()
   }, [chatId])
   useEffect(() => {
-    const valid = () => {
-      const s = useStore.getState()
-      return (
-        s.projectId === pid &&
-        s.screen === 'workspace' &&
-        s.center.kind === 'chat' &&
-        s.center.id === chatId &&
-        s.projects.find((p) => p.id === s.projectId)?.chats.some((c) => c.id === chatId)
-      )
-    }
+    const valid = () => isCurrentDraftTarget(useStore.getState(), pid, chatId)
     const focus = () => {
       if (!valid()) return
-      const length = (useStore.getState().drafts[chatId] || '').length
+      const length = readChatDraft(useStore.getState(), pid, chatId).length
       ta.current?.focus()
       ta.current?.setSelectionRange(length, length)
     }
     const h = (e: Event) => {
       const d = (e as CustomEvent).detail
-      if (
-        !valid() ||
-        d?.chatId !== chatId ||
-        typeof d.text !== 'string' ||
-        (d.pid && d.pid !== useStore.getState().projectId)
-      )
-        return
-      setDraft(chatId, d.text)
+      if (!valid() || d?.chatId !== chatId || typeof d.text !== 'string' || d.pid !== pid) return
+      if (pid) setDraft(chatId, d.text, pid)
       focus()
     }
     const onFocus = (e: Event) => {
@@ -200,11 +192,33 @@ export function Composer({
     })
   }
   const send = () => {
-    if (!draft.trim() && !atts.length) return
-    if (submit(chatId, draft, atts, running) === 'clear') setAtts([])
+    if (!pid || !isCurrentDraftTarget(useStore.getState(), pid, chatId) || (!draft.trim() && !atts.length))
+      return
+    if (submit(chatId, draft, atts, running, pid) === 'clear') setAtts([])
+  }
+  const recoverOldDraft = () => {
+    const s = useStore.getState()
+    const text = copyLegacyDraftText(s, pid, chatId)
+    if (text === undefined || !pid) return
+    s.setDraft(chatId, text, pid)
+    s.toast({
+      title: 'Старый черновик добавлен в этот чат',
+      desc: 'Исходный текст сохранён отдельно',
+      icon: 'copy',
+    })
   }
   return (
     <div className="composer">
+      {hasOldDraft && (
+        <button
+          type="button"
+          className="btn sm"
+          onClick={recoverOldDraft}
+          title="Добавить старый черновик к текущему тексту. Оригинал не удаляется; проект-источник неизвестен."
+        >
+          Скопировать старый черновик в этот чат
+        </button>
+      )}
       {queue.length > 0 && (
         <div className="queue" aria-label="Очередь сообщений">
           {queue.map((q, i) => (
@@ -217,7 +231,9 @@ export function Composer({
                   className="iconbtn sm"
                   title="Выше в очереди"
                   aria-label="Выше в очереди"
-                  onClick={() => moveQueued(chatId, q.id, -1)}
+                  onClick={() => {
+                    if (pid) moveQueued(chatId, q.id, -1, pid)
+                  }}
                 >
                   <Icon name="arrow" size={12} style={{ transform: 'rotate(-90deg)' }} />
                 </button>
@@ -227,7 +243,9 @@ export function Composer({
                   type="button"
                   className="linkbtn"
                   title="Поставить первым"
-                  onClick={() => prioritize(chatId, q.id)}
+                  onClick={() => {
+                    if (pid) prioritize(chatId, q.id, pid)
+                  }}
                 >
                   Срочно
                 </button>
@@ -238,7 +256,9 @@ export function Composer({
                   className="iconbtn sm"
                   title="Ниже в очереди"
                   aria-label="Ниже в очереди"
-                  onClick={() => moveQueued(chatId, q.id, 1)}
+                  onClick={() => {
+                    if (pid) moveQueued(chatId, q.id, 1, pid)
+                  }}
                 >
                   <Icon name="arrow" size={12} style={{ transform: 'rotate(90deg)' }} />
                 </button>
@@ -249,10 +269,11 @@ export function Composer({
                   className="linkbtn"
                   title="Остановить агента и отправить сразу"
                   onClick={() => {
+                    if (!pid) return
                     const nx = q
-                    dequeue(chatId, q.id)
-                    stopTurn(chatId)
-                    setTimeout(() => sendMessage(chatId, nx.text, nx.atts, nx.extra || ''), 400)
+                    dequeue(chatId, q.id, pid)
+                    stopTurn(chatId, pid)
+                    setTimeout(() => sendMessage(chatId, nx.text, nx.atts, nx.extra || '', 0, { pid }), 400)
                   }}
                 >
                   Сейчас
@@ -263,8 +284,9 @@ export function Composer({
                   type="button"
                   className="linkbtn"
                   onClick={() => {
-                    const nx = shiftQueue(chatId)
-                    if (nx) sendMessage(chatId, nx.text, nx.atts, nx.extra || '')
+                    if (!pid) return
+                    const nx = shiftQueue(chatId, pid)
+                    if (nx) sendMessage(chatId, nx.text, nx.atts, nx.extra || '', 0, { pid })
                   }}
                 >
                   Отправить
@@ -274,7 +296,9 @@ export function Composer({
                 type="button"
                 className="iconbtn sm"
                 aria-label="Убрать из очереди"
-                onClick={() => dequeue(chatId, q.id)}
+                onClick={() => {
+                  if (pid) dequeue(chatId, q.id, pid)
+                }}
               >
                 <Icon name="x" size={12} />
               </button>
@@ -300,7 +324,9 @@ export function Composer({
           <button
             type="button"
             className="btn sm gho"
-            onClick={() => loopStop(chatId, 'остановлено вручную')}
+            onClick={() => {
+              if (pid) loopStop(chatId, 'остановлено вручную', pid)
+            }}
           >
             <Icon name="stop" size={11} />
             Стоп
@@ -378,7 +404,9 @@ export function Composer({
           }
           onFocus={() => setFoc(true)}
           onBlur={() => setFoc(false)}
-          onChange={(e) => setDraft(chatId, e.target.value)}
+          onChange={(e) => {
+            if (pid) setDraft(chatId, e.target.value, pid)
+          }}
           onPaste={(e) => {
             const f = Array.from(e.clipboardData.files)
             if (f.length) {
@@ -478,7 +506,9 @@ export function Composer({
             <button
               type="button"
               className="btn send stopb"
-              onClick={() => stopTurn(chatId)}
+              onClick={() => {
+                if (pid) stopTurn(chatId, pid)
+              }}
               aria-label="Остановить"
             >
               <Icon name="stop" size={15} />
