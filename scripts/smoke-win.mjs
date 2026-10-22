@@ -135,6 +135,9 @@ class ConsoleProbe {
   static int Main(string[] args) {
     INFO info;
     if (args.Length != 2 || !GetConsoleScreenBufferInfo(GetStdHandle(-11), out info)) return 9;
+    // cmd can inherit an OEM code page that cannot represent Cyrillic.
+    // Configure the producer before the first write; ConPTY transports UTF-8.
+    Console.OutputEncoding = new System.Text.UTF8Encoding(false);
     Console.WriteLine("TFEXEC:" + args[0] + args[1]);
     Console.WriteLine("TFSIZE:" + info.Size.X + "x" + info.Size.Y);
     Console.WriteLine("TFUTF:" + (char)1055 + (char)1088 + (char)1080 + (char)1074 + (char)1077 + (char)1090);

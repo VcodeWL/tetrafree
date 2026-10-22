@@ -39,7 +39,7 @@ test('output records must be exact lines, not echoed command substrings', () => 
   assert.equal(hasOutputRecord('\x1b[32mTFEXEC:foobar\x1b[0m\r\n', 'TFEXEC:foobar'), true)
 })
 
-function fakeTerminal({ echoOnly = false, resize = true, exit = 0, hang = false } = {}) {
+function fakeTerminal({ echoOnly = false, resize = true, exit = 0, hang = false, utf = 'Привет' } = {}) {
   const p = new EventEmitter()
   p.stdout = new PassThrough()
   p.stderr = new PassThrough()
@@ -58,7 +58,7 @@ function fakeTerminal({ echoOnly = false, resize = true, exit = 0, hang = false 
       if (!hang) queueMicrotask(() => p.emit('close', exit))
       return
     }
-    p.stdout.write('\r\nTFEXEC:foobar\r\nTFSIZE:80x24\r\n')
+    p.stdout.write(`\r\nTFEXEC:foobar\r\nTFSIZE:80x24\r\nTFUTF:${utf}\r\n`)
   })
   setTimeout(() => p.stdout.write('PS C:\\> '), 0)
   return p
@@ -79,6 +79,26 @@ test('exact production smoke rejects exit timeout', async () => {
 })
 test('exact production smoke accepts only executed output, size changes and expected exit', async () => {
   await probeTerminal(fakeTerminal(), options)
+})
+
+test('exact production smoke accepts UTF-8 Cyrillic with the UTF gate enabled', async () => {
+  await probeTerminal(fakeTerminal(), { ...options, checkUtf: true })
+})
+test('exact production smoke rejects lossy Cyrillic output from a legacy code page', async () => {
+  await assert.rejects(
+    probeTerminal(fakeTerminal({ utf: '??????' }), { ...options, checkUtf: true }),
+    /UTF-8 Cyrillic output missing/,
+  )
+})
+test('native smoke producer selects BOM-free UTF-8 before any console output (static)', () => {
+  const source = fs.readFileSync(new URL('./smoke-win.mjs', import.meta.url), 'utf8')
+  const probe = source.slice(
+    source.indexOf('const PROBE_CS ='),
+    source.indexOf('async function compileProbe'),
+  )
+  const encoding = probe.indexOf('Console.OutputEncoding = new System.Text.UTF8Encoding(false);')
+  const firstWrite = probe.indexOf('Console.WriteLine(')
+  assert.ok(encoding >= 0 && encoding < firstWrite)
 })
 
 test('release gates identical SHA, drafts publication and uses immutable actions/locked Cargo (static)', () => {
