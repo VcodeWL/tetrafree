@@ -144,6 +144,8 @@ const originalFetch = globalThis.fetch
 const response = (source = '{"t":"x","code":0}\n') => new Response(source, { status: 200 })
 before(async () => {
   api = await harness()
+  for (const name of ['runTurn', 'syncSegs', 'verifyCommand', 'refreshTurn'] as const)
+    assert.equal(typeof api[name], 'function', `test harness must expose engine helper ${name}`)
 })
 after(() => {
   globalThis.fetch = originalFetch

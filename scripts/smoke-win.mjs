@@ -19,12 +19,34 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const assert = (condition, message) => {
   if (!condition) throw new Error(message)
 }
-export const terminalText = (text) =>
-  text
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+export function terminalText(text) {
+  const withoutTitles = text.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '')
+  let row = 1,
+    previous = 0
+  // A chronological probe transcript, not a screen emulator. ConPTY can use
+  // cursor positioning instead of CRLF; stripping it would join output and prompt.
+  return withoutTitles
+    .replace(/\x1b\[([0-?]*)([ -/]*)([@-~])/g, (sequence, parameters, intermediate, command, offset) => {
+      row += withoutTitles.slice(previous, offset).match(/\n/g)?.length ?? 0
+      previous = offset + sequence.length
+      const before = row
+      if (!intermediate && /^\d*(?:;\d*)*$/.test(parameters)) {
+        const values = parameters.split(';'),
+          amount = Number(values[0]) || 1
+        if (Number.isSafeInteger(amount)) {
+          if ((command === 'H' || command === 'f') && values.length <= 2) row = amount
+          else if (values.length === 1) {
+            if (command === 'd') row = amount
+            else if (command === 'B' || command === 'E' || command === 'e') row += amount
+            else if (command === 'A' || command === 'F') row = Math.max(1, row - amount)
+          }
+        }
+      }
+      return row === before ? '' : '\n'
+    })
     .replace(/\x1b[()][0-2A-Z]/g, '')
     .replace(/\r/g, '\n')
+}
 export function hasOutputRecord(output, expected) {
   return terminalText(output)
     .split('\n')

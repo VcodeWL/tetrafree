@@ -27,7 +27,7 @@ const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n')
 console.log('баннер, не JSON')
 rl.on('line', (l) => {
   const m = JSON.parse(l)
-  if (m.method === 'initialize') return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '9' }, capabilities: { tools: {} } } })
+  if (m.method === 'initialize') return send({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '9', args: process.argv.slice(2) }, capabilities: { tools: {} } } })
   if (m.method === 'tools/list') return send({ jsonrpc: '2.0', id: m.id, result: m.params && m.params.cursor
     ? { tools: [{ name: 'boom', description: 'падает' }] }
     : { tools: [{ name: 'echo', description: 'эхо', inputSchema: { type: 'object', properties: { text: { type: 'string' } } }, annotations: { readOnlyHint: true } }], nextCursor: 'c2' } })
@@ -118,17 +118,45 @@ test('stdio: рукопожатие, пагинация инструментов
     await assert.rejects(c.callTool('nope', {}), /нет такого инструмента/)
     await assert.rejects(c.callTool('die', {}), /Сервер MCP завершился/)
   } finally {
-    c.close()
+    await c.close()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test(
+  'Windows: MCP запускается через настоящий .cmd в папке с пробелами и сохраняет аргументы',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-mcp-Проект с пробелом-'))
+    const cfg = fakeCfg(dir)
+    const wrapper = path.join(dir, 'запуск сервера.cmd')
+    fs.writeFileSync(wrapper, `@echo off\r\nchcp 65001 >nul\r\n"${process.execPath}" "${cfg.args[0]}" %*\r\n`)
+    const args = ['a b', 'Привет', '']
+    const c = new McpClient({ ...cfg, command: wrapper, args }, { cwd: dir })
+    try {
+      await c.start()
+      assert.deepEqual(c.server.args, args)
+      assert.equal((await c.callTool('echo', { text: 'работает' })).text, 'эхо: работает')
+    } finally {
+      await c.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
 
 test('stdio: несуществующая команда — понятная ошибка', async () => {
   const c = new McpClient(
     { type: 'stdio', command: '/нет/такого/бинаря', args: [], env: {} },
     { cwd: os.tmpdir() },
   )
-  await assert.rejects(c.start(), /Связь с сервером MCP прервана/)
-  c.close()
+  try {
+    await assert.rejects(
+      c.start(),
+      process.platform === 'win32' ? /Сервер MCP завершился/ : /Связь с сервером MCP прервана/,
+    )
+  } finally {
+    await c.close()
+  }
 })
 
 function httpServer(sse) {
@@ -208,6 +236,7 @@ test('маршруты: без «Разрешить» ничего не запу
     JSON.stringify({ mcpServers: { fake: { command: cfg.command, args: cfg.args } } }),
   )
   const pool = createPool()
+  let runningClient
   const approvalsFile = path.join(dir, 'ap.json')
   const call = async (url, body) => {
     let code, data
@@ -233,6 +262,7 @@ test('маршруты: без «Разрешить» ничего не запу
     })
     r = await call('/api/mcp/tools', { server: 'fake' })
     assert.equal(r.code, 200)
+    runningClient = pool.getOwner(JSON.stringify([fs.realpathSync(dir), 'fake'])).client
     assert.equal(r.data.tools[0].readOnly, true)
     r = await call('/api/mcp/call', { server: 'fake', tool: 'echo', args: { text: 'x' } })
     assert.equal(r.data.text, 'эхо: x')
@@ -255,10 +285,13 @@ test('маршруты: без «Разрешить» ничего не запу
         (await call('/api/mcp/status', {})).data.servers[0].hash,
     })
     assert.equal(pool.pool.size, 0)
+    assert.equal(runningClient.closed, true)
     assert.equal((await call('/api/mcp/call', { server: 'fake', tool: 'echo' })).code, 403)
     assert.equal(readConfig(dir).errors.length, 0)
     assert.equal(approvals(approvalsFile).has('x'), false)
   } finally {
-    pool.closeAll()
+    await pool.closeAll()
+    await runningClient?.close()
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })

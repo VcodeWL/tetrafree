@@ -71,9 +71,10 @@ export function findEditor(
     return null
   }
   const dirs = String(env.PATH || '')
-    .split(path.delimiter)
+    .split(path.posix.delimiter)
     .filter(Boolean)
-  for (const b of ed.bin) for (const d of dirs) if (exists(path.join(d, b))) return path.join(d, b)
+  for (const b of ed.bin)
+    for (const d of dirs) if (exists(path.posix.join(d, b))) return path.posix.join(d, b)
   if (platform === 'darwin' && ed.id === 'vscode') {
     const app = '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code'
     if (exists(app)) return app
@@ -128,9 +129,9 @@ export function terminalLaunch(
   }
   if (platform === 'darwin') return { cmd: 'open', args: ['-a', 'Terminal', dir], cwd: dir }
   const dirs = String(env.PATH || '')
-    .split(path.delimiter)
+    .split(path.posix.delimiter)
     .filter(Boolean)
-  const on = (b) => dirs.some((d) => exists(path.join(d, b)))
+  const on = (b) => dirs.some((d) => exists(path.posix.join(d, b)))
   const list = [
     ['x-terminal-emulator', []],
     ['gnome-terminal', ['--working-directory=' + dir]],

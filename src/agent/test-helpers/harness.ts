@@ -65,7 +65,7 @@ export async function harness() {
               contents: mock[a.path],
               loader: 'js',
             }))
-            b.onLoad({ filter: /\/agent\/engine\.ts$/ }, async (a) => ({
+            b.onLoad({ filter: /[\\/]agent[\\/]engine\.ts$/ }, async (a) => ({
               contents:
                 (await readFile(a.path, 'utf8')) +
                 '\nexport {runTurn, syncSegs, verifyCommand, refreshTurn};',

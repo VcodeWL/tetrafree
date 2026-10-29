@@ -218,14 +218,28 @@ test('exec middleware decodes split UTF8, sanitized env and returned cwd/status 
   await fsp.mkdir(path.join(root, 'sub'), { recursive: true })
   const previous = cp.spawn
   let seenEnv
-  cp.spawn = (_exe, args, options) => {
+  cp.spawn = (exe, args, options) => {
+    if (exe === 'taskkill.exe') {
+      assert.deepEqual(args, ['/PID', '99999999', '/T', '/F'])
+      const task = new EventEmitter()
+      queueMicrotask(() => {
+        task.emit('exit', 0)
+        task.emit('close', 0)
+      })
+      return task
+    }
     seenEnv = options.env
     const child = new EventEmitter()
     child.stdin = new PassThrough()
     child.stdout = new PassThrough()
     child.stderr = new PassThrough()
     child.pid = 99999999
-    const marker = args.join(' ').match(/__TF_CWD_[a-f0-9]+__/)[0]
+    const script = options.env.TF_EXEC_WRAPPER
+      ? fs.readFileSync(options.env.TF_EXEC_WRAPPER, 'utf8')
+      : args.join(' ')
+    const marker = script.match(/__TF_CWD_[a-f0-9]+__/)[0]
+    if (options.env.TF_EXEC_COMMAND)
+      assert.equal(fs.readFileSync(options.env.TF_EXEC_COMMAND, 'utf8'), 'unit-fixture-not-executed\r\n')
     queueMicrotask(() => {
       const bytes = Buffer.from('Привет😀')
       for (const byte of bytes) child.stdout.write(Buffer.from([byte]))
@@ -256,7 +270,9 @@ test('exec middleware decodes split UTF8, sanitized env and returned cwd/status 
     })
     Object.assign(res, {
       writableLength: 0,
-      writeHead() {},
+      writeHead(status) {
+        this.status = status
+      },
       write(line) {
         output += line
         return true
@@ -270,6 +286,7 @@ test('exec middleware decodes split UTF8, sanitized env and returned cwd/status 
     req.emit('data', JSON.stringify({ folder: root, cmd: 'unit-fixture-not-executed', runId: 'fixture' }))
     req.emit('end')
     await done
+    assert.equal(res.status, 200)
     const records = output.trim().split('\n').map(JSON.parse)
     assert.equal(
       records
@@ -288,6 +305,7 @@ test('exec middleware decodes split UTF8, sanitized env and returned cwd/status 
     assert.deepEqual(records.at(-1), { t: 'x', code: 7, cwd: 'sub', treeStopped: true })
     assert.equal(seenEnv.TF_DATA, undefined)
     assert.equal(seenEnv.SMTP_URL, undefined)
+    if (seenEnv.TF_EXEC_WRAPPER) assert.equal(fs.existsSync(seenEnv.TF_EXEC_WRAPPER), false)
   } finally {
     cp.spawn = previous
     syncBuiltinESMExports()

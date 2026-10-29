@@ -5,6 +5,7 @@ import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
+import { hasOutputRecord, terminalText } from '../scripts/smoke-win.mjs'
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-test-'))
 process.env.TF_RATE_MULT = '20'
@@ -265,7 +266,7 @@ test('приглашение: только для своей почты, оди�
 
 test('PTY: настоящий терминал отвечает на ввод и ресайз, чужой не подключится', async (t) => {
   const h = await (await fetch(B + '/api/health')).json()
-  if (!h.pty) return t.skip('нет python3')
+  if (!h.pty) return t.skip('нативный PTY недоступен')
   const E = { name: 'Пётр', email: 'pyotr@test.dev', password: 'Pt3r!Pass99' }
   await call('POST', '/api/auth/register', E)
   const tk = (await call('POST', '/api/auth/verify', { email: E.email, code: await lastCode(E.email) })).body
@@ -275,48 +276,77 @@ test('PTY: настоящий терминал отвечает на ввод и
   assert.equal(o.status, 200)
   const sid = o.body.sid
   const ac = new AbortController()
+  let rd, pump, pumpError
+  t.after(async () => {
+    ac.abort()
+    if (rd) await rd.cancel().catch(() => {})
+    if (pump) await pump
+    await call('POST', '/api/pty/close', { sid }, tk)
+  })
   const r = await fetch(`${B}/api/pty/stream?sid=${sid}`, {
     headers: { authorization: 'Bearer ' + tk },
     signal: ac.signal,
   })
+  assert.equal(r.status, 200)
   let out = ''
-  const dec = new TextDecoder()
-  const rd = r.body.getReader()
-  const pump = (async () => {
+  const dec = new TextDecoder(),
+    ptyDec = new TextDecoder()
+  rd = r.body.getReader()
+  pump = (async () => {
+    let pending = ''
     try {
       for (;;) {
         const { value, done } = await rd.read()
         if (done) break
-        for (const ln of dec.decode(value).split('\n'))
-          if (ln) {
-            const m = JSON.parse(ln)
-            if (m.d) out += Buffer.from(m.d, 'base64').toString()
-          }
+        pending += dec.decode(value, { stream: true })
+        let nl
+        while ((nl = pending.indexOf('\n')) >= 0) {
+          const ln = pending.slice(0, nl)
+          pending = pending.slice(nl + 1)
+          if (!ln) continue
+          const m = JSON.parse(ln)
+          if (m.d)
+            out = (out + ptyDec.decode(Buffer.from(m.d, 'base64'), { stream: true })).slice(-128 * 1024)
+        }
       }
-    } catch {
-      /* abort */
+    } catch (error) {
+      if (!ac.signal.aborted) pumpError = error
     }
   })()
+  const waitFor = async (check, label) => {
+    const deadline = Date.now() + 15000
+    while (Date.now() < deadline) {
+      if (pumpError) throw pumpError
+      if (check()) return
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    assert.fail(`${label}; output=${JSON.stringify(terminalText(out).slice(-1000))}`)
+  }
   const send = (s) => call('POST', '/api/pty/input', { sid, d: Buffer.from(s).toString('base64') }, tk)
   /* на Windows терминал — PowerShell (ConPTY): там нет && и stty, ширину спрашиваем у хоста */
   const win = process.platform === 'win32'
-  const q = win ? '$Host.UI.RawUI.WindowSize.Width\r\n' : 'stty size\n'
-  await send(
-    win ? 'Write-Output ("{0}_ok" -f (6*7)); ' + q : 'echo $((6*7))_ok; test -t 0 && echo istty; ' + q,
+  if (win) await waitFor(() => />\s*$/.test(terminalText(out)), 'нет приглашения PowerShell')
+  const q = win ? '$Host.UI.RawUI.WindowSize.Width\r' : 'stty size\n'
+  assert.equal(
+    (
+      await send(
+        win ? 'Write-Output ("{0}_ok" -f (6*7)); ' + q : 'echo $((6*7))_ok; test -t 0 && echo istty; ' + q,
+      )
+    ).status,
+    200,
   )
-  const sz = (c, r) => (win ? new RegExp('(^|\\s)' + c + '(\\s|$)') : new RegExp(r + ' ' + c))
-  for (let i = 0; i < 80 && !(/42_ok/.test(out) && sz(100, 30).test(out)); i++)
-    await new Promise((r) => setTimeout(r, 100))
-  assert.match(out, /42_ok/)
-  if (!win) assert.match(out, /istty/)
-  assert.match(out, sz(100, 30))
-  await call('POST', '/api/pty/resize', { sid, cols: 120, rows: 40 }, tk)
-  await send(q)
-  for (let i = 0; i < 80 && !sz(120, 40).test(out); i++) await new Promise((r) => setTimeout(r, 100))
-  assert.match(out, sz(120, 40))
-  await call('POST', '/api/pty/close', { sid }, tk)
-  ac.abort()
-  await pump
+  const sizeRecord = (cols, rows) => (win ? String(cols) : `${rows} ${cols}`)
+  await waitFor(() => hasOutputRecord(out, '42_ok'), 'нет выполненного вывода (эхо не считается)')
+  if (!win) await waitFor(() => hasOutputRecord(out, 'istty'), 'stdin не является терминалом')
+  await waitFor(() => hasOutputRecord(out, sizeRecord(100, 30)), 'нет исходного размера консоли')
+  out = ''
+  assert.equal((await call('POST', '/api/pty/resize', { sid, cols: 120, rows: 40 }, tk)).status, 200)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  assert.equal((await send(q)).status, 200)
+  await waitFor(() => hasOutputRecord(out, sizeRecord(120, 40)), 'нет настоящего изменения размера')
+  assert.equal((await call('POST', '/api/pty/resize', { sid, cols: 90, rows: 20 })).status, 401)
+  assert.equal((await call('POST', '/api/pty/close', { sid })).status, 401)
+  assert.equal((await fetch(`${B}/api/pty/stream?sid=${sid}`)).status, 401)
 })
 
 test('health: версия сервера берётся из package.json, а не зашита', async () => {

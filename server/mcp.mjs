@@ -265,7 +265,7 @@ export class McpClient {
     const { command, args, env } = this.cfg
     const win = this.platform === 'win32'
     const child = win
-      ? this.launch('cmd.exe', ['/d', '/s', '/c', winCommandLine(command, args)], {
+      ? this.launch('cmd.exe', ['/d', '/v:off', '/s', '/c', '"' + winCommandLine(command, args) + '"'], {
           cwd: this.cwd,
           env: childEnv(env),
           windowsHide: true,
