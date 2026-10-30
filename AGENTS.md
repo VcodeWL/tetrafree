@@ -82,6 +82,7 @@ npm run build
 
 ## Ловушки (уже наступали)
 
+- `.gitattributes` сохраняет LF в текстовом исходнике и не преобразует бинарные файлы. Не обходить Windows format gate массовым `prettier --write` в CI: чистый checkout должен сразу проходить проверку.
 - Новый CSS — в **конец** `src/styles/app.css` (`html .селектор`, для светлой темы `html.light …`). `components.css` грузится позже и перекрывает.
 - Новый тестовый файл не запустится, пока его нет в скрипте `test` в `package.json` (серверные `*.test.mjs` — в `node --test …`, клиентские `*.test.ts` — в `tsx --test …`).
 - Новый модуль в `server/`, импортируемый другим, — добавь в `bundle.resources` (`src-tauri/tauri.conf.json`); `server/bundle.test.mjs` это проверяет.

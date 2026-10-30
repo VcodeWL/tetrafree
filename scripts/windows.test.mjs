@@ -2,11 +2,44 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { copySidecar, nodeTriple, sidecarTriple } from './prepare-sidecar.mjs'
 import { hasOutputRecord, probeTerminal } from './smoke-win.mjs'
+
+test('Git checkout preserves LF source and binary bytes even with core.autocrlf=true', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-checkout-eol-'))
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)))
+  env.GIT_CONFIG_NOSYSTEM = '1'
+  env.GIT_CONFIG_SYSTEM = env.GIT_CONFIG_GLOBAL = '/dev/null'
+  const git = (...args) =>
+    execFileSync('git', ['-c', 'core.autocrlf=true', '-c', 'core.hooksPath=/dev/null', ...args], {
+      cwd: dir,
+      env,
+      stdio: 'pipe',
+      windowsHide: true,
+      timeout: 5000,
+    })
+  const files = {
+    'fixture.tsx': Buffer.from('export const Fixture = () => <p>Привет</p>\n'),
+    'fixture.mjs': Buffer.from('export const value = 1\n'),
+    'fixture.bin': Buffer.from([0, 255, 13, 10, 128, 0, 10]),
+  }
+  try {
+    git('init', '-q')
+    fs.copyFileSync(new URL('../.gitattributes', import.meta.url), path.join(dir, '.gitattributes'))
+    for (const [name, bytes] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), bytes)
+    git('add', '.gitattributes', ...Object.keys(files))
+    for (const name of Object.keys(files)) fs.unlinkSync(path.join(dir, name))
+    git('checkout-index', '--all', '--force')
+    for (const [name, bytes] of Object.entries(files))
+      assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes, name)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('same-sized stale sidecar is replaced by digest; identical runtime is retained', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-sidecar-test-'))
