@@ -24,7 +24,7 @@ test(
     const git = async (args) => {
       await assertGitMetadata(root)
       const i = gitInvocation(root, args)
-      return captureProcess('git', i.args, {
+      const result = await captureProcess('git', i.args, {
         cwd: root,
         env: {
           ...i.env,
@@ -36,6 +36,8 @@ test(
         registry,
         timeout: 5000,
       })
+      assert.equal(result.code, 0, `${args[0]}: ${result.se}`)
+      return result
     }
     try {
       assert.equal((await git(['init', '-q', '-b', 'main'])).code, 0)

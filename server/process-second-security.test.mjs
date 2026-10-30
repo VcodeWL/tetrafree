@@ -296,10 +296,13 @@ test('Git native invocation isolates ambient config and disables external interp
   ])
     assert.throws(() => validateGitConfig(text))
   const i = gitInvocation(fixture, ['diff', '--', 'fixture.txt'])
-  assert.equal(i.env.GIT_CONFIG_GLOBAL, os.devNull)
+  assert.equal(i.env.GIT_CONFIG_GLOBAL, '/dev/null')
+  assert.equal(i.env.GIT_CONFIG_SYSTEM, '/dev/null')
   assert.equal(i.env.GIT_CONFIG_NOSYSTEM, '1')
   for (const option of [
-    'core.hooksPath=' + os.devNull,
+    'core.hooksPath=/dev/null',
+    'core.attributesFile=/dev/null',
+    'core.sshCommand=ssh -F /dev/null',
     'credential.helper=',
     'protocol.allow=never',
     'submodule.recurse=false',

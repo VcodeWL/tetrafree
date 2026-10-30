@@ -1,0 +1,3 @@
+# Keep clean Windows checkouts identical to the source checked by Prettier and CI.
+# Binary files retain their bytes through Git's automatic text detection.
+* text=auto eol=lf

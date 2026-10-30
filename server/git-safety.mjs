@@ -5,7 +5,6 @@
    a separate trusted workflow. Concurrent external mutation is still a limit. */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import os from 'node:os'
 import { realInside } from './fs-safety.mjs'
 import { childEnv } from './process-safety.mjs'
 import { publicError } from './public-errors.mjs'
@@ -104,13 +103,16 @@ export async function assertGitMetadata(dir) {
   validateGitConfig(config)
 }
 export function gitInvocation(dir, args) {
+  // Git for Windows recognizes /dev/null, but rejects Node's \\.\nul device path.
+  // Keep ambient config, attributes and hooks disabled on every host.
+  const devNull = '/dev/null'
   const command = args[0]
   const options = [
-    'core.hooksPath=' + os.devNull,
-    'core.attributesFile=' + os.devNull,
+    'core.hooksPath=' + devNull,
+    'core.attributesFile=' + devNull,
     'core.fsmonitor=false',
     'core.untrackedCache=false',
-    'core.sshCommand=ssh -F ' + os.devNull,
+    'core.sshCommand=ssh -F ' + devNull,
     'credential.helper=',
     'commit.gpgSign=false',
     'tag.gpgSign=false',
@@ -134,8 +136,8 @@ export function gitInvocation(dir, args) {
     env: {
       ...env,
       GIT_CONFIG_NOSYSTEM: '1',
-      GIT_CONFIG_SYSTEM: os.devNull,
-      GIT_CONFIG_GLOBAL: os.devNull,
+      GIT_CONFIG_SYSTEM: devNull,
+      GIT_CONFIG_GLOBAL: devNull,
       GIT_ATTR_NOSYSTEM: '1',
       GIT_NO_REPLACE_OBJECTS: '1',
       GIT_NO_LAZY_FETCH: '1',

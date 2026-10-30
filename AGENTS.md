@@ -23,7 +23,7 @@
 | `src/lib/`                                                        | чистая логика и клиенты без React/стора. Новый алгоритм = новый `*.test.ts`                                                                                                                                                                                                                                                   |
 | `src/screens/`, `workspace/`, `modals/`, `components/`, `design/` | UI. Режим «Дизайн» — `design/`                                                                                                                                                                                                                                                                                                |
 | `server/`                                                         | локальный Node-сервер, **без внешних зависимостей**: `tetra-server.mjs` (файлы, git, shell, прокси, бэкапы), `auth.mjs` (аккаунты, сессии, команды, SSE), `pty.mjs` + `conpty-win.mjs` (терминал), `secrets.mjs` (ключи, DPAPI), `mail.mjs`, `editors.mjs` (внешние редакторы), `gitparse.mjs`, `gitremote.mjs`, `ignore.mjs` |
-| `src-tauri/`                                                      | оболочка Tauri 2 (Rust): sidecar `node`, трей/автозапуск/хоткей (фича `extras`), автообновление (фича `updater`). Rust в песочнице не компилируется — первая реальная сборка на CI                                                                                                                                            |
+| `src-tauri/`                                                      | оболочка Tauri 2 (Rust): sidecar `node`, трей/автозапуск/хоткей (фича `extras`), автообновление (фича `updater`). Нативные проверки Windows для default/extras/updater/extras,updater и Rust-тесты проходят локально и на CI; установленный bundle проверяется отдельно                                                                 |
 | `.github/workflows/`                                              | `ci.yml` (проверки), `release.yml` (подписанный установщик, `latest.json`, заметки из `CHANGELOG.md`)                                                                                                                                                                                                                         |
 | `scripts/`                                                        | `fake-llm.mjs` — поддельная модель для проверки агента без ключа; `restore-binaries.mjs`                                                                                                                                                                                                                                      |
 | `docs/TEST_PROMPT.md`                                             | промпт ИИ-тестировщика на Windows                                                                                                                                                                                                                                                                                             |
@@ -82,6 +82,7 @@ npm run build
 
 ## Ловушки (уже наступали)
 
+- `.gitattributes` сохраняет LF в текстовом исходнике и не преобразует бинарные файлы. Не обходить Windows format gate массовым `prettier --write` в CI: чистый checkout должен сразу проходить проверку.
 - Новый CSS — в **конец** `src/styles/app.css` (`html .селектор`, для светлой темы `html.light …`). `components.css` грузится позже и перекрывает.
 - Новый тестовый файл не запустится, пока его нет в скрипте `test` в `package.json` (серверные `*.test.mjs` — в `node --test …`, клиентские `*.test.ts` — в `tsx --test …`).
 - Новый модуль в `server/`, импортируемый другим, — добавь в `bundle.resources` (`src-tauri/tauri.conf.json`); `server/bundle.test.mjs` это проверяет.
@@ -100,7 +101,7 @@ npm run build
 
 ## Что не проверено (держи актуальным)
 
-Не проверено на реальной Windows: ConPTY-помощник на C#, DPAPI через PowerShell, запуск sidecar Node, трей/автозапуск/хоткей, автообновление, пути внешних редакторов, `cmd /c start powershell`. Rust не компилировался до CI. Реальные OAuth/SMTP и провайдеры моделей — только на имитациях. Установщик не подписан сертификатом (SmartScreen). CSP Tauri выключен (мешает превью «Дизайна»).
+Нативные проверки Rust (четыре набора фич и 12 тестов, включая Windows Job) и ConPTY smoke выполнены на Windows 10 при подготовке 3.5.1. Не проверено в установленном bundle: sidecar Node, трей/автозапуск/хоткей, автообновление; отдельно остаются пути внешних редакторов и `cmd /c start powershell`. Реальные OAuth/SMTP и провайдеры моделей — только на имитациях. Установщик не подписан сертификатом (SmartScreen); подпись обновления — отдельная проверка, не Authenticode. CSP Tauri выключен (мешает превью «Дизайна»).
 
 ## Как проверять изменения
 
@@ -155,7 +156,7 @@ npm run build
 - `GradientRibbon` — декоративная 6px лента у поля ввода, не progressbar. Бесшовная CSS-анимация 12с останавливается в скрытой вкладке и при reduced motion; в calm/no-accents лента скрыта.
 - `MotionConfig` использует `user`, если пользователь не включил принудительное уменьшение движения. Не возвращать `never`: это игнорирует системное предпочтение.
 - Начальная правая панель свёрнута; кнопка «Открыть файлы проекта» и переключатель в чате должны оставаться доступны. На узком экране не прятать остановку/разрешения ради чистого вида.
-- Browser-скриншоты и axe не заменяют Windows/WebView2/installed-bundle acceptance. Старый сбой Windows smoke остаётся отдельным блокером релиза.
+- Browser-скриншоты и axe не заменяют Windows/WebView2/installed-bundle acceptance. Сбой Windows smoke исправлен в 3.5.1 с сохранением строгих проверок выполнения, UTF-8, resize и exit; установленный bundle проходит отдельную приёмку.
 
 - `ProjectIcon` заменяет только стандартный `sparkle` сгенерированным знаком, не меняя сохранённое значение и выбранные пользователем иконки. Новый PNG восстанавливается из `binary-assets/project-mark.png.b64` через manifest.
 - Плашка PRO пока в design backlog. В данных аккаунта нет подтверждённого статуса подписки; не добавлять фиктивные premium entitlement или покупку ради визуального оформления.
